@@ -1,15 +1,15 @@
-//! Tests de integración del esqueleto HTTP.
+//! HTTP skeleton integration tests.
 //!
-//! Se ejecutan contra el `Router` en memoria (sin abrir puerto) y contra una
-//! base de datos real y efímera que `#[sqlx::test]` crea y destruye por test.
+//! These exercise the in-memory `Router` without opening a port, against a
+//! real ephemeral database created and destroyed by `#[sqlx::test]` per test.
 
-use organox::routes::router;
-use organox::{AppState, db};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use organox::routes::router;
+use organox::{AppState, db};
 use tower::ServiceExt;
 
-/// Liveness no debe depender de nada externo: 204 siempre que el proceso viva.
+/// Liveness must not depend on external services: 204 while the process is alive.
 #[sqlx::test]
 async fn healthz_returns_204_without_touching_db(pool: sqlx::PgPool) {
     let app = router(AppState::new(pool, false));
@@ -27,7 +27,7 @@ async fn healthz_returns_204_without_touching_db(pool: sqlx::PgPool) {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
-/// Readiness sí depende de la DB: con el pool sano responde 204.
+/// Readiness depends on the database: a healthy pool returns 204.
 #[sqlx::test]
 async fn readyz_returns_204_when_db_responds(pool: sqlx::PgPool) {
     let app = router(AppState::new(pool, false));
@@ -45,17 +45,17 @@ async fn readyz_returns_204_when_db_responds(pool: sqlx::PgPool) {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
-/// Readiness debe fallar con 503 si la DB no responde, no con 500 ni colgándose.
+/// Readiness must return 503 if the database is unreachable, not 500 or hang.
 #[tokio::test]
 async fn readyz_returns_503_when_db_is_unreachable() {
-    // Puerto cerrado a propósito: la conexión falla rápido y el pool queda
-    // sin conexiones utilizables.
+    // Deliberately closed port: the connection fails quickly and the pool has
+    // no usable connections.
     let unreachable = "postgres://organox:organox_dev_password@127.0.0.1:1/organox";
     let pool = sqlx::postgres::PgPoolOptions::new()
         .acquire_timeout(std::time::Duration::from_millis(500))
         .max_connections(1)
         .connect_lazy(unreachable)
-        .expect("connect_lazy no valida la conexión");
+        .expect("connect_lazy does not validate the connection");
 
     let app = router(AppState::new(pool, false));
 
@@ -72,7 +72,7 @@ async fn readyz_returns_503_when_db_is_unreachable() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
-/// Una ruta inexistente bajo /api/v1 no debe responder 2xx.
+/// An unknown route under /api/v1 must not return 2xx.
 #[sqlx::test]
 async fn unknown_api_route_returns_404(pool: sqlx::PgPool) {
     let app = router(AppState::new(pool, false));
@@ -90,7 +90,7 @@ async fn unknown_api_route_returns_404(pool: sqlx::PgPool) {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-/// El request id se genera y se propaga en la respuesta.
+/// The request ID is generated and propagated in the response.
 #[sqlx::test]
 async fn request_id_is_propagated(pool: sqlx::PgPool) {
     use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -111,20 +111,20 @@ async fn request_id_is_propagated(pool: sqlx::PgPool) {
 
     assert!(
         response.headers().get("x-request-id").is_some(),
-        "la respuesta debe traer x-request-id"
+        "the response must include x-request-id"
     );
 }
 
-/// `ping` es lo que usa readiness: debe funcionar contra una DB viva.
+/// Readiness uses `ping`: it must succeed against a live database.
 #[sqlx::test]
 async fn ping_succeeds_against_live_db(pool: sqlx::PgPool) {
-    db::ping(&pool).await.expect("el ping debe funcionar");
+    db::ping(&pool).await.expect("ping must succeed");
 }
 
-/// Contrato de errores: RFC 7807 exige `application/problem+json`.
+/// Error contract: RFC 7807 requires `application/problem+json`.
 ///
-/// Se verificó empíricamente que el backend respondía `application/json` y el
-/// header se agregó a mano; este test evita que vuelva a divergir del spec.
+/// The backend was observed returning `application/json` and the header was
+/// added manually; this test prevents it from diverging from the spec again.
 #[sqlx::test]
 async fn errors_use_problem_json_content_type(pool: sqlx::PgPool) {
     let app = router(AppState::new(pool, false));
@@ -144,25 +144,25 @@ async fn errors_use_problem_json_content_type(pool: sqlx::PgPool) {
     let header = response
         .headers()
         .get("content-type")
-        .expect("todo error debe declarar content-type")
+        .expect("every error must declare content-type")
         .to_str()
         .unwrap();
 
     assert_eq!(
         header, "application/problem+json",
-        "los errores deben usar el Content-Type de RFC 7807"
+        "errors must use the RFC 7807 Content-Type"
     );
 }
 
-/// La SPA se sirve en rutas no-API, y la API sigue devolviendo 404 JSON.
+/// The SPA is served on non-API routes, while the API still returns 404 JSON.
 ///
-/// Este test fija la distinción que rompía el frontend: un `fetch` a un endpoint
-/// inexistente NO debe recibir `index.html` con status 200.
+/// This test pins the distinction that broke the frontend: a `fetch` to an
+/// unknown endpoint must NOT receive `index.html` with status 200.
 #[sqlx::test]
 async fn spa_shell_served_outside_api(pool: sqlx::PgPool) {
     let app = router(AppState::new(pool, false));
 
-    // Ruta de la SPA: devuelve el cascarón (o 404 si el build no está hecho).
+    // SPA route: returns the shell (or 404 if it has not been built).
     let spa = app
         .clone()
         .oneshot(
@@ -175,11 +175,11 @@ async fn spa_shell_served_outside_api(pool: sqlx::PgPool) {
         .unwrap();
     assert!(
         spa.status() == StatusCode::OK || spa.status() == StatusCode::NOT_FOUND,
-        "la ruta de SPA no debe devolver error del servidor: {}",
+        "the SPA route must not return a server error: {}",
         spa.status()
     );
 
-    // Ruta de API inexistente: 404 problem+json, nunca HTML.
+    // Unknown API route: 404 problem+json, never HTML.
     let api = app
         .oneshot(
             Request::builder()
