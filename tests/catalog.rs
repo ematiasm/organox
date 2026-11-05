@@ -1,9 +1,11 @@
-//! Tests de integración del catálogo y del libro de stock.
+//! Catalog and stock ledger integration tests.
 //!
-//! Cubren los dos caminos donde el stock se calcula —el servicio en Rust y el
-//! `CASE` en SQL— y las reglas de negocio que no se pueden delegar al motor:
-//! stock negativo, servicio sin movimientos, y borrado con historial.
+//! These cover both stock calculations, in the Rust service and SQL `CASE`,
+//! and business rules that cannot be delegated to the engine: negative stock,
+//! services without movements, and deletion with history.
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use organox::AppState;
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
@@ -11,8 +13,6 @@ use organox::auth::{password, validation};
 use organox::catalog::model::{MovementReason, ProductKind};
 use organox::catalog::service::{self, CatalogError, CreateProductInput, RecordMovementInput};
 use organox::routes::router;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde_json::{Value, json};
@@ -21,13 +21,13 @@ use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
-const PASSWORD: &str = "contrasena-bastante-larga-123";
+const PASSWORD: &str = "password-long-enough-123";
 
 fn app(pool: PgPool) -> axum::Router {
     router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
 }
 
-/// Crea un usuario y devuelve su id, para usarlo como autor de movimientos.
+/// Creates a user and returns its ID for use as the movement author.
 async fn seed_user(pool: &PgPool, email: &str, role: Role) -> Uuid {
     let email = validation::ValidatedEmail::parse(email).expect("email");
     let hash = password::hash(PASSWORD).expect("hash");
@@ -40,7 +40,7 @@ async fn seed_user(pool: &PgPool, email: &str, role: Role) -> Uuid {
         },
     )
     .await
-    .expect("usuario")
+    .expect("user")
 }
 
 async fn seed_product(
@@ -61,7 +61,7 @@ async fn seed_product(
         },
     )
     .await
-    .expect("producto")
+    .expect("product")
 }
 
 async fn move_stock(
@@ -88,29 +88,29 @@ async fn move_stock(
 async fn stock_of(pool: &PgPool, product: Uuid) -> Decimal {
     service::get_product(pool, product)
         .await
-        .expect("producto")
+        .expect("product")
         .stock
-        .expect("un producto tiene stock")
+        .expect("a product has stock")
 }
 
-// --- Alta y validación --------------------------------------------------
+// --- Creation and validation --------------------------------------------
 
 #[sqlx::test]
 async fn creates_product_and_service(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
 
-    let product = seed_product(&pool, ProductKind::Product, "Harina 000", None).await;
-    let service = seed_product(&pool, ProductKind::Service, "Flete", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour 000", None).await;
+    let service = seed_product(&pool, ProductKind::Service, "Delivery", None).await;
 
     let product_view = service::get_product(&pool, product).await.unwrap();
     assert_eq!(product_view.product.kind, ProductKind::Product);
     assert_eq!(product_view.stock, Some(dec!(0)));
 
-    // Un servicio no tiene stock: None, no cero.
+    // A service has no stock: None, not zero.
     let service_view = service::get_product(&pool, service).await.unwrap();
     assert_eq!(service_view.stock, None);
 
-    // El actor existe y sigue siendo dueño del alta.
+    // The actor exists and remains the owner of the creation.
     assert_eq!(actor, actor);
 }
 
@@ -121,14 +121,14 @@ async fn service_cannot_have_min_stock(pool: PgPool) {
         CreateProductInput {
             kind: ProductKind::Service,
             sku: None,
-            name: "Flete".into(),
+            name: "Delivery".into(),
             description: None,
             price: None,
             min_stock: Some(dec!(5)),
         },
     )
     .await
-    .expect_err("un servicio no puede tener stock mínimo");
+    .expect_err("a service cannot have minimum stock");
 
     assert!(matches!(err, CatalogError::Validation(_)));
 
@@ -136,7 +136,7 @@ async fn service_cannot_have_min_stock(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count, 0, "el rechazo no debe dejar filas");
+    assert_eq!(count, 0, "rejection must leave no rows");
 }
 
 #[sqlx::test]
@@ -146,7 +146,7 @@ async fn duplicate_sku_is_rejected_without_partial_insert(pool: PgPool) {
         CreateProductInput {
             kind: ProductKind::Product,
             sku: Some("HAR-001".into()),
-            name: "Harina".into(),
+            name: "Flour".into(),
             description: None,
             price: None,
             min_stock: None,
@@ -160,14 +160,14 @@ async fn duplicate_sku_is_rejected_without_partial_insert(pool: PgPool) {
         CreateProductInput {
             kind: ProductKind::Product,
             sku: Some("HAR-001".into()),
-            name: "Otra harina".into(),
+            name: "Another flour".into(),
             description: None,
             price: None,
             min_stock: None,
         },
     )
     .await
-    .expect_err("sku duplicado");
+    .expect_err("duplicate SKU");
 
     assert!(matches!(err, CatalogError::SkuTaken));
 
@@ -180,8 +180,8 @@ async fn duplicate_sku_is_rejected_without_partial_insert(pool: PgPool) {
 
 #[sqlx::test]
 async fn multiple_products_without_sku_are_allowed(pool: PgPool) {
-    seed_product(&pool, ProductKind::Product, "Sin sku A", None).await;
-    seed_product(&pool, ProductKind::Product, "Sin sku B", None).await;
+    seed_product(&pool, ProductKind::Product, "Without SKU A", None).await;
+    seed_product(&pool, ProductKind::Product, "Without SKU B", None).await;
 
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM products WHERE sku IS NULL")
         .fetch_one(&pool)
@@ -190,12 +190,12 @@ async fn multiple_products_without_sku_are_allowed(pool: PgPool) {
     assert_eq!(count, 2);
 }
 
-// --- Libro de stock -----------------------------------------------------
+// --- Stock ledger -------------------------------------------------------
 
 #[sqlx::test]
 async fn stock_is_the_signed_sum_of_movements(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let product = seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
 
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(10))
         .await
@@ -217,7 +217,7 @@ async fn stock_is_the_signed_sum_of_movements(pool: PgPool) {
 #[sqlx::test]
 async fn sale_cannot_make_stock_negative(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let product = seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
 
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(2))
         .await
@@ -225,7 +225,7 @@ async fn sale_cannot_make_stock_negative(pool: PgPool) {
 
     let err = move_stock(&pool, actor, product, MovementReason::Sale, dec!(3))
         .await
-        .expect_err("no se puede vender más de lo que hay");
+        .expect_err("cannot sell more than available");
 
     match err {
         CatalogError::InsufficientStock {
@@ -235,10 +235,10 @@ async fn sale_cannot_make_stock_negative(pool: PgPool) {
             assert_eq!(available, dec!(2));
             assert_eq!(requested, dec!(3));
         }
-        other => panic!("error inesperado: {other:?}"),
+        other => panic!("unexpected error: {other:?}"),
     }
 
-    // El rechazo no dejó rastro: stock y cantidad de movimientos intactos.
+    // Rejection left no trace: stock and movement count are unchanged.
     assert_eq!(stock_of(&pool, product).await, dec!(2));
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM stock_movements")
         .fetch_one(&pool)
@@ -250,11 +250,11 @@ async fn sale_cannot_make_stock_negative(pool: PgPool) {
 #[sqlx::test]
 async fn service_cannot_receive_movements(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let service_id = seed_product(&pool, ProductKind::Service, "Flete", None).await;
+    let service_id = seed_product(&pool, ProductKind::Service, "Delivery", None).await;
 
     let err = move_stock(&pool, actor, service_id, MovementReason::Purchase, dec!(1))
         .await
-        .expect_err("un servicio no lleva stock");
+        .expect_err("a service has no stock");
 
     assert!(matches!(err, CatalogError::Validation(_)));
 
@@ -277,16 +277,16 @@ async fn movement_on_unknown_product_is_not_found(pool: PgPool) {
         dec!(1),
     )
     .await
-    .expect_err("producto inexistente");
+    .expect_err("unknown product");
 
     assert!(matches!(err, CatalogError::NotFound));
 }
 
-/// Sostiene la décima de la invariante: el libro es inmutable a nivel DB.
+/// Preserves the invariant: the ledger is immutable at the database level.
 #[sqlx::test]
 async fn movement_history_cannot_be_modified(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let product = seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(5))
         .await
         .unwrap();
@@ -294,12 +294,12 @@ async fn movement_history_cannot_be_modified(pool: PgPool) {
     let update = sqlx::query("UPDATE stock_movements SET quantity = 99")
         .execute(&pool)
         .await;
-    assert!(update.is_err(), "el libro no debe permitir UPDATE");
+    assert!(update.is_err(), "the ledger must not allow UPDATE");
 
     let delete = sqlx::query("DELETE FROM stock_movements")
         .execute(&pool)
         .await;
-    assert!(delete.is_err(), "el libro no debe permitir DELETE");
+    assert!(delete.is_err(), "the ledger must not allow DELETE");
 
     assert_eq!(stock_of(&pool, product).await, dec!(5));
 }
@@ -307,7 +307,7 @@ async fn movement_history_cannot_be_modified(pool: PgPool) {
 #[sqlx::test]
 async fn listing_movements_returns_signed_quantities_newest_first(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let product = seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
 
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(10))
         .await
@@ -319,25 +319,25 @@ async fn listing_movements_returns_signed_quantities_newest_first(pool: PgPool) 
     let rows = service::list_movements(&pool, product, 10).await.unwrap();
     assert_eq!(rows.len(), 2);
 
-    // La cantidad almacenada es positiva; el efecto se calcula.
+    // The stored quantity is positive; the effect is calculated.
     assert_eq!(rows[0].reason, MovementReason::Sale);
     assert_eq!(rows[0].quantity, dec!(4));
     assert_eq!(rows[0].signed_quantity, dec!(-4));
     assert_eq!(rows[1].signed_quantity, dec!(10));
 
-    // Autoría: el actor queda registrado.
+    // Authorship: the actor is recorded.
     assert_eq!(rows[0].created_by, Some(actor));
 }
 
-/// Producto y libro de stock en una transacción: si el INSERT del movimiento
-/// falla, el producto sigue sin stock y sin filas.
+/// Product and stock ledger in one transaction: if the movement INSERT fails,
+/// the product still has no stock and no movement rows.
 #[sqlx::test]
 async fn failed_movement_leaves_no_partial_state(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let product = seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
 
-    // Cantidad con más decimales de los que soporta la columna: rechazada en
-    // validación, antes de tocar la DB.
+    // A quantity with more decimals than the column supports is rejected during
+    // validation, before touching the database.
     let err = move_stock(
         &pool,
         actor,
@@ -346,7 +346,7 @@ async fn failed_movement_leaves_no_partial_state(pool: PgPool) {
         dec!(1.0004),
     )
     .await
-    .expect_err("precisión inválida");
+    .expect_err("invalid precision");
     assert!(matches!(err, CatalogError::Validation(_)));
 
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM stock_movements")
@@ -356,18 +356,18 @@ async fn failed_movement_leaves_no_partial_state(pool: PgPool) {
     assert_eq!(count, 0);
 }
 
-// --- Modificación y baja ------------------------------------------------
+// --- Update and deactivation --------------------------------------------
 
 #[sqlx::test]
 async fn update_changes_only_provided_fields(pool: PgPool) {
-    let product = seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
 
     service::update_product(
         &pool,
         product,
         service::UpdateProductInput {
             sku: None,
-            name: Some("Harina 0000".into()),
+            name: Some("Flour 0000".into()),
             description: None,
             price: None,
             min_stock: None,
@@ -378,8 +378,8 @@ async fn update_changes_only_provided_fields(pool: PgPool) {
     .unwrap();
 
     let view = service::get_product(&pool, product).await.unwrap();
-    assert_eq!(view.product.name, "Harina 0000");
-    // No se enviaron: siguen como estaban.
+    assert_eq!(view.product.name, "Flour 0000");
+    // Not provided: they remain unchanged.
     assert_eq!(view.product.price, Some(dec!(1000)));
     assert!(view.product.is_active);
 }
@@ -387,7 +387,7 @@ async fn update_changes_only_provided_fields(pool: PgPool) {
 #[sqlx::test]
 async fn deactivate_hides_from_default_list_but_keeps_history(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let product = seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(5))
         .await
         .unwrap();
@@ -399,16 +399,16 @@ async fn deactivate_hides_from_default_list_but_keeps_history(pool: PgPool) {
         .unwrap();
     assert!(
         visible.is_empty(),
-        "un producto inactivo no aparece por defecto"
+        "an inactive product does not appear by default"
     );
 
     let all = service::list_products(&pool, None, true, None, 50, 0)
         .await
         .unwrap();
     assert_eq!(all.len(), 1);
-    assert_eq!(all[0].stock, Some(dec!(5)), "el historial se conserva");
+    assert_eq!(all[0].stock, Some(dec!(5)), "history is preserved");
 
-    // La deactivación es idempotente.
+    // Deactivation is idempotent.
     service::deactivate_product(&pool, product).await.unwrap();
 }
 
@@ -416,17 +416,17 @@ async fn deactivate_hides_from_default_list_but_keeps_history(pool: PgPool) {
 async fn deactivating_unknown_product_is_not_found(pool: PgPool) {
     let err = service::deactivate_product(&pool, Uuid::now_v7())
         .await
-        .expect_err("no existe");
+        .expect_err("does not exist");
     assert!(matches!(err, CatalogError::NotFound));
 }
 
-// --- Filtros ------------------------------------------------------------
+// --- Filters ------------------------------------------------------------
 
 #[sqlx::test]
 async fn filters_by_kind_and_search(pool: PgPool) {
-    seed_product(&pool, ProductKind::Product, "Harina 000", None).await;
-    seed_product(&pool, ProductKind::Product, "Azúcar", None).await;
-    seed_product(&pool, ProductKind::Service, "Harina: molienda", None).await;
+    seed_product(&pool, ProductKind::Product, "Flour 000", None).await;
+    seed_product(&pool, ProductKind::Product, "Sugar", None).await;
+    seed_product(&pool, ProductKind::Service, "Flour: milling", None).await;
 
     let products = service::list_products(&pool, Some(ProductKind::Product), false, None, 50, 0)
         .await
@@ -439,9 +439,9 @@ async fn filters_by_kind_and_search(pool: PgPool) {
     assert_eq!(services.len(), 1);
     assert_eq!(services[0].stock, None);
 
-    // La búsqueda es case-insensitive e insensible a acentos no aplica: ILIKE
-    // resuelve mayúsculas, que es lo que se promete.
-    let found = service::list_products(&pool, None, false, Some("harina"), 50, 0)
+    // Search is case-insensitive, not accent-insensitive: ILIKE handles case,
+    // which is what is promised.
+    let found = service::list_products(&pool, None, false, Some("flour"), 50, 0)
         .await
         .unwrap();
     assert_eq!(found.len(), 2);
@@ -450,11 +450,11 @@ async fn filters_by_kind_and_search(pool: PgPool) {
 #[sqlx::test]
 async fn low_stock_flag_reflects_threshold(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let product = seed_product(&pool, ProductKind::Product, "Harina", Some(dec!(5))).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", Some(dec!(5))).await;
 
     let view = service::get_product(&pool, product).await.unwrap();
     let low = organox::catalog::model::is_low_stock(&view.product, view.stock);
-    assert_eq!(low, Some(true), "stock 0 por debajo del mínimo 5");
+    assert_eq!(low, Some(true), "stock 0 is below minimum 5");
 
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(20))
         .await
@@ -526,7 +526,7 @@ async fn http_flow_creates_product_and_moves_stock(pool: PgPool) {
                 .header("content-type", "application/json")
                 .header("cookie", format!("session={cookie}"))
                 .body(Body::from(
-                    json!({ "kind": "product", "name": "Harina 000", "price": "1500.50" })
+                    json!({ "kind": "product", "name": "Flour 000", "price": "1500.50" })
                         .to_string(),
                 ))
                 .unwrap(),
@@ -565,7 +565,7 @@ async fn http_flow_creates_product_and_moves_stock(pool: PgPool) {
         .unwrap();
 
     let body = body_json(fetched).await;
-    // Decimales como string: un float en JSON perdería precisión.
+    // Decimals as strings: a JSON float would lose precision.
     assert_eq!(body["stock"], "12.5");
     assert_eq!(body["price"], "1500.50");
     assert_eq!(body["kind"], "product");
@@ -584,7 +584,7 @@ async fn http_service_has_null_stock(pool: PgPool) {
                 .header("content-type", "application/json")
                 .header("cookie", format!("session={cookie}"))
                 .body(Body::from(
-                    json!({ "kind": "service", "name": "Flete" }).to_string(),
+                    json!({ "kind": "service", "name": "Delivery" }).to_string(),
                 ))
                 .unwrap(),
         )
@@ -605,7 +605,7 @@ async fn http_service_has_null_stock(pool: PgPool) {
         .unwrap();
 
     let body = body_json(fetched).await;
-    assert!(body["stock"].is_null(), "un servicio no tiene stock");
+    assert!(body["stock"].is_null(), "a service has no stock");
     assert!(body["low_stock"].is_null());
 }
 
@@ -632,7 +632,7 @@ async fn http_unknown_product_returns_404(pool: PgPool) {
 async fn http_insufficient_stock_returns_409(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
     let cookie = login_cookie(&pool, "a@pyme.com").await;
-    let product = seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(1))
         .await
         .unwrap();
@@ -659,12 +659,12 @@ async fn http_insufficient_stock_returns_409(pool: PgPool) {
 async fn http_list_returns_items_array(pool: PgPool) {
     seed_user(&pool, "a@pyme.com", Role::Owner).await;
     let cookie = login_cookie(&pool, "a@pyme.com").await;
-    seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    seed_product(&pool, ProductKind::Product, "Flour", None).await;
 
     let response = app(pool)
         .oneshot(
             Request::builder()
-                .uri("/api/v1/products?search=har")
+                .uri("/api/v1/products?search=flo")
                 .header("cookie", format!("session={cookie}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -675,7 +675,7 @@ async fn http_list_returns_items_array(pool: PgPool) {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["items"].as_array().unwrap().len(), 1);
-    assert_eq!(body["items"][0]["name"], "Harina");
+    assert_eq!(body["items"][0]["name"], "Flour");
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -685,28 +685,27 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).expect("json")
 }
 
-// --- Concurrencia -------------------------------------------------------
-/// El movimiento espera si otro proceso tiene la fila del producto bloqueada.
+// --- Concurrency --------------------------------------------------------
+/// The movement waits if another process holds the product row lock.
 ///
-/// ALCANCE REAL DE ESTE TEST (limitación conocida, no una virtud):
-/// prueba que la operación se serializa por producto, pero NO aísla el
-/// `SELECT ... FOR UPDATE` del servicio. El `INSERT` en `stock_movements`
-/// hace que la FK adquiera `FOR KEY SHARE` sobre la fila de `products`, y ese
-/// lock también conflicta con el `FOR UPDATE` del `blocker`. Se comprobó
-/// quitando el `FOR UPDATE` del servicio: este test seguía pasando.
+/// ACTUAL SCOPE (a known limitation, not a virtue): this proves the operation
+/// serializes per product, but does NOT isolate the service's `SELECT ... FOR
+/// UPDATE`. The `INSERT` into `stock_movements` makes the FK acquire `FOR KEY
+/// SHARE` on the `products` row, which also conflicts with the blocker's
+/// `FOR UPDATE`. Removing the service's `FOR UPDATE` still passed this test.
 ///
-/// Por lo tanto este test cubre la serialización, no la corrección del lock
-/// propio. Lo que sí cubre directo es `sale_cannot_make_stock_negative`
-/// (regla de negocio) y el CHECK de la DB.
+/// Thus this covers serialization, not correctness of the service's own lock.
+/// `sale_cannot_make_stock_negative` directly covers the business rule and the
+/// database CHECK.
 #[sqlx::test]
 async fn record_movement_waits_for_product_lock(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let product = seed_product(&pool, ProductKind::Product, "Harina", None).await;
+    let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(5))
         .await
         .unwrap();
 
-    // Un "otro proceso" toma exactamente el mismo lock que usa el servicio.
+    // An "other process" takes the same lock used by the service.
     let mut blocker = pool.begin().await.unwrap();
     sqlx::query("SELECT id FROM products WHERE id = $1 FOR UPDATE")
         .bind(product)
@@ -719,37 +718,37 @@ async fn record_movement_waits_for_product_lock(pool: PgPool) {
         move_stock(&worker_pool, actor, product, MovementReason::Sale, dec!(1)).await
     });
 
-    // Mientras el lock está tomado, el movimiento no puede completarse.
+    // While the lock is held, the movement cannot complete.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert!(
         !handle.is_finished(),
-        "el movimiento debe esperar el lock del producto; si terminó, \
-         el servicio no está serializando por producto"
+        "the movement must wait for the product lock; if it finished, \
+         the service is not serializing per product"
     );
 
-    // Liberado el lock, el movimiento avanza normalmente.
+    // Once the lock is released, the movement proceeds normally.
     blocker.commit().await.unwrap();
     let result = handle.await.unwrap();
     assert!(
         result.is_ok(),
-        "tras liberar el lock debe completarse: {result:?}"
+        "it must complete after releasing the lock: {result:?}"
     );
 
     assert_eq!(stock_of(&pool, product).await, dec!(4));
 }
 
-/// Contrato de entrada: los decimales se aceptan como string Y como número.
+/// Input contract: decimals are accepted as both strings AND numbers.
 ///
-/// Esto NO es un descuido: `rust_decimal` deserializa ambos, y el spec de
-/// OpenAPI documenta exactamente eso con `oneOf: [string, number]`. Si algún
-/// día se restringe a solo string, hay que romper este test a propósito y
-/// anotarlo en `odd/tasks/ui-admin.md`.
+/// This is NOT an oversight: `rust_decimal` deserializes both, and the OpenAPI
+/// spec documents exactly that with `oneOf: [string, number]`. If restricted to
+/// strings someday, deliberately break this test and note it in
+/// `odd/tasks/ui-admin.md`.
 #[sqlx::test]
 async fn decimal_inputs_accept_both_string_and_number(pool: PgPool) {
     seed_user(&pool, "a@pyme.com", Role::Owner).await;
     let cookie = login_cookie(&pool, "a@pyme.com").await;
 
-    // Como string.
+    // As a string.
     let as_string = app(pool.clone())
         .oneshot(
             Request::builder()
@@ -758,7 +757,7 @@ async fn decimal_inputs_accept_both_string_and_number(pool: PgPool) {
                 .header("content-type", "application/json")
                 .header("cookie", format!("session={cookie}"))
                 .body(Body::from(
-                    json!({ "kind": "product", "name": "Con string", "price": "1500.50" })
+                    json!({ "kind": "product", "name": "With a string", "price": "1500.50" })
                         .to_string(),
                 ))
                 .unwrap(),
@@ -767,7 +766,7 @@ async fn decimal_inputs_accept_both_string_and_number(pool: PgPool) {
         .unwrap();
     assert_eq!(as_string.status(), StatusCode::CREATED);
 
-    // Como número JSON.
+    // As a JSON number.
     let as_number = app(pool.clone())
         .oneshot(
             Request::builder()
@@ -776,7 +775,7 @@ async fn decimal_inputs_accept_both_string_and_number(pool: PgPool) {
                 .header("content-type", "application/json")
                 .header("cookie", format!("session={cookie}"))
                 .body(Body::from(
-                    json!({ "kind": "product", "name": "Con número", "price": 1500.50 })
+                    json!({ "kind": "product", "name": "With a number", "price": 1500.50 })
                         .to_string(),
                 ))
                 .unwrap(),
@@ -785,11 +784,11 @@ async fn decimal_inputs_accept_both_string_and_number(pool: PgPool) {
         .unwrap();
     assert_eq!(as_number.status(), StatusCode::CREATED);
 
-    // En la respuesta, SIEMPRE string: el numérico no gana precisión de vuelta.
+    // In the response, ALWAYS a string: numeric input does not regain precision.
     let list = app(pool)
         .oneshot(
             Request::builder()
-                .uri("/api/v1/products?search=número")
+                .uri("/api/v1/products?search=number")
                 .header("cookie", format!("session={cookie}"))
                 .body(Body::empty())
                 .unwrap(),

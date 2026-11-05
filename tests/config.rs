@@ -1,11 +1,11 @@
-//! Tests de configuración.
+//! Configuration tests.
 //!
-//! Un solo test deliberado: las variables de entorno son estado global del
-//! proceso, y varios tests que las mutan en paralelo se pisan entre sí.
+//! Deliberately one test: environment variables are process-global state,
+//! and tests that mutate them in parallel interfere with each other.
 
 use organox::config::{Config, LogFormat};
 
-/// Fija variables de entorno, corre `f` y restaura los valores previos.
+/// Sets environment variables, runs `f`, and restores their previous values.
 fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
     let keys: Vec<String> = vars.iter().map(|(k, _)| k.to_string()).collect();
     let previous: Vec<Option<String>> = keys.iter().map(|k| std::env::var(k).ok()).collect();
@@ -29,16 +29,16 @@ fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
 
 #[test]
 fn config_validates_environment() {
-    // 1. Sin DATABASE_URL: error explícito, no arranca.
+    // 1. Without DATABASE_URL: explicit error, no startup.
     with_env(&[("DATABASE_URL", None)], || {
-        let err = Config::from_env().expect_err("debe fallar sin DATABASE_URL");
+        let err = Config::from_env().expect_err("must fail without DATABASE_URL");
         assert!(
             err.to_string().contains("DATABASE_URL"),
-            "el error debe nombrar la variable faltante, fue: {err}"
+            "the error must name the missing variable, got: {err}"
         );
     });
 
-    // 2. Valores por defecto cuando solo está la URL obligatoria.
+    // 2. Defaults when only the required URL is set.
     with_env(
         &[
             ("DATABASE_URL", Some("postgres://localhost/x")),
@@ -47,44 +47,44 @@ fn config_validates_environment() {
             ("APP_RUST_LOG", None),
         ],
         || {
-            let config = Config::from_env().expect("config válida");
+            let config = Config::from_env().expect("valid config");
             assert_eq!(config.bind_addr.port(), 3000);
             assert_eq!(config.log_format, LogFormat::Pretty);
         },
     );
 
-    // 3. Formato JSON aceptado.
+    // 3. JSON format is accepted.
     with_env(
         &[
             ("DATABASE_URL", Some("postgres://localhost/x")),
             ("APP_LOG_FORMAT", Some("json")),
         ],
         || {
-            let config = Config::from_env().expect("config válida");
+            let config = Config::from_env().expect("valid config");
             assert_eq!(config.log_format, LogFormat::Json);
         },
     );
 
-    // 4. Formato inválido: error, no fallback silencioso.
+    // 4. Invalid format: error, no silent fallback.
     with_env(
         &[
             ("DATABASE_URL", Some("postgres://localhost/x")),
             ("APP_LOG_FORMAT", Some("yaml")),
         ],
         || {
-            let err = Config::from_env().expect_err("formato inválido debe fallar");
+            let err = Config::from_env().expect_err("invalid format must fail");
             assert!(err.to_string().contains("APP_LOG_FORMAT"));
         },
     );
 
-    // 5. Bind addr inválido: error, no default silencioso.
+    // 5. Invalid bind address: error, no silent default.
     with_env(
         &[
             ("DATABASE_URL", Some("postgres://localhost/x")),
-            ("APP_BIND_ADDR", Some("no-es-una-direccion")),
+            ("APP_BIND_ADDR", Some("not-an-address")),
         ],
         || {
-            let err = Config::from_env().expect_err("bind inválido debe fallar");
+            let err = Config::from_env().expect_err("invalid bind address must fail");
             assert!(err.to_string().contains("APP_BIND_ADDR"));
         },
     );

@@ -1,11 +1,11 @@
-//! Tests de integración de ventas.
+//! Sales integration tests.
 //!
-//! Lo que estos tests protegen, en orden de importancia:
-//!  1. Cobrar descuenta stock exactamente una vez.
-//!  2. Un cobro sin stock suficiente no deja NADA (ni movimientos, ni venta
-//!     cerrada, ni carrito modificado).
-//!  3. Un borrador abandonado nunca toca el libro de stock.
-//!  4. El total lo calcula el servidor.
+//! What these tests protect, in order of importance:
+//!  1. Completing a sale deducts stock exactly once.
+//!  2. A sale with insufficient stock leaves NOTHING (no movements, completed
+//!     sale, or modified cart).
+//!  3. An abandoned draft never touches the stock ledger.
+//!  4. The server calculates the total.
 
 use organox::AppState;
 use organox::auth::model::Role;
@@ -22,14 +22,14 @@ use sqlx::PgPool;
 use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
-const PASSWORD: &str = "contrasena-bastante-larga-123";
+const PASSWORD: &str = "password-long-enough-123";
 
 fn app(pool: PgPool) -> axum::Router {
     router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
 }
 
 async fn seed_user(pool: &PgPool) -> Uuid {
-    let email = validation::ValidatedEmail::parse("cajero@pyme.com").expect("email");
+    let email = validation::ValidatedEmail::parse("cashier@pyme.com").expect("email");
     let hash = password::hash(PASSWORD).expect("hash");
     repository::create_user(
         pool,
@@ -40,7 +40,7 @@ async fn seed_user(pool: &PgPool) -> Uuid {
         },
     )
     .await
-    .expect("usuario")
+    .expect("user")
 }
 
 async fn seed_product(pool: &PgPool, name: &str, price: Decimal) -> Uuid {
@@ -56,7 +56,7 @@ async fn seed_product(pool: &PgPool, name: &str, price: Decimal) -> Uuid {
         },
     )
     .await
-    .expect("producto")
+    .expect("product")
 }
 
 async fn seed_service(pool: &PgPool, name: &str, price: Decimal) -> Uuid {
@@ -72,7 +72,7 @@ async fn seed_service(pool: &PgPool, name: &str, price: Decimal) -> Uuid {
         },
     )
     .await
-    .expect("servicio")
+    .expect("service")
 }
 
 async fn stock(pool: &PgPool, actor: Uuid, product: Uuid, qty: Decimal) {
@@ -88,20 +88,20 @@ async fn stock(pool: &PgPool, actor: Uuid, product: Uuid, qty: Decimal) {
         },
     )
     .await
-    .expect("entrada de stock");
+    .expect("stock entry");
 }
 
 async fn current_stock(pool: &PgPool, product: Uuid) -> Decimal {
     catalog::get_product(pool, product)
         .await
-        .expect("producto")
+        .expect("product")
         .stock
         .expect("stock")
 }
 
-// --- Borrador -----------------------------------------------------------
+// --- Draft --------------------------------------------------------------
 
-/// Recargar la pantalla de venta no debe crear carritos nuevos.
+/// Reloading the sales screen must not create new carts.
 #[sqlx::test]
 async fn open_draft_reuses_the_open_one(pool: PgPool) {
     let actor = seed_user(&pool).await;
@@ -109,7 +109,7 @@ async fn open_draft_reuses_the_open_one(pool: PgPool) {
     let first = sales::open_draft(&pool, actor).await.unwrap();
     let second = sales::open_draft(&pool, actor).await.unwrap();
 
-    assert_eq!(first, second, "debe devolver el mismo borrador abierto");
+    assert_eq!(first, second, "must return the same open draft");
 
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM sales WHERE status = 'draft'")
         .fetch_one(&pool)
@@ -118,11 +118,11 @@ async fn open_draft_reuses_the_open_one(pool: PgPool) {
     assert_eq!(count, 1);
 }
 
-/// Después de cobrar, el siguiente `open_draft` sí crea uno nuevo.
+/// After completing a sale, the next `open_draft` creates a new draft.
 #[sqlx::test]
 async fn open_draft_creates_new_after_completion(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(100)).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
@@ -132,15 +132,15 @@ async fn open_draft_creates_new_after_completion(pool: PgPool) {
     sales::complete(&pool, draft, actor).await.unwrap();
 
     let next = sales::open_draft(&pool, actor).await.unwrap();
-    assert_ne!(draft, next, "tras cobrar, el siguiente borrador es nuevo");
+    assert_ne!(draft, next, "after completion, the next draft is new");
 }
 
-// --- Ítems --------------------------------------------------------------
+// --- Items --------------------------------------------------------------
 
 #[sqlx::test]
 async fn adding_the_same_product_sums_quantity_and_freezes_price(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(1500.50)).await;
+    let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
@@ -151,19 +151,19 @@ async fn adding_the_same_product_sums_quantity_and_freezes_price(pool: PgPool) {
         .await
         .unwrap();
 
-    assert_eq!(sale.item_count(), 1, "el mismo producto es una sola fila");
+    assert_eq!(sale.item_count(), 1, "the same product is a single row");
     assert_eq!(sale.items[0].quantity, dec!(5));
-    // El precio viene del producto y queda congelado en el ítem.
+    // The price comes from the product and is frozen in the item.
     assert_eq!(sale.items[0].unit_price, dec!(1500.50));
     assert_eq!(sale.total(), dec!(7502.50));
 }
 
-/// Cambiar el precio del producto NO cambia el total del carrito abierto: el
-/// ítem congeló el precio al agregarse.
+/// Changing the product price does NOT change the open cart total: the item
+/// froze the price when it was added.
 #[sqlx::test]
 async fn price_change_does_not_alter_an_open_draft(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(100)).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
@@ -187,18 +187,18 @@ async fn price_change_does_not_alter_an_open_draft(pool: PgPool) {
     .unwrap();
 
     let sale = sales::get(&pool, draft).await.unwrap();
-    assert_eq!(sale.total(), dec!(200), "el precio se congeló al agregar");
+    assert_eq!(sale.total(), dec!(200), "the price was frozen when added");
 }
 
 #[sqlx::test]
 async fn service_cannot_be_sold_as_item(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let service = seed_service(&pool, "Flete", dec!(8000)).await;
+    let service = seed_service(&pool, "Delivery", dec!(8000)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
     let err = sales::add_item(&pool, draft, service, dec!(1))
         .await
-        .expect_err("un servicio no lleva stock ni se vende como ítem");
+        .expect_err("a service has no stock and cannot be sold as an item");
 
     assert!(matches!(err, SalesError::ServiceNotSellable));
 
@@ -212,19 +212,19 @@ async fn service_cannot_be_sold_as_item(pool: PgPool) {
 #[sqlx::test]
 async fn quantity_must_be_positive(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(100)).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
     let err = sales::add_item(&pool, draft, product, dec!(0))
         .await
-        .expect_err("cantidad 0");
+        .expect_err("quantity 0");
     assert!(matches!(err, SalesError::QuantityNotPositive));
 }
 
 #[sqlx::test]
 async fn set_quantity_zero_removes_the_item(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(100)).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
@@ -239,12 +239,12 @@ async fn set_quantity_zero_removes_the_item(pool: PgPool) {
     assert_eq!(sale.total(), Decimal::ZERO);
 }
 
-// --- Cobro --------------------------------------------------------------
+// --- Completion ---------------------------------------------------------
 
 #[sqlx::test]
 async fn completing_a_sale_discounts_stock_exactly_once(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(1500.50)).await;
+    let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
@@ -261,8 +261,8 @@ async fn completing_a_sale_discounts_stock_exactly_once(pool: PgPool) {
     assert_eq!(sale.status, SaleStatus::Completed);
     assert!(sale.completed_at.is_some());
 
-    // Un solo movimiento de salida: cobrar dos veces el mismo borrador no es
-    // posible porque deja de ser editable.
+    // Only one outgoing movement: completing the same draft twice is impossible
+    // because it is no longer editable.
     let sale_movements: i64 =
         sqlx::query_scalar("SELECT count(*) FROM stock_movements WHERE reason = 'sale'")
             .fetch_one(&pool)
@@ -274,7 +274,7 @@ async fn completing_a_sale_discounts_stock_exactly_once(pool: PgPool) {
 #[sqlx::test]
 async fn completing_twice_is_rejected(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(100)).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
@@ -285,18 +285,18 @@ async fn completing_twice_is_rejected(pool: PgPool) {
 
     let err = sales::complete(&pool, draft, actor)
         .await
-        .expect_err("ya está cerrada");
+        .expect_err("already completed");
     assert!(matches!(err, SalesError::NotEditable));
 
-    // El stock se descontó una sola vez.
+    // Stock was deducted only once.
     assert_eq!(current_stock(&pool, product).await, dec!(9));
 }
 
-/// El test que más importa: sin stock, el cobro falla y **no deja nada**.
+/// The most important test: without stock, completion fails and **leaves nothing**.
 #[sqlx::test]
 async fn insufficient_stock_leaves_no_state_change(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(100)).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(2)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
@@ -306,7 +306,7 @@ async fn insufficient_stock_leaves_no_state_change(pool: PgPool) {
 
     let err = sales::complete(&pool, draft, actor)
         .await
-        .expect_err("no hay stock suficiente");
+        .expect_err("insufficient stock");
 
     match err {
         SalesError::InsufficientStock {
@@ -314,16 +314,16 @@ async fn insufficient_stock_leaves_no_state_change(pool: PgPool) {
             available,
             requested,
         } => {
-            assert_eq!(product_name, "Harina");
+            assert_eq!(product_name, "Flour");
             assert_eq!(available, dec!(2));
             assert_eq!(requested, dec!(5));
         }
-        other => panic!("error inesperado: {other:?}"),
+        other => panic!("unexpected error: {other:?}"),
     }
 
-    // Nada cambió: ni estado, ni stock, ni movimientos de venta.
+    // Nothing changed: status, stock, and sale movements are unchanged.
     let sale = sales::get(&pool, draft).await.unwrap();
-    assert_eq!(sale.status, SaleStatus::Draft, "sigue siendo borrador");
+    assert_eq!(sale.status, SaleStatus::Draft, "still a draft");
     assert_eq!(current_stock(&pool, product).await, dec!(2));
 
     let sale_movements: i64 =
@@ -334,27 +334,27 @@ async fn insufficient_stock_leaves_no_state_change(pool: PgPool) {
     assert_eq!(sale_movements, 0);
 }
 
-/// Caja A tiene que ver el borrador, no el stock descontado. Recién al cobrar
-/// baja el stock y por lo tanto el borrador de B pasa a ser inválido.
+/// Register A sees the draft, not deducted stock. Stock falls only upon
+/// completion, at which point B's draft becomes invalid.
 #[sqlx::test]
 async fn two_drafts_competing_for_the_last_units(pool: PgPool) {
     let actor_a = seed_user(&pool).await;
     let actor_b = {
-        let email = validation::ValidatedEmail::parse("caja2@pyme.com").unwrap();
+        let email = validation::ValidatedEmail::parse("register2@pyme.com").unwrap();
         let hash = password::hash(PASSWORD).unwrap();
         repository::create_user(
             &pool,
             NewUser {
                 email: &email,
                 password_hash: &hash,
-                role: Role::Encargado,
+                role: Role::Manager,
             },
         )
         .await
         .unwrap()
     };
 
-    let product = seed_product(&pool, "Última unidad", dec!(500)).await;
+    let product = seed_product(&pool, "Last unit", dec!(500)).await;
     stock(&pool, actor_a, product, dec!(1)).await;
 
     let draft_a = sales::open_draft(&pool, actor_a).await.unwrap();
@@ -366,14 +366,14 @@ async fn two_drafts_competing_for_the_last_units(pool: PgPool) {
         .await
         .unwrap();
 
-    // A cobra: gana.
+    // A completes the sale: it wins.
     sales::complete(&pool, draft_a, actor_a).await.unwrap();
     assert_eq!(current_stock(&pool, product).await, dec!(0));
 
-    // B no puede cobrar: la unidad ya salió.
+    // B cannot complete the sale: the unit is already gone.
     let err = sales::complete(&pool, draft_b, actor_b)
         .await
-        .expect_err("ya no queda stock");
+        .expect_err("no stock remains");
     assert!(matches!(err, SalesError::InsufficientStock { .. }));
 }
 
@@ -384,16 +384,16 @@ async fn empty_sale_cannot_be_completed(pool: PgPool) {
 
     let err = sales::complete(&pool, draft, actor)
         .await
-        .expect_err("carrito vacío");
+        .expect_err("empty cart");
     assert!(matches!(err, SalesError::EmptySale));
 }
 
-/// Un borrador abandonado nunca tocó el libro de stock. Es la virtud de no
-/// descontar hasta cobrar.
+/// An abandoned draft never touches the stock ledger: stock is not deducted
+/// until completion.
 #[sqlx::test]
 async fn abandoned_draft_never_touches_stock_ledger(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(100)).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
@@ -415,7 +415,7 @@ async fn abandoned_draft_never_touches_stock_ledger(pool: PgPool) {
 #[sqlx::test]
 async fn cancelling_a_completed_sale_is_rejected(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(100)).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
     let draft = sales::open_draft(&pool, actor).await.unwrap();
@@ -424,14 +424,16 @@ async fn cancelling_a_completed_sale_is_rejected(pool: PgPool) {
         .unwrap();
     sales::complete(&pool, draft, actor).await.unwrap();
 
-    let err = sales::cancel(&pool, draft).await.expect_err("ya cobrada");
+    let err = sales::cancel(&pool, draft)
+        .await
+        .expect_err("already completed");
     assert!(matches!(err, SalesError::NotEditable));
 }
 
 #[sqlx::test]
 async fn completed_sales_are_listed_newest_first(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(100)).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
     for _ in 0..2 {
@@ -465,7 +467,7 @@ async fn login_cookie(pool: &PgPool) -> String {
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
-                    serde_json::json!({ "email": "cajero@pyme.com", "password": PASSWORD })
+                    serde_json::json!({ "email": "cashier@pyme.com", "password": PASSWORD })
                         .to_string(),
                 ))
                 .unwrap(),
@@ -493,11 +495,11 @@ async fn http_sale_flow_returns_server_computed_total(pool: PgPool) {
     use tower::ServiceExt;
 
     seed_user(&pool).await;
-    let product = seed_product(&pool, "Harina", dec!(1500.50)).await;
-    // `query` sin macro: no necesita cache de `.sqlx/` y este test solo
-    // necesita un id, no verificación de tipos de la consulta.
+    let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
+    // `query` without a macro needs no `.sqlx/` cache; this test only needs
+    // an ID, not query type checking.
     let actor: uuid::Uuid =
-        sqlx::query_scalar("SELECT id FROM users WHERE email = 'cajero@pyme.com'")
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'cashier@pyme.com'")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -545,7 +547,7 @@ async fn http_sale_flow_returns_server_computed_total(pool: PgPool) {
     )
     .unwrap();
 
-    // Decimales como string, con el total calculado por el servidor.
+    // Decimals as strings, with the total calculated by the server.
     assert_eq!(sale["total"], "3001.00");
     assert_eq!(sale["item_count"], 1);
     assert_eq!(sale["items"][0]["subtotal"], "3001.00");
