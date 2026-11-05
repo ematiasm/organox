@@ -50,6 +50,34 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # `clippy` only notices a *missing* cache entry. It happily compiles
+      # against stale or orphaned ones, which is how a query change ships with
+      # a `.sqlx/` that no longer describes it. `prepare --check` compares the
+      # whole cache against the queries, and needs no database: with
+      # SQLX_OFFLINE it reads `.sqlx/`, exactly like the macros do.
+      #
+      # The CLI is installed to its own root and cached, because it takes ~25s
+      # to build and it is not in taiki-e/install-action's prebuilt list.
+      # Version pinned to the `sqlx` crate in Cargo.lock; bump them together.
+      - name: Cache sqlx-cli
+        id: sqlx-cli-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/sqlx-cli
+          key: sqlx-cli-0.8.6-postgres-rustls
+
+      - name: Install sqlx-cli
+        if: steps.sqlx-cli-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install sqlx-cli --version 0.8.6 --locked \
+            --no-default-features --features postgres,rustls \
+            --root ~/.local/sqlx-cli
+
+      - name: The sqlx cache matches the queries
+        run: |
+          export PATH="$HOME/.local/sqlx-cli/bin:$PATH"
+          cargo sqlx prepare --check --workspace
+
   test:
     name: Tests
     runs-on: ubuntu-latest
