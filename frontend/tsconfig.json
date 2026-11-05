@@ -1,0 +1,23 @@
+{
+	"extends": "$app/tsconfig",
+	"include": ["src", "test", "*"],
+	"exclude": ["src/service-worker"],
+	"compilerOptions": {
+		"allowJs": true,
+		"checkJs": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"skipLibCheck": true,
+		"sourceMap": true,
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		// SvelteKit 3 eliminó `$lib`. Se redefine acá (paths) y en
+		// `vite.config.ts` (resolve.alias), que son las dos capas que lo
+		// necesitan: svelte-check lee el tsconfig, Vite resuelve en dev/build.
+		"paths": {
+			"$lib": ["./src/lib"],
+			"$lib/*": ["./src/lib/*"]
+		}
+	}
+}
