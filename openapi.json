@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "organox",
-    "description": "Administrador de negocio para una PyME (stock e insumos). Single-tenant.\n\n**Autenticación**: salvo `POST /api/v1/auth/login`, toda ruta requiere la cookie de sesión `session` (HttpOnly, SameSite=Strict). Sin ella devuelve `401`.\n\n**Errores**: todas las respuestas de error usan `application/problem+json` (RFC 7807). El `429` incluye además el header `Retry-After` en segundos.\n\n**Decimales**: viajan siempre como **string** (`\"1500.50\"`, `\"12.5\"`), nunca como número, para no perder precisión.",
+    "description": "Business administration for a small or medium enterprise (stock and supplies). Single-tenant.\n\n**Authentication**: except `POST /api/v1/auth/login`, every route requires the `session` cookie (HttpOnly, SameSite=Strict). Without it, routes return `401`.\n\n**Errors**: all error responses use `application/problem+json` (RFC 7807). A `429` also includes the `Retry-After` header in seconds.\n\n**Decimals**: always transmitted as **strings** (`\"1500.50\"`, `\"12.5\"`), never numbers, to avoid losing precision.",
     "license": {
       "name": ""
     },
@@ -14,8 +14,8 @@
         "tags": [
           "auth"
         ],
-        "summary": "Inicia sesión.",
-        "description": "Devuelve la cookie `session` (HttpOnly, SameSite=Strict) y el usuario.\n\n`429` significa cuenta bloqueada por intentos fallidos; incluye\n`Retry-After` con los segundos que faltan.",
+        "summary": "Log in.",
+        "description": "Returns the `session` cookie (HttpOnly, SameSite=Strict) and the user.\n\n`429` means the account is locked after failed attempts; includes\n`Retry-After` with the remaining seconds.",
         "operationId": "login_doc",
         "requestBody": {
           "content": {
@@ -29,7 +29,7 @@
         },
         "responses": {
           "200": {
-            "description": "Sesión iniciada",
+            "description": "Session started",
             "headers": {
               "Set-Cookie": {
                 "schema": {
@@ -47,7 +47,7 @@
             }
           },
           "401": {
-            "description": "Credenciales inválidas",
+            "description": "Invalid credentials",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -57,13 +57,13 @@
             }
           },
           "429": {
-            "description": "Cuenta bloqueada por intentos fallidos",
+            "description": "Account locked after failed attempts",
             "headers": {
               "Retry-After": {
                 "schema": {
                   "type": "string"
                 },
-                "description": "Segundos hasta poder reintentar"
+                "description": "Seconds until retry"
               }
             },
             "content": {
@@ -82,14 +82,14 @@
         "tags": [
           "auth"
         ],
-        "summary": "Cierra la sesión en el servidor, no solo en el cliente.",
+        "summary": "End the session on the server, not just the client.",
         "operationId": "logout_doc",
         "responses": {
           "204": {
-            "description": "Sesión borrada"
+            "description": "Session deleted"
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -106,11 +106,11 @@
         "tags": [
           "auth"
         ],
-        "summary": "Usuario autenticado en la request actual.",
+        "summary": "Authenticated user in the current request.",
         "operationId": "me_doc",
         "responses": {
           "200": {
-            "description": "Usuario actual",
+            "description": "Current user",
             "content": {
               "application/json": {
                 "schema": {
@@ -120,7 +120,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión o sesión vencida",
+            "description": "No session or expired session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -137,7 +137,7 @@
         "tags": [
           "catalog"
         ],
-        "summary": "Lista el catálogo con el stock calculado.",
+        "summary": "List the catalog with calculated stock.",
         "operationId": "list_products_doc",
         "parameters": [
           {
@@ -201,7 +201,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Página de productos",
+            "description": "Product page",
             "content": {
               "application/json": {
                 "schema": {
@@ -211,7 +211,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -226,8 +226,8 @@
         "tags": [
           "catalog"
         ],
-        "summary": "Crea un producto o un servicio.",
-        "description": "Un servicio no lleva stock: `min_stock` se rechaza con 422.",
+        "summary": "Create a product or service.",
+        "description": "A service does not track stock: `min_stock` is rejected with 422.",
         "operationId": "create_product_doc",
         "requestBody": {
           "content": {
@@ -241,7 +241,7 @@
         },
         "responses": {
           "201": {
-            "description": "Producto creado",
+            "description": "Product created",
             "content": {
               "application/json": {
                 "schema": {
@@ -251,7 +251,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -261,7 +261,7 @@
             }
           },
           "409": {
-            "description": "El SKU ya está en uso",
+            "description": "SKU is already in use",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -271,7 +271,7 @@
             }
           },
           "422": {
-            "description": "Entrada inválida",
+            "description": "Invalid input",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -288,14 +288,14 @@
         "tags": [
           "catalog"
         ],
-        "summary": "Detalle de un producto, con su stock actual calculado.",
-        "description": "`stock` es `null` para servicios: no aplica, no es cero.",
+        "summary": "Product details, including calculated current stock.",
+        "description": "`stock` is `null` for services: not applicable, not zero.",
         "operationId": "get_product_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id del producto",
+            "description": "Product ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -305,7 +305,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Producto",
+            "description": "Product",
             "content": {
               "application/json": {
                 "schema": {
@@ -315,7 +315,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -325,7 +325,7 @@
             }
           },
           "404": {
-            "description": "No existe",
+            "description": "Not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -340,13 +340,13 @@
         "tags": [
           "catalog"
         ],
-        "summary": "Actualiza solo los campos enviados.",
+        "summary": "Update only the fields sent.",
         "operationId": "update_product_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id del producto",
+            "description": "Product ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -366,10 +366,10 @@
         },
         "responses": {
           "204": {
-            "description": "Actualizado"
+            "description": "Updated"
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -379,7 +379,7 @@
             }
           },
           "404": {
-            "description": "No existe",
+            "description": "Not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -389,7 +389,7 @@
             }
           },
           "422": {
-            "description": "Entrada inválida",
+            "description": "Invalid input",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -406,13 +406,13 @@
         "tags": [
           "catalog"
         ],
-        "summary": "Baja lógica. Idempotente. Nunca borra: un producto con movimientos conserva\nsu historial.",
+        "summary": "Soft deletion. Idempotent. Never deletes: a product with movements retains\nits history.",
         "operationId": "deactivate_product_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id del producto",
+            "description": "Product ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -422,10 +422,10 @@
         ],
         "responses": {
           "204": {
-            "description": "Desactivado"
+            "description": "Deactivated"
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -435,7 +435,7 @@
             }
           },
           "404": {
-            "description": "No existe",
+            "description": "Not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -452,13 +452,13 @@
         "tags": [
           "catalog"
         ],
-        "summary": "Historial de movimientos, más nuevo primero.",
+        "summary": "Movement history, newest first.",
         "operationId": "list_movements_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id del producto",
+            "description": "Product ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -480,7 +480,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Movimientos",
+            "description": "Movements",
             "content": {
               "application/json": {
                 "schema": {
@@ -493,7 +493,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -508,14 +508,14 @@
         "tags": [
           "catalog"
         ],
-        "summary": "Registra un movimiento de stock.",
-        "description": "`quantity` es siempre positiva; el signo lo determina `reason`. Una salida\nque dejaría el stock negativo se rechaza con 409.",
+        "summary": "Record a stock movement.",
+        "description": "`quantity` is always positive; `reason` determines the sign. An outflow\nthat would leave stock negative is rejected with 409.",
         "operationId": "record_movement_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id del producto",
+            "description": "Product ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -535,7 +535,7 @@
         },
         "responses": {
           "201": {
-            "description": "Movimiento registrado",
+            "description": "Movement recorded",
             "content": {
               "application/json": {
                 "schema": {
@@ -545,7 +545,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -555,7 +555,7 @@
             }
           },
           "404": {
-            "description": "El producto no existe",
+            "description": "Product not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -565,7 +565,7 @@
             }
           },
           "409": {
-            "description": "Stock insuficiente",
+            "description": "Insufficient stock",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -575,7 +575,7 @@
             }
           },
           "422": {
-            "description": "Entrada inválida o servicio sin stock",
+            "description": "Invalid input or service without stock",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -592,11 +592,11 @@
         "tags": [
           "sales"
         ],
-        "summary": "Últimas ventas cobradas.",
+        "summary": "Latest completed sales.",
         "operationId": "list_sales_doc",
         "responses": {
           "200": {
-            "description": "Ventas completadas",
+            "description": "Completed sales",
             "content": {
               "application/json": {
                 "schema": {
@@ -609,7 +609,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -626,12 +626,12 @@
         "tags": [
           "sales"
         ],
-        "summary": "Abre un borrador de venta, o devuelve el que ya estaba abierto.",
-        "description": "Un usuario tiene **un** borrador a la vez: recargar la pantalla de venta no\ncrea carritos nuevos.",
+        "summary": "Open a sale draft, or return the one already open.",
+        "description": "A user has **one** draft at a time: reloading the sale screen does not\ncreate new carts.",
         "operationId": "open_draft_doc",
         "responses": {
           "200": {
-            "description": "Se reutilizó el borrador abierto",
+            "description": "Open draft reused",
             "content": {
               "application/json": {
                 "schema": {
@@ -641,7 +641,7 @@
             }
           },
           "201": {
-            "description": "Borrador nuevo",
+            "description": "New draft",
             "content": {
               "application/json": {
                 "schema": {
@@ -651,7 +651,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -668,13 +668,13 @@
         "tags": [
           "sales"
         ],
-        "summary": "Venta con sus ítems y el total calculado por el servidor.",
+        "summary": "Sale with its items and server-calculated total.",
         "operationId": "get_sale_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id de la venta",
+            "description": "Sale ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -684,7 +684,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Venta",
+            "description": "Sale",
             "content": {
               "application/json": {
                 "schema": {
@@ -694,7 +694,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -704,7 +704,7 @@
             }
           },
           "404": {
-            "description": "No existe",
+            "description": "Not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -721,13 +721,13 @@
         "tags": [
           "sales"
         ],
-        "summary": "Cancela un borrador. No toca el libro de stock, porque nunca lo tocó.",
+        "summary": "Cancel a draft. Does not touch the stock ledger, because it never did.",
         "operationId": "cancel_sale_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id de la venta",
+            "description": "Sale ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -737,10 +737,10 @@
         ],
         "responses": {
           "204": {
-            "description": "Borrador cancelado"
+            "description": "Draft cancelled"
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -750,7 +750,7 @@
             }
           },
           "404": {
-            "description": "No existe",
+            "description": "Not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -760,7 +760,7 @@
             }
           },
           "409": {
-            "description": "La venta ya no es editable",
+            "description": "Sale is no longer editable",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -777,14 +777,14 @@
         "tags": [
           "sales"
         ],
-        "summary": "Cobra la venta.",
-        "description": "En una sola transacción: valida stock con la fila del producto bloqueada,\nescribe un movimiento de salida por ítem y cierra la venta. Si falta stock,\nrechaza con 409 y **no** deja movimientos ni cambia el estado.",
+        "summary": "Complete the sale.",
+        "description": "In one transaction: validate stock with the product row locked, write an\noutflow movement per item and close the sale. If stock is insufficient,\nreject with 409 and leave **no** movements or status change.",
         "operationId": "complete_sale_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id de la venta",
+            "description": "Sale ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -794,7 +794,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Venta cobrada",
+            "description": "Sale completed",
             "content": {
               "application/json": {
                 "schema": {
@@ -804,7 +804,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -814,7 +814,7 @@
             }
           },
           "404": {
-            "description": "No existe",
+            "description": "Not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -824,7 +824,7 @@
             }
           },
           "409": {
-            "description": "Stock insuficiente o venta ya cerrada",
+            "description": "Insufficient stock or sale already closed",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -834,7 +834,7 @@
             }
           },
           "422": {
-            "description": "La venta está vacía",
+            "description": "Sale is empty",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -851,14 +851,14 @@
         "tags": [
           "sales"
         ],
-        "summary": "Agrega un producto al borrador. Si ya estaba, suma la cantidad.",
-        "description": "Devuelve la venta recalculada: el cliente no suma nada.",
+        "summary": "Add a product to the draft. If already present, add the quantity.",
+        "description": "Returns the recalculated sale: the client does not add anything.",
         "operationId": "add_item_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id de la venta",
+            "description": "Sale ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -878,7 +878,7 @@
         },
         "responses": {
           "200": {
-            "description": "Venta actualizada",
+            "description": "Sale updated",
             "content": {
               "application/json": {
                 "schema": {
@@ -888,7 +888,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -898,7 +898,7 @@
             }
           },
           "404": {
-            "description": "Venta o producto inexistente",
+            "description": "Sale or product not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -908,7 +908,7 @@
             }
           },
           "409": {
-            "description": "La venta ya está cerrada",
+            "description": "Sale is already closed",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -918,7 +918,7 @@
             }
           },
           "422": {
-            "description": "Cantidad inválida o el ítem es un servicio",
+            "description": "Invalid quantity or item is a service",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -935,13 +935,13 @@
         "tags": [
           "sales"
         ],
-        "summary": "Fija la cantidad de un ítem. Cantidad 0 lo quita.",
+        "summary": "Set an item's quantity. Quantity 0 removes it.",
         "operationId": "set_quantity_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id de la venta",
+            "description": "Sale ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -951,7 +951,7 @@
           {
             "name": "product_id",
             "in": "path",
-            "description": "Id del producto",
+            "description": "Product ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -971,7 +971,7 @@
         },
         "responses": {
           "200": {
-            "description": "Venta actualizada",
+            "description": "Sale updated",
             "content": {
               "application/json": {
                 "schema": {
@@ -981,7 +981,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -991,7 +991,7 @@
             }
           },
           "404": {
-            "description": "Venta o producto inexistente",
+            "description": "Sale or product not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1001,7 +1001,7 @@
             }
           },
           "409": {
-            "description": "La venta ya está cerrada",
+            "description": "Sale is already closed",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1016,13 +1016,13 @@
         "tags": [
           "sales"
         ],
-        "summary": "Quita un ítem del borrador.",
+        "summary": "Remove an item from the draft.",
         "operationId": "remove_item_doc",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Id de la venta",
+            "description": "Sale ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -1032,7 +1032,7 @@
           {
             "name": "product_id",
             "in": "path",
-            "description": "Id del producto",
+            "description": "Product ID",
             "required": true,
             "schema": {
               "type": "string",
@@ -1042,7 +1042,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Venta actualizada",
+            "description": "Sale updated",
             "content": {
               "application/json": {
                 "schema": {
@@ -1052,7 +1052,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1062,7 +1062,7 @@
             }
           },
           "404": {
-            "description": "Venta o producto inexistente",
+            "description": "Sale or product not found",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1079,7 +1079,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "Crea un usuario. Solo `owner`.",
+        "summary": "Create a user. Only `owner`.",
         "operationId": "create_user_doc",
         "requestBody": {
           "content": {
@@ -1093,7 +1093,7 @@
         },
         "responses": {
           "201": {
-            "description": "Usuario creado",
+            "description": "User created",
             "content": {
               "application/json": {
                 "schema": {
@@ -1103,7 +1103,7 @@
             }
           },
           "401": {
-            "description": "Sin sesión",
+            "description": "No session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1113,7 +1113,7 @@
             }
           },
           "403": {
-            "description": "El rol no permite gestionar usuarios",
+            "description": "Role does not permit managing users",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1123,7 +1123,7 @@
             }
           },
           "409": {
-            "description": "El email ya está registrado",
+            "description": "Email is already registered",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1133,7 +1133,7 @@
             }
           },
           "422": {
-            "description": "Entrada inválida (email o contraseña)",
+            "description": "Invalid input (email or password)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1225,7 +1225,7 @@
               "string",
               "null"
             ],
-            "description": "Se documenta como `string` aunque el servidor también acepte números:\n`rust_decimal` deserializa ambos, pero el contrato que el frontend debe\nusar —y el único que preserva precisión— es el string. Ver\n`docs/api-contract.md`.",
+            "description": "Documented as `string` although the server also accepts numbers:\n`rust_decimal` deserializes both, but the frontend contract—and the only\none preserving precision—is the string. See `docs/api-contract.md`.",
             "example": "1500.50"
           },
           "sku": {
@@ -1280,7 +1280,7 @@
           },
           "reused": {
             "type": "boolean",
-            "description": "`true` si se reutilizó el borrador que ya estaba abierto."
+            "description": "`true` if the existing open draft was reused."
           }
         }
       },
@@ -1329,7 +1329,7 @@
       },
       "MovementReason": {
         "type": "string",
-        "description": "Por qué se movió el stock.",
+        "description": "Why stock was moved.",
         "enum": [
           "purchase",
           "sale",
@@ -1376,7 +1376,7 @@
           },
           "signed_quantity": {
             "type": "string",
-            "description": "La cantidad con signo: es lo que el cliente necesita para mostrar el\nefecto en el stock sin replicar la regla de signos."
+            "description": "Signed quantity: what the client needs to show the stock effect without\nreplicating the sign rule."
           },
           "unit_cost": {
             "type": [
@@ -1388,7 +1388,7 @@
       },
       "Problem": {
         "type": "object",
-        "description": "Cuerpo de error RFC 7807. Mismo shape para todos los códigos.",
+        "description": "RFC 7807 error body. Same shape for every status code.",
         "required": [
           "type",
           "title",
@@ -1398,31 +1398,31 @@
         "properties": {
           "detail": {
             "type": "string",
-            "description": "Explicación accionable para el usuario.",
-            "example": "Credenciales inválidas o sesión vencida."
+            "description": "Actionable explanation for the user.",
+            "example": "Invalid credentials or expired session."
           },
           "status": {
             "type": "integer",
             "format": "int32",
-            "description": "Código HTTP, repetido en el cuerpo para clientes que no leen headers.",
+            "description": "HTTP status, repeated in the body for clients that do not read headers.",
             "example": 401,
             "minimum": 0
           },
           "title": {
             "type": "string",
-            "description": "Resumen legible y estable del problema.",
+            "description": "Human-readable, stable summary of the problem.",
             "example": "Unauthorized"
           },
           "type": {
             "type": "string",
-            "description": "URI que identifica el tipo de problema. Siempre `about:blank` hoy.",
+            "description": "URI identifying the problem type. Currently always `about:blank`.",
             "example": "about:blank"
           }
         }
       },
       "ProductKind": {
         "type": "string",
-        "description": "Un ítem del catálogo puede llevar stock o no.",
+        "description": "A catalog item may or may not track stock.",
         "enum": [
           "product",
           "service"
@@ -1488,7 +1488,7 @@
               "boolean",
               "null"
             ],
-            "description": "`null` cuando no aplica (servicio) o no hay umbral configurado."
+            "description": "`null` when not applicable (service) or no threshold is configured."
           },
           "min_stock": {
             "type": [
@@ -1504,7 +1504,7 @@
               "string",
               "null"
             ],
-            "description": "String, no número: un `float` en JSON pierde precisión en dinero y en\ncantidades fraccionarias. El cliente lo parsea como decimal."
+            "description": "String, not number: a JSON `float` loses precision for money and\nfractional quantities. The client parses it as a decimal."
           },
           "sku": {
             "type": [
@@ -1517,7 +1517,7 @@
               "string",
               "null"
             ],
-            "description": "`null` para servicios: no es cero, es \"no aplica\"."
+            "description": "`null` for services: not zero, but \"not applicable\"."
           },
           "updated_at": {
             "type": "string",
@@ -1558,7 +1558,7 @@
         "type": "string",
         "enum": [
           "owner",
-          "encargado"
+          "manager"
         ]
       },
       "SaleItemResponse": {
@@ -1580,7 +1580,7 @@
           },
           "quantity": {
             "type": "string",
-            "description": "Cantidad como string: `numeric(12,3)` no cabe en un float sin perder\nprecisión en cantidades fraccionarias."
+            "description": "Quantity as a string: `numeric(12,3)` does not fit in a float without\nlosing precision for fractional quantities."
           },
           "subtotal": {
             "type": "string"
@@ -1631,7 +1631,7 @@
           },
           "total": {
             "type": "string",
-            "description": "Calculado en el servidor. El cliente lo muestra, no lo decide."
+            "description": "Calculated on the server. The client displays it, not decides it."
           }
         }
       },
@@ -1723,15 +1723,15 @@
   "tags": [
     {
       "name": "auth",
-      "description": "Sesión y usuarios"
+      "description": "Sessions and users"
     },
     {
       "name": "catalog",
-      "description": "Productos, servicios y libro de stock"
+      "description": "Products, services and stock ledger"
     },
     {
       "name": "sales",
-      "description": "Carrito persistido y cobro"
+      "description": "Persisted cart and checkout"
     }
   ]
 }
