@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sales\n        SET total = COALESCE((\n            SELECT SUM(quantity * unit_price) FROM sale_items WHERE sale_id = $1\n        ), 0)\n        WHERE id = $1\n        RETURNING COALESCE(total, 0) AS \"total!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total!",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "94f06e44e0c479684256ebfa1deeaeaebc730fb157ef46b431feec82fc20be34"
+}

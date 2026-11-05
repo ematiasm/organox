@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE login_attempts\n                SET failed_count = 0,\n                    blocked_until = NULL,\n                    window_start = now(),\n                    updated_at = now()\n                WHERE email = $1\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4f3bcef81c5cea3933fd4e641f76e9da27ea64258e2059899d65316455d0da06"
+}

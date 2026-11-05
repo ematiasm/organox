@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO sessions (token_hash, user_id, user_agent, expires_at)\n        VALUES ($1, $2, $3, now() + make_interval(secs => $4))\n        RETURNING expires_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Uuid",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "45e64128fb1bce60ee88849e2b413da936926c15381cb0a517b9aabeed5b2b42"
+}

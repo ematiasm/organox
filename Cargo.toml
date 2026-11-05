@@ -1,0 +1,43 @@
+[package]
+name = "admin-app"
+version = "0.1.0"
+edition = "2024"
+publish = false
+default-run = "admin-app"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "request-id", "timeout", "limit", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+sqlx = { version = "0.8", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls-ring",
+  "postgres",
+  "uuid",
+  "chrono",
+  "rust_decimal",
+  "migrate",
+  "macros",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+argon2 = { version = "0.6", features = ["zeroize"] }
+sha2 = "0.11"
+base64 = "0.23"
+tower-cookies = "0.11"
+clap = { version = "4", features = ["derive", "env"] }
+rpassword = "7"
+getrandom = "0.3"
+rust_decimal = "1"
+utoipa = { version = "6", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "10", default-features = false, features = ["axum"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rust_decimal_macros = "1"

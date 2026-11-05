@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sessions\n        SET last_used_at = now(),\n            expires_at = LEAST(\n                now() + make_interval(secs => $2),\n                created_at + make_interval(secs => $3)\n            )\n        WHERE token_hash = $1\n          AND expires_at > now()\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Float8",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "499316939e245d0ac6adb60ed4fbf6840a5fa5da8b75b17c87c27ed243df865b"
+}

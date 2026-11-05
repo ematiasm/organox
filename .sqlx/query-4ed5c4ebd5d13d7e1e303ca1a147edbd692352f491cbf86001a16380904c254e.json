@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE products\n        SET sku         = COALESCE($2, sku),\n            name        = COALESCE($3, name),\n            description = COALESCE($4, description),\n            price       = COALESCE($5, price),\n            min_stock   = COALESCE($6, min_stock),\n            is_active   = COALESCE($7, is_active)\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Numeric",
+        "Numeric",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4ed5c4ebd5d13d7e1e303ca1a147edbd692352f491cbf86001a16380904c254e"
+}

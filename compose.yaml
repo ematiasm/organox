@@ -1,0 +1,22 @@
+# Postgres de desarrollo. Un solo servicio: suficiente hasta que exista dominio.
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: admin_app_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin_app
+      POSTGRES_PASSWORD: admin_app_dev_password
+      POSTGRES_DB: admin_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin_app -d admin_app"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  db_data:

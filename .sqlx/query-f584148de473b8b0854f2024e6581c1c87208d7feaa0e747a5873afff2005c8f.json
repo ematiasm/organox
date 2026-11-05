@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO sales (id, status, created_by)\n        VALUES ($1, 'draft', $2)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f584148de473b8b0854f2024e6581c1c87208d7feaa0e747a5873afff2005c8f"
+}

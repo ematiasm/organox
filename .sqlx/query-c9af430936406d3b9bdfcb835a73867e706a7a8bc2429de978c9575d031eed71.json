@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sales\n        SET status = 'completed', total = $2, completed_by = $3, completed_at = now()\n        WHERE id = $1\n        RETURNING completed_at AS \"completed_at!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "completed_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Numeric",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "c9af430936406d3b9bdfcb835a73867e706a7a8bc2429de978c9575d031eed71"
+}

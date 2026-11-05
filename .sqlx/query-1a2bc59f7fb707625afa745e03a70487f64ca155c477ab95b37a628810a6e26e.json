@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            p.id,\n            p.kind AS \"kind: ProductKind\",\n            p.sku,\n            p.name,\n            p.description,\n            p.price,\n            p.min_stock,\n            p.is_active,\n            p.created_at,\n            p.updated_at,\n            s.stock\n        FROM products p\n        LEFT JOIN LATERAL (\n            SELECT COALESCE(SUM(\n                CASE m.reason\n                    WHEN 'purchase'   THEN m.quantity\n                    WHEN 'adjustment' THEN m.quantity\n                    WHEN 'sale'       THEN -m.quantity\n                    WHEN 'loss'       THEN -m.quantity\n                END\n            ), 0) AS stock\n            FROM stock_movements m\n            WHERE m.product_id = p.id\n        ) s ON true\n        WHERE p.id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind: ProductKind",
+        "type_info": {
+          "Custom": {
+            "name": "product_kind",
+            "kind": {
+              "Enum": [
+                "product",
+                "service"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sku",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "price",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 6,
+        "name": "min_stock",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_active",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "stock",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "1a2bc59f7fb707625afa745e03a70487f64ca155c477ab95b37a628810a6e26e"
+}

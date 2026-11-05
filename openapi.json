@@ -1,0 +1,1737 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "admin-app",
+    "description": "Administrador de negocio para una PyME (stock e insumos). Single-tenant.\n\n**Autenticación**: salvo `POST /api/v1/auth/login`, toda ruta requiere la cookie de sesión `session` (HttpOnly, SameSite=Strict). Sin ella devuelve `401`.\n\n**Errores**: todas las respuestas de error usan `application/problem+json` (RFC 7807). El `429` incluye además el header `Retry-After` en segundos.\n\n**Decimales**: viajan siempre como **string** (`\"1500.50\"`, `\"12.5\"`), nunca como número, para no perder precisión.",
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Inicia sesión.",
+        "description": "Devuelve la cookie `session` (HttpOnly, SameSite=Strict) y el usuario.\n\n`429` significa cuenta bloqueada por intentos fallidos; incluye\n`Retry-After` con los segundos que faltan.",
+        "operationId": "login_doc",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Sesión iniciada",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "session=<token>; HttpOnly; SameSite=Strict"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credenciales inválidas",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Cuenta bloqueada por intentos fallidos",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Segundos hasta poder reintentar"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Cierra la sesión en el servidor, no solo en el cliente.",
+        "operationId": "logout_doc",
+        "responses": {
+          "204": {
+            "description": "Sesión borrada"
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Usuario autenticado en la request actual.",
+        "operationId": "me_doc",
+        "responses": {
+          "200": {
+            "description": "Usuario actual",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión o sesión vencida",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/products": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Lista el catálogo con el stock calculado.",
+        "operationId": "list_products_doc",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ProductKind"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "include_inactive",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "search",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Página de productos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Crea un producto o un servicio.",
+        "description": "Un servicio no lleva stock: `min_stock` se rechaza con 422.",
+        "operationId": "create_product_doc",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProductRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Producto creado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "El SKU ya está en uso",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Entrada inválida",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/products/{id}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Detalle de un producto, con su stock actual calculado.",
+        "description": "`stock` es `null` para servicios: no aplica, no es cero.",
+        "operationId": "get_product_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id del producto",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Producto",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No existe",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Actualiza solo los campos enviados.",
+        "operationId": "update_product_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id del producto",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProductRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Actualizado"
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No existe",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Entrada inválida",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/products/{id}/deactivate": {
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Baja lógica. Idempotente. Nunca borra: un producto con movimientos conserva\nsu historial.",
+        "operationId": "deactivate_product_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id del producto",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Desactivado"
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No existe",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/products/{id}/movements": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Historial de movimientos, más nuevo primero.",
+        "operationId": "list_movements_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id del producto",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Movimientos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MovementResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Registra un movimiento de stock.",
+        "description": "`quantity` es siempre positiva; el signo lo determina `reason`. Una salida\nque dejaría el stock negativo se rechaza con 409.",
+        "operationId": "record_movement_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id del producto",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordMovementRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Movimiento registrado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "El producto no existe",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stock insuficiente",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Entrada inválida o servicio sin stock",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sales": {
+      "get": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Últimas ventas cobradas.",
+        "operationId": "list_sales_doc",
+        "responses": {
+          "200": {
+            "description": "Ventas completadas",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SaleResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sales/draft": {
+      "post": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Abre un borrador de venta, o devuelve el que ya estaba abierto.",
+        "description": "Un usuario tiene **un** borrador a la vez: recargar la pantalla de venta no\ncrea carritos nuevos.",
+        "operationId": "open_draft_doc",
+        "responses": {
+          "200": {
+            "description": "Se reutilizó el borrador abierto",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Borrador nuevo",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sales/{id}": {
+      "get": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Venta con sus ítems y el total calculado por el servidor.",
+        "operationId": "get_sale_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id de la venta",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Venta",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No existe",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sales/{id}/cancel": {
+      "post": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Cancela un borrador. No toca el libro de stock, porque nunca lo tocó.",
+        "operationId": "cancel_sale_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id de la venta",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Borrador cancelado"
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No existe",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "La venta ya no es editable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sales/{id}/complete": {
+      "post": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Cobra la venta.",
+        "description": "En una sola transacción: valida stock con la fila del producto bloqueada,\nescribe un movimiento de salida por ítem y cierra la venta. Si falta stock,\nrechaza con 409 y **no** deja movimientos ni cambia el estado.",
+        "operationId": "complete_sale_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id de la venta",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Venta cobrada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletedSaleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No existe",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stock insuficiente o venta ya cerrada",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "La venta está vacía",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sales/{id}/items": {
+      "post": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Agrega un producto al borrador. Si ya estaba, suma la cantidad.",
+        "description": "Devuelve la venta recalculada: el cliente no suma nada.",
+        "operationId": "add_item_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id de la venta",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Venta actualizada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Venta o producto inexistente",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "La venta ya está cerrada",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Cantidad inválida o el ítem es un servicio",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sales/{id}/items/{product_id}": {
+      "put": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Fija la cantidad de un ítem. Cantidad 0 lo quita.",
+        "operationId": "set_quantity_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id de la venta",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "product_id",
+            "in": "path",
+            "description": "Id del producto",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetQuantityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Venta actualizada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Venta o producto inexistente",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "La venta ya está cerrada",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Quita un ítem del borrador.",
+        "operationId": "remove_item_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id de la venta",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "product_id",
+            "in": "path",
+            "description": "Id del producto",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Venta actualizada",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Venta o producto inexistente",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Crea un usuario. Solo `owner`.",
+        "operationId": "create_user_doc",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Usuario creado",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateUserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sin sesión",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "El rol no permite gestionar usuarios",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "El email ya está registrado",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Entrada inválida (email o contraseña)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AddItemRequest": {
+        "type": "object",
+        "required": [
+          "product_id",
+          "quantity"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "string",
+            "example": "2"
+          }
+        }
+      },
+      "CompletedSaleResponse": {
+        "type": "object",
+        "required": [
+          "sale_id",
+          "total",
+          "movement_ids",
+          "completed_at"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "movement_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "sale_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "total": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateProductRequest": {
+        "type": "object",
+        "required": [
+          "kind",
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProductKind"
+          },
+          "min_stock": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "10"
+          },
+          "name": {
+            "type": "string"
+          },
+          "price": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Se documenta como `string` aunque el servidor también acepte números:\n`rust_decimal` deserializa ambos, pero el contrato que el frontend debe\nusar —y el único que preserva precisión— es el string. Ver\n`docs/api-contract.md`.",
+            "example": "1500.50"
+          },
+          "sku": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateUserRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password",
+          "role"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        }
+      },
+      "CreateUserResponse": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "DraftResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "reused"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reused": {
+            "type": "boolean",
+            "description": "`true` si se reutilizó el borrador que ya estaba abierto."
+          }
+        }
+      },
+      "IdResponse": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "required": [
+          "user",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserResponse"
+          }
+        }
+      },
+      "MovementReason": {
+        "type": "string",
+        "description": "Por qué se movió el stock.",
+        "enum": [
+          "purchase",
+          "sale",
+          "adjustment",
+          "loss"
+        ]
+      },
+      "MovementResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason",
+          "quantity",
+          "signed_quantity",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quantity": {
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/MovementReason"
+          },
+          "signed_quantity": {
+            "type": "string",
+            "description": "La cantidad con signo: es lo que el cliente necesita para mostrar el\nefecto en el stock sin replicar la regla de signos."
+          },
+          "unit_cost": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "description": "Cuerpo de error RFC 7807. Mismo shape para todos los códigos.",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "Explicación accionable para el usuario.",
+            "example": "Credenciales inválidas o sesión vencida."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Código HTTP, repetido en el cuerpo para clientes que no leen headers.",
+            "example": 401,
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "Resumen legible y estable del problema.",
+            "example": "Unauthorized"
+          },
+          "type": {
+            "type": "string",
+            "description": "URI que identifica el tipo de problema. Siempre `about:blank` hoy.",
+            "example": "about:blank"
+          }
+        }
+      },
+      "ProductKind": {
+        "type": "string",
+        "description": "Un ítem del catálogo puede llevar stock o no.",
+        "enum": [
+          "product",
+          "service"
+        ]
+      },
+      "ProductListResponse": {
+        "type": "object",
+        "required": [
+          "items",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProductResponse"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ProductResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "is_active",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProductKind"
+          },
+          "low_stock": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`null` cuando no aplica (servicio) o no hay umbral configurado."
+          },
+          "min_stock": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "price": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "String, no número: un `float` en JSON pierde precisión en dinero y en\ncantidades fraccionarias. El cliente lo parsea como decimal."
+          },
+          "sku": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stock": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` para servicios: no es cero, es \"no aplica\"."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RecordMovementRequest": {
+        "type": "object",
+        "required": [
+          "reason",
+          "quantity"
+        ],
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quantity": {
+            "type": "string",
+            "example": "12.5"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/MovementReason"
+          },
+          "unit_cost": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "1200.00"
+          }
+        }
+      },
+      "Role": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "encargado"
+        ]
+      },
+      "SaleItemResponse": {
+        "type": "object",
+        "required": [
+          "product_id",
+          "product_name",
+          "quantity",
+          "unit_price",
+          "subtotal"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_name": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "string",
+            "description": "Cantidad como string: `numeric(12,3)` no cabe en un float sin perder\nprecisión en cantidades fraccionarias."
+          },
+          "subtotal": {
+            "type": "string"
+          },
+          "unit_price": {
+            "type": "string"
+          }
+        }
+      },
+      "SaleResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "items",
+          "total",
+          "item_count",
+          "created_at"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "item_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SaleItemResponse"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/SaleStatus"
+          },
+          "total": {
+            "type": "string",
+            "description": "Calculado en el servidor. El cliente lo muestra, no lo decide."
+          }
+        }
+      },
+      "SaleStatus": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "completed",
+          "cancelled"
+        ]
+      },
+      "SetQuantityRequest": {
+        "type": "object",
+        "required": [
+          "quantity"
+        ],
+        "properties": {
+          "quantity": {
+            "type": "string",
+            "example": "3"
+          }
+        }
+      },
+      "UpdateProductRequest": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "is_active": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "min_stock": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "10"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "price": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "1500.50"
+          },
+          "sku": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UserResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "role"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "auth",
+      "description": "Sesión y usuarios"
+    },
+    {
+      "name": "catalog",
+      "description": "Productos, servicios y libro de stock"
+    },
+    {
+      "name": "sales",
+      "description": "Carrito persistido y cobro"
+    }
+  ]
+}
