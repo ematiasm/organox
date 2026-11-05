@@ -47,7 +47,7 @@ pub struct Problem {
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "admin-app",
+        title = "organox",
         version = env!("CARGO_PKG_VERSION"),
         description = "Administrador de negocio para una PyME (stock e insumos). \
                        Single-tenant.\n\n\

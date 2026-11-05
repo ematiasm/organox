@@ -3,8 +3,8 @@
 //! Se ejecutan contra el `Router` en memoria (sin abrir puerto) y contra una
 //! base de datos real y efímera que `#[sqlx::test]` crea y destruye por test.
 
-use admin_app::routes::router;
-use admin_app::{AppState, db};
+use organox::routes::router;
+use organox::{AppState, db};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
@@ -50,7 +50,7 @@ async fn readyz_returns_204_when_db_responds(pool: sqlx::PgPool) {
 async fn readyz_returns_503_when_db_is_unreachable() {
     // Puerto cerrado a propósito: la conexión falla rápido y el pool queda
     // sin conexiones utilizables.
-    let unreachable = "postgres://admin_app:admin_app_dev_password@127.0.0.1:1/admin_app";
+    let unreachable = "postgres://organox:organox_dev_password@127.0.0.1:1/organox";
     let pool = sqlx::postgres::PgPoolOptions::new()
         .acquire_timeout(std::time::Duration::from_millis(500))
         .max_connections(1)

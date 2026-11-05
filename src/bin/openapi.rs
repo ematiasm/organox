@@ -5,7 +5,7 @@
 //!   npx openapi-typescript openapi.json -o frontend/src/lib/api/schema.d.ts
 
 fn main() {
-    let doc = admin_app::openapi::spec();
+    let doc = organox::openapi::spec();
     match serde_json::to_string_pretty(&doc) {
         Ok(json) => println!("{json}"),
         Err(err) => {

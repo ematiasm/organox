@@ -3,36 +3,6 @@
 version = 4
 
 [[package]]
-name = "admin-app"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "axum",
- "base64 0.23.1",
- "chrono",
- "clap",
- "getrandom 0.3.4",
- "reqwest",
- "rpassword",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "sqlx",
- "thiserror",
- "tokio",
- "tower",
- "tower-cookies",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "utoipa",
- "utoipa-swagger-ui",
- "uuid",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1347,6 +1317,36 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "organox"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "clap",
+ "getrandom 0.3.4",
+ "reqwest",
+ "rpassword",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-cookies",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "utoipa",
+ "utoipa-swagger-ui",
+ "uuid",
+]
 
 [[package]]
 name = "parking"

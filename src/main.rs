@@ -3,9 +3,9 @@
 
 use std::process::ExitCode;
 
-use admin_app::config::Config;
-use admin_app::telemetry;
-use admin_app::{AppState, db, routes};
+use organox::config::Config;
+use organox::telemetry;
+use organox::{AppState, db, routes};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
@@ -30,7 +30,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Precalentar el hash señuelo fuera del camino de una request: si se
     // calculara en el primer login fallido, esa latencia extra distinguiría
     // "email inexistente" de "contraseña incorrecta".
-    tokio::task::spawn_blocking(admin_app::auth::service::warm_dummy_hash)
+    tokio::task::spawn_blocking(organox::auth::service::warm_dummy_hash)
         .await
         .ok();
 
@@ -38,7 +38,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         bind = %config.bind_addr,
         db_max_connections = pool.options().get_max_connections(),
-        "iniciando admin-app"
+        "iniciando organox"
     );
 
     // El CookieManagerLayer tiene que envolver al router: los extractores

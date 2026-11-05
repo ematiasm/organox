@@ -66,7 +66,7 @@ impl Config {
             }
         };
         let rust_log = optional("APP_RUST_LOG")
-            .unwrap_or_else(|| "admin_app=debug,tower_http=debug,sqlx=warn".to_string());
+            .unwrap_or_else(|| "organox=debug,tower_http=debug,sqlx=warn".to_string());
         let cookie_secure = parse_bool("APP_COOKIE_SECURE", true)?;
         let login_max_failures = parse("APP_LOGIN_MAX_FAILURES", "5")?;
         let login_block_minutes = parse("APP_LOGIN_BLOCK_MINUTES", "5")?;

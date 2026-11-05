@@ -3,7 +3,7 @@
 //! Un solo test deliberado: las variables de entorno son estado global del
 //! proceso, y varios tests que las mutan en paralelo se pisan entre sí.
 
-use admin_app::config::{Config, LogFormat};
+use organox::config::{Config, LogFormat};
 
 /// Fija variables de entorno, corre `f` y restaura los valores previos.
 fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {

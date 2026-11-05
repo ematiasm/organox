@@ -1,9 +1,9 @@
 [package]
-name = "admin-app"
+name = "organox"
 version = "0.1.0"
 edition = "2024"
 publish = false
-default-run = "admin-app"
+default-run = "organox"
 
 [dependencies]
 axum = "0.8"

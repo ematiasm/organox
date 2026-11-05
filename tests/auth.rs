@@ -3,11 +3,11 @@
 //! Cada test corre contra una base de datos efímera creada por `#[sqlx::test]`
 //! y ejerce el `Router` en memoria (sin abrir puerto ni proceso servidor).
 
-use admin_app::AppState;
-use admin_app::auth::model::Role;
-use admin_app::auth::repository::{self, NewUser};
-use admin_app::auth::{password, validation};
-use admin_app::routes::router;
+use organox::AppState;
+use organox::auth::model::Role;
+use organox::auth::repository::{self, NewUser};
+use organox::auth::{password, validation};
+use organox::routes::router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};

@@ -1,4 +1,4 @@
-# Sistema de diseño — admin-app
+# Sistema de diseño — organox
 
 Capturado de `frontend/src/app.css` (única fuente de tokens del proyecto) y de
 los componentes de `frontend/src/lib/components/ui/` (shadcn-svelte). No inventa

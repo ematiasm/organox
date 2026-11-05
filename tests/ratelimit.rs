@@ -8,13 +8,13 @@
 //!  * el 429 trae `Retry-After`;
 //!  * el límite por IP no castiga a otras IPs.
 
-use admin_app::AppState;
-use admin_app::auth::model::Role;
-use admin_app::auth::repository::{self, NewUser};
-use admin_app::auth::validation::ValidatedEmail;
-use admin_app::auth::{password, validation};
-use admin_app::ratelimit::{AccountPolicy, Decision, IpPolicy};
-use admin_app::routes::router;
+use organox::AppState;
+use organox::auth::model::Role;
+use organox::auth::repository::{self, NewUser};
+use organox::auth::validation::ValidatedEmail;
+use organox::auth::{password, validation};
+use organox::ratelimit::{AccountPolicy, Decision, IpPolicy};
+use organox::routes::router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
@@ -25,12 +25,12 @@ use tower_cookies::CookieManagerLayer;
 
 const PASSWORD: &str = "contrasena-bastante-larga-123";
 
-fn config() -> admin_app::config::Config {
+fn config() -> organox::config::Config {
     // Config mínima para construir el estado en tests, sin leer el entorno.
-    admin_app::config::Config {
+    organox::config::Config {
         database_url: String::new(),
         bind_addr: "127.0.0.1:0".parse().unwrap(),
-        log_format: admin_app::config::LogFormat::Pretty,
+        log_format: organox::config::LogFormat::Pretty,
         rust_log: String::new(),
         cookie_secure: false,
         login_max_failures: 3,

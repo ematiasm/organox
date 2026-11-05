@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "admin-app",
+    "title": "organox",
     "description": "Administrador de negocio para una PyME (stock e insumos). Single-tenant.\n\n**Autenticación**: salvo `POST /api/v1/auth/login`, toda ruta requiere la cookie de sesión `session` (HttpOnly, SameSite=Strict). Sin ella devuelve `401`.\n\n**Errores**: todas las respuestas de error usan `application/problem+json` (RFC 7807). El `429` incluye además el header `Retry-After` en segundos.\n\n**Decimales**: viajan siempre como **string** (`\"1500.50\"`, `\"12.5\"`), nunca como número, para no perder precisión.",
     "license": {
       "name": ""

@@ -96,7 +96,7 @@
 
 	// Preferencia de la barra, no dato del servidor: se lee al montar y se
 	// escribe en cada cambio. Sin `localStorage` (SSR) el rail nace compacto.
-	const EXPANDED_KEY = 'admin-app:rail-expanded';
+	const EXPANDED_KEY = 'organox:rail-expanded';
 	let expanded = $state(false);
 
 	$effect(() => {

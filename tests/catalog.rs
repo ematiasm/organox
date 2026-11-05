@@ -4,13 +4,13 @@
 //! `CASE` en SQL— y las reglas de negocio que no se pueden delegar al motor:
 //! stock negativo, servicio sin movimientos, y borrado con historial.
 
-use admin_app::AppState;
-use admin_app::auth::model::Role;
-use admin_app::auth::repository::{self, NewUser};
-use admin_app::auth::{password, validation};
-use admin_app::catalog::model::{MovementReason, ProductKind};
-use admin_app::catalog::service::{self, CatalogError, CreateProductInput, RecordMovementInput};
-use admin_app::routes::router;
+use organox::AppState;
+use organox::auth::model::Role;
+use organox::auth::repository::{self, NewUser};
+use organox::auth::{password, validation};
+use organox::catalog::model::{MovementReason, ProductKind};
+use organox::catalog::service::{self, CatalogError, CreateProductInput, RecordMovementInput};
+use organox::routes::router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use rust_decimal::Decimal;
@@ -453,7 +453,7 @@ async fn low_stock_flag_reflects_threshold(pool: PgPool) {
     let product = seed_product(&pool, ProductKind::Product, "Harina", Some(dec!(5))).await;
 
     let view = service::get_product(&pool, product).await.unwrap();
-    let low = admin_app::catalog::model::is_low_stock(&view.product, view.stock);
+    let low = organox::catalog::model::is_low_stock(&view.product, view.stock);
     assert_eq!(low, Some(true), "stock 0 por debajo del mínimo 5");
 
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(20))
@@ -461,7 +461,7 @@ async fn low_stock_flag_reflects_threshold(pool: PgPool) {
         .unwrap();
     let view = service::get_product(&pool, product).await.unwrap();
     assert_eq!(
-        admin_app::catalog::model::is_low_stock(&view.product, view.stock),
+        organox::catalog::model::is_low_stock(&view.product, view.stock),
         Some(false)
     );
 }

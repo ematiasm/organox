@@ -2,18 +2,18 @@
 services:
   db:
     image: postgres:17-alpine
-    container_name: admin_app_db
+    container_name: organox_db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: admin_app
-      POSTGRES_PASSWORD: admin_app_dev_password
-      POSTGRES_DB: admin_app
+      POSTGRES_USER: organox
+      POSTGRES_PASSWORD: organox_dev_password
+      POSTGRES_DB: organox
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin_app -d admin_app"]
+      test: ["CMD-SHELL", "pg_isready -U organox -d organox"]
       interval: 2s
       timeout: 3s
       retries: 15

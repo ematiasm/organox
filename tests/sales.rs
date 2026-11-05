@@ -7,15 +7,15 @@
 //!  3. Un borrador abandonado nunca toca el libro de stock.
 //!  4. El total lo calcula el servidor.
 
-use admin_app::AppState;
-use admin_app::auth::model::Role;
-use admin_app::auth::repository::{self, NewUser};
-use admin_app::auth::{password, validation};
-use admin_app::catalog::model::{MovementReason, ProductKind};
-use admin_app::catalog::service::{self as catalog, CreateProductInput, RecordMovementInput};
-use admin_app::routes::router;
-use admin_app::sales::model::SaleStatus;
-use admin_app::sales::service::{self as sales, SalesError};
+use organox::AppState;
+use organox::auth::model::Role;
+use organox::auth::repository::{self, NewUser};
+use organox::auth::{password, validation};
+use organox::catalog::model::{MovementReason, ProductKind};
+use organox::catalog::service::{self as catalog, CreateProductInput, RecordMovementInput};
+use organox::routes::router;
+use organox::sales::model::SaleStatus;
+use organox::sales::service::{self as sales, SalesError};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::PgPool;

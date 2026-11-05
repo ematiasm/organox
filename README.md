@@ -1,4 +1,4 @@
-# admin-app
+# organox
 
 Administrador de negocio para una PyME: stock e insumos.
 Backend en Rust/Axum + PostgreSQL + sqlx. Single-tenant.

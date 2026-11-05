@@ -11,7 +11,7 @@ help: ## Muestra esta ayuda
 
 db-up: ## Levanta Postgres en Docker
 	docker compose up -d
-	@docker compose exec -T db sh -c 'until pg_isready -U admin_app -d admin_app >/dev/null 2>&1; do sleep 0.3; done'
+	@docker compose exec -T db sh -c 'until pg_isready -U organox -d organox >/dev/null 2>&1; do sleep 0.3; done'
 	@echo "postgres listo en localhost:5432"
 
 db-down: ## Baja Postgres (conserva los datos)
@@ -21,7 +21,7 @@ db-reset: ## Baja Postgres y BORRA los datos. Solo desarrollo.
 	@printf 'Esto borra la base de desarrollo. Escribi "si" para seguir: ' && read ans && [ "$$ans" = "si" ]
 	docker compose down -v
 	docker compose up -d
-	@docker compose exec -T db sh -c 'until pg_isready -U admin_app -d admin_app >/dev/null 2>&1; do sleep 0.3; done'
+	@docker compose exec -T db sh -c 'until pg_isready -U organox -d organox >/dev/null 2>&1; do sleep 0.3; done'
 	sqlx migrate run
 
 migrate: ## Aplica migraciones pendientes

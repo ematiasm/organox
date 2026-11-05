@@ -13,8 +13,8 @@
 
 use std::process::ExitCode;
 
-use admin_app::auth::model::Role;
-use admin_app::auth::{password, repository, validation};
+use organox::auth::model::Role;
+use organox::auth::{password, repository, validation};
 use clap::Parser;
 use sqlx::postgres::PgPoolOptions;
 
