@@ -22,7 +22,7 @@
             "kind": {
               "Enum": [
                 "owner",
-                "encargado"
+                "manager"
               ]
             }
           }
