@@ -1,8 +1,8 @@
-//! Persistencia de ventas.
+//! Sales persistence.
 //!
-//! El borrador y sus ítems se escriben en la misma transacción que valida el
-//! stock, igual que en el libro de stock: leer y escribir separados permite
-//! vender dos veces la misma unidad.
+//! The draft and its items are written in the same transaction that validates
+//! stock, as in the stock ledger: separate reads and writes allow the same unit
+//! to be sold twice.
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -13,23 +13,23 @@ use super::model::{Sale, SaleItem, SaleStatus};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
-    #[error("no se encontró la venta")]
+    #[error("sale not found")]
     NotFound,
 
-    #[error("no se encontró el producto")]
+    #[error("product not found")]
     ProductNotFound,
 
-    #[error("el producto no vende stock (es un servicio)")]
+    #[error("the product does not sell stock (it is a service)")]
     ProductDoesNotTrackStock,
 
-    #[error("stock insuficiente")]
+    #[error("insufficient stock")]
     InsufficientStock {
         product_name: String,
         available: Decimal,
         requested: Decimal,
     },
 
-    #[error("la venta ya no es editable")]
+    #[error("the sale is no longer editable")]
     NotEditable,
 
     #[error(transparent)]
@@ -40,7 +40,7 @@ pub struct NewSaleDraft {
     pub created_by: Uuid,
 }
 
-/// Crea un borrador vacío.
+/// Create an empty draft.
 pub async fn create_draft(pool: &PgPool, new: NewSaleDraft) -> Result<Uuid, RepoError> {
     let id = Uuid::now_v7();
 
@@ -58,11 +58,10 @@ pub async fn create_draft(pool: &PgPool, new: NewSaleDraft) -> Result<Uuid, Repo
     Ok(id)
 }
 
-/// Recalcula el total del borrador a partir de sus ítems.
+/// Recalculate the draft total from its items.
 ///
-/// Se recalcula siempre en el servidor: el total del cliente es solo para
-/// mostrar. Devolver un total calculado por el navegador sería confiar en el
-/// navegador para cobrar.
+/// Always recalculated on the server: the client's total is only for display.
+/// Returning a browser-calculated total would trust the browser to charge.
 async fn refresh_total(pool: &PgPool, sale_id: Uuid) -> Result<Decimal, RepoError> {
     let total: Decimal = sqlx::query_scalar!(
         r#"
@@ -81,12 +80,12 @@ async fn refresh_total(pool: &PgPool, sale_id: Uuid) -> Result<Decimal, RepoErro
     Ok(total)
 }
 
-/// Agrega un producto al borrador.
+/// Add a product to the draft.
 ///
-/// Si el producto ya está, SUMA la cantidad. La unicidad la garantiza el índice
-/// `(sale_id, product_id)` con `ON CONFLICT`, no una lectura previa: dos requests
-/// simultáneas del mismo cajero (doble clic en "agregar") no deben crear dos
-/// filas.
+/// If already present, ADD the quantity. Uniqueness is guaranteed by the
+/// `(sale_id, product_id)` index with `ON CONFLICT`, not a prior read: two
+/// concurrent requests from the same cashier (double-clicking "add") must not
+/// create two rows.
 pub async fn upsert_item(
     pool: &PgPool,
     sale_id: Uuid,
@@ -105,7 +104,7 @@ pub async fn upsert_item(
         return Err(RepoError::NotEditable);
     }
 
-    // El precio se toma del producto AHORA y queda congelado en el ítem.
+    // Take the product price NOW and freeze it in the item.
     let product = sqlx::query!(
         r#"
         SELECT kind AS "kind: crate::catalog::model::ProductKind", name, price
@@ -122,8 +121,8 @@ pub async fn upsert_item(
         return Err(RepoError::ProductDoesNotTrackStock);
     }
 
-    // Un producto sin precio no se puede cobrar. Se rechaza acá en vez de
-    // asumir 0, que es lo que terminaría cobrándosele al cliente.
+    // A product without a price cannot be charged. Reject it here instead of
+    // assuming 0, which is what the customer would otherwise be charged.
     let unit_price = product.price.ok_or(RepoError::ProductDoesNotTrackStock)?;
 
     sqlx::query!(
@@ -146,7 +145,7 @@ pub async fn upsert_item(
     Ok(())
 }
 
-/// Fija la cantidad de un ítem. Cantidad 0 lo quita.
+/// Set an item's quantity. Quantity 0 removes it.
 pub async fn set_item_quantity(
     pool: &PgPool,
     sale_id: Uuid,
@@ -196,8 +195,8 @@ pub async fn remove_item(pool: &PgPool, sale_id: Uuid, product_id: Uuid) -> Resu
     set_item_quantity(pool, sale_id, product_id, Decimal::ZERO).await
 }
 
-/// Cancela un borrador. No toca el libro de stock porque un borrador nunca lo
-/// tocó: esa es la virtud de no descontar hasta cobrar.
+/// Cancel a draft. Does not touch the stock ledger because a draft never did:
+/// that is the virtue of not deducting until checkout.
 pub async fn cancel(pool: &PgPool, sale_id: Uuid) -> Result<(), RepoError> {
     let result = sqlx::query!(
         "UPDATE sales SET status = 'cancelled' WHERE id = $1 AND status = 'draft'",
@@ -207,7 +206,7 @@ pub async fn cancel(pool: &PgPool, sale_id: Uuid) -> Result<(), RepoError> {
     .await?;
 
     if result.rows_affected() == 0 {
-        // O no existe, o ya no era borrador.
+        // Either it does not exist, or it was no longer a draft.
         let exists = sqlx::query_scalar!("SELECT 1::bool FROM sales WHERE id = $1", sale_id)
             .fetch_optional(pool)
             .await?;
@@ -267,10 +266,10 @@ pub async fn find_sale(pool: &PgPool, sale_id: Uuid) -> Result<Option<Sale>, Rep
     }))
 }
 
-/// El borrador abierto de un usuario, si tiene uno.
+/// A user's open draft, if any.
 ///
-/// Un cajero tiene **un** borrador a la vez: abrir otro dejaría dos carritos
-/// vivos y el stock reservado dos veces en la cabeza del que cobra.
+/// A cashier has **one** draft at a time: opening another would leave two live
+/// carts and stock reserved twice in the cashier's mind.
 pub async fn find_open_draft_for_user(
     pool: &PgPool,
     user_id: Uuid,
@@ -298,11 +297,11 @@ pub struct CompletedSale {
     pub completed_at: DateTime<Utc>,
 }
 
-/// Confirma la venta: valida stock, escribe los movimientos y cierra.
+/// Complete the sale: validate stock, write movements and close it.
 ///
-/// Todo en UNA transacción con `SELECT ... FOR UPDATE` por producto. Es la misma
-/// disciplina que `record_movement`: si no, dos cajas pueden vender la última
-/// unidad al mismo tiempo.
+/// All in ONE transaction with `SELECT ... FOR UPDATE` per product. This is the
+/// same discipline as `record_movement`: otherwise two registers can sell the
+/// last unit at the same time.
 pub async fn complete(
     pool: &PgPool,
     sale_id: Uuid,
@@ -343,10 +342,10 @@ pub async fn complete(
     let mut total = Decimal::ZERO;
 
     for item in &items {
-        // Bloquea la fila del producto: serializa las salidas concurrentes de
-        // este producto, igual que en el libro de stock.
-        // `query_scalar!` porque `query!` con un SELECT que devuelve filas
-        // requiere `fetch_*`, no `execute`.
+        // Lock the product row: serialize concurrent outflows for this product,
+        // as in the stock ledger.
+        // `query_scalar!` because `query!` with a SELECT returning rows
+        // requires `fetch_*`, not `execute`.
         sqlx::query_scalar!(
             "SELECT id FROM products WHERE id = $1 FOR UPDATE",
             item.product_id
@@ -380,8 +379,8 @@ pub async fn complete(
             });
         }
 
-        // El movimiento de stock es la ÚNICA cosa que descuenta: la tabla
-        // `sales` no tiene columna de stock, y el libro sigue siendo la verdad.
+        // The stock movement is the ONLY thing that deducts: the `sales` table
+        // has no stock column, and the ledger remains the source of truth.
         let movement_id = Uuid::now_v7();
         sqlx::query!(
             r#"
@@ -392,7 +391,7 @@ pub async fn complete(
             item.product_id,
             item.quantity,
             item.unit_price,
-            Some(format!("Venta {}", &sale_id.to_string()[..8])),
+            Some(format!("Sale {}", &sale_id.to_string()[..8])),
             actor,
         )
         .execute(&mut *tx)
@@ -402,7 +401,7 @@ pub async fn complete(
         total += item.quantity * item.unit_price;
     }
 
-    // `numeric(14,2)`: se redondea al guardar, no se trunca.
+    // `numeric(14,2)`: rounded on save, not truncated.
     let total = total.round_dp(2);
 
     let completed_at = sqlx::query_scalar!(
@@ -429,7 +428,7 @@ pub async fn complete(
     })
 }
 
-/// Ventas completadas, más recientes primero.
+/// Completed sales, most recent first.
 pub async fn list_completed(pool: &PgPool, limit: i64) -> Result<Vec<Sale>, RepoError> {
     let ids = sqlx::query_scalar!(
         r#"

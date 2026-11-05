@@ -1,51 +1,50 @@
-//! Validación de entradas del catálogo.
+//! Catalog input validation.
 //!
-//! Las reglas que se validan acá son las que dan un mensaje útil al usuario.
-//! Las que no se pueden confiar al código (signo, append-only, servicio sin
-//! stock) se imponen además en la DB: la validación de entrada no es la última
-//! línea de defensa.
+//! Rules validated here provide useful messages to the user. Those that cannot
+//! be entrusted to code (sign, append-only, services without stock) are also
+//! enforced in the DB: input validation is not the last line of defense.
 
 use rust_decimal::Decimal;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
-    #[error("el nombre no puede estar vacío")]
+    #[error("the name cannot be blank")]
     NameBlank,
 
-    #[error("el nombre supera los {max} caracteres")]
+    #[error("the name exceeds {max} characters")]
     NameTooLong { max: usize },
 
-    #[error("el SKU supera los {max} caracteres")]
+    #[error("the SKU exceeds {max} characters")]
     SkuTooLong { max: usize },
 
-    #[error("el precio no puede ser negativo")]
+    #[error("the price cannot be negative")]
     PriceNegative,
 
-    #[error("el precio tiene más de 2 decimales")]
+    #[error("the price has more than 2 decimal places")]
     PricePrecision,
 
-    #[error("el stock mínimo no puede ser negativo")]
+    #[error("minimum stock cannot be negative")]
     MinStockNegative,
 
-    #[error("la cantidad debe ser mayor que cero")]
+    #[error("the quantity must be greater than zero")]
     QuantityNotPositive,
 
-    #[error("la cantidad tiene más de 3 decimales")]
+    #[error("the quantity has more than 3 decimal places")]
     QuantityPrecision,
 
-    #[error("el costo unitario no puede ser negativo")]
+    #[error("the unit cost cannot be negative")]
     UnitCostNegative,
 
-    #[error("el costo unitario tiene más de 2 decimales")]
+    #[error("the unit cost has more than 2 decimal places")]
     UnitCostPrecision,
 
-    #[error("un servicio no lleva stock")]
+    #[error("a service does not track stock")]
     ServiceHasNoStock,
 
-    #[error("la cantidad se canceló y no quedó stock suficiente")]
+    #[error("the quantity was cancelled and insufficient stock remained")]
     InsufficientStock,
 
-    #[error("no se encontró el producto")]
+    #[error("the product was not found")]
     ProductNotFound,
 }
 
@@ -53,10 +52,10 @@ pub const MAX_NAME_LEN: usize = 200;
 pub const MAX_SKU_LEN: usize = 64;
 pub const MAX_NOTE_LEN: usize = 500;
 
-/// Las cantidades se guardan en `numeric(12,3)`. Validar la escala en el borde
-/// evita que Postgres redondee silenciosamente un `1.0004` a `1.000`.
+/// Quantities are stored in `numeric(12,3)`. Validating scale at the boundary
+/// prevents Postgres from silently rounding `1.0004` to `1.000`.
 pub const QUANTITY_SCALE: u32 = 3;
-/// El dinero en `numeric(12,2)`.
+/// Money uses `numeric(12,2)`.
 pub const MONEY_SCALE: u32 = 2;
 
 pub fn validate_name(raw: &str) -> Result<String, ValidationError> {
@@ -70,8 +69,8 @@ pub fn validate_name(raw: &str) -> Result<String, ValidationError> {
     Ok(trimmed.to_string())
 }
 
-/// El SKU vacío se convierte en `None`: "" y NULL no deben ser dos formas de
-/// decir "sin SKU", o el índice único parcial los trata distinto.
+/// An empty SKU becomes `None`: "" and NULL must not be two ways of saying
+/// "no SKU", or the partial unique index treats them differently.
 pub fn validate_sku(raw: Option<&str>) -> Result<Option<String>, ValidationError> {
     let Some(raw) = raw else { return Ok(None) };
     let trimmed = raw.trim();
@@ -133,8 +132,8 @@ pub fn validate_note(raw: Option<&str>) -> Result<Option<String>, ValidationErro
     if trimmed.is_empty() {
         return Ok(None);
     }
-    // Se trunca en vez de rechazar: una nota larga no es motivo para perder el
-    // movimiento que se está registrando.
+    // Truncate rather than reject: a long note is no reason to lose the
+    // movement being recorded.
     let truncated: String = trimmed.chars().take(MAX_NOTE_LEN).collect();
     Ok(Some(truncated))
 }
@@ -171,12 +170,12 @@ mod tests {
             validate_price(Some(dec!(-1))).unwrap_err(),
             ValidationError::PriceNegative
         );
-        // 10.999 no se redondea en silencio a 11.00: se rechaza.
+        // 10.999 is not silently rounded to 11.00: it is rejected.
         assert_eq!(
             validate_price(Some(dec!(10.999))).unwrap_err(),
             ValidationError::PricePrecision
         );
-        // Los ceros a la derecha no cuentan como precisión.
+        // Trailing zeros do not count as precision.
         assert!(validate_price(Some(dec!(10.000))).is_ok());
     }
 

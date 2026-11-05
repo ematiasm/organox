@@ -1,4 +1,4 @@
-//! Observabilidad: un subscriber global, formato legible en dev y JSON en prod.
+//! Observability: one global subscriber, readable format in dev and JSON in prod.
 
 use tracing_subscriber::EnvFilter;
 
@@ -9,14 +9,14 @@ pub fn init(log_format: LogFormat, rust_log: &str) {
 
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
 
-    // Se reintenta con `info` si ya había un subscriber instalado (ocurre en
-    // tests). Un logger duplicado no debe tumbar el proceso.
+    // Retry with `info` if a subscriber was already installed (as happens in
+    // tests). A duplicate logger must not crash the process.
     let result = match log_format {
         LogFormat::Json => builder.json().try_init(),
         LogFormat::Pretty => builder.try_init(),
     };
 
     if let Err(err) = result {
-        eprintln!("advertencia: no se pudo instalar el subscriber de tracing: {err}");
+        eprintln!("warning: could not install the tracing subscriber: {err}");
     }
 }

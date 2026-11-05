@@ -1,8 +1,8 @@
-//! Un único tipo de error para toda la aplicación.
+//! One error type for the entire application.
 //!
-//! Todo error que cruce el borde HTTP se convierte acá, con un cuerpo
-//! homogéneo (`application/problem+json`, RFC 7807). Los detalles internos se
-//! loguean, nunca se serializan al cliente.
+//! Every error crossing the HTTP boundary is converted here, with a consistent
+//! body (`application/problem+json`, RFC 7807). Internal details are logged,
+//! never serialized to the client.
 
 use axum::Json;
 use axum::http::StatusCode;
@@ -11,34 +11,34 @@ use serde_json::json;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("error de configuración: {0}")]
+    #[error("configuration error: {0}")]
     Config(String),
 
-    #[error("credenciales inválidas")]
+    #[error("invalid credentials")]
     Unauthorized,
 
-    #[error("sin permiso")]
+    #[error("permission denied")]
     Forbidden,
 
-    #[error("conflicto: {0}")]
+    #[error("conflict: {0}")]
     Conflict(String),
 
-    #[error("no se encontró el recurso")]
+    #[error("resource not found")]
     NotFound,
 
-    /// Demasiadas requests o cuenta bloqueada. `retry_after_secs` se envía en
-    /// el header `Retry-After`, que es el mecanismo estándar (RFC 9110) para
-    /// que un cliente sepa cuándo reintentar sin adivinar.
-    #[error("demasiados intentos")]
+    /// Too many requests or a locked account. `retry_after_secs` is sent in
+    /// the `Retry-After` header, the standard mechanism (RFC 9110) for a
+    /// client to know when to retry without guessing.
+    #[error("too many attempts")]
     TooManyRequests { retry_after_secs: u64 },
 
-    #[error("entrada inválida: {0}")]
+    #[error("invalid input: {0}")]
     Validation(String),
 
-    #[error("la base de datos no está disponible: {0}")]
+    #[error("database unavailable: {0}")]
     DatabaseUnavailable(String),
 
-    #[error("error interno: {0}")]
+    #[error("internal error: {0}")]
     Internal(String),
 }
 
@@ -48,50 +48,50 @@ impl IntoResponse for AppError {
             AppError::Config(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Configuration Error",
-                "El servidor está mal configurado.".to_string(),
+                "The server is misconfigured.".to_string(),
             ),
             AppError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "Unauthorized",
-                "Credenciales inválidas o sesión vencida.".to_string(),
+                "Invalid credentials or expired session.".to_string(),
             ),
             AppError::Forbidden => (
                 StatusCode::FORBIDDEN,
                 "Forbidden",
-                "No tenés permiso para esta operación.".to_string(),
+                "You do not have permission to perform this operation.".to_string(),
             ),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, "Conflict", msg.clone()),
             AppError::NotFound => (
                 StatusCode::NOT_FOUND,
                 "Not Found",
-                "No se encontró el recurso solicitado.".to_string(),
+                "The requested resource was not found.".to_string(),
             ),
             AppError::TooManyRequests { .. } => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too Many Requests",
-                "Demasiados intentos. Esperá unos minutos antes de reintentar.".to_string(),
+                "Too many attempts. Wait a few minutes before retrying.".to_string(),
             ),
             AppError::Validation(msg) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Validation Error",
                 msg.clone(),
             ),
-            // No filtramos el mensaje de sqlx al cliente: puede contener host,
-            // usuario o detalles de infraestructura.
+            // Do not leak the sqlx message to the client: it may contain a host,
+            // user or infrastructure details.
             AppError::DatabaseUnavailable(_) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Service Unavailable",
-                "La base de datos no responde.".to_string(),
+                "The database is not responding.".to_string(),
             ),
             AppError::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal Server Error",
-                "Ocurrió un error inesperado.".to_string(),
+                "An unexpected error occurred.".to_string(),
             ),
         };
 
-        // Los 5xx se loguean como error (con detalle); los 4xx como info (el
-        // cliente se equivocó, no el servidor) y sin el detalle interno.
+        // Log 5xx as errors (with details); log 4xx as info (the client made
+        // a mistake, not the server) without internal details.
         if status.is_server_error() {
             tracing::error!(error = %self, status = status.as_u16(), "request failed");
         } else {
@@ -105,11 +105,10 @@ impl IntoResponse for AppError {
             "detail": detail,
         });
 
-        // RFC 7807 exige el Content-Type `application/problem+json`; sin él, un
-        // cliente no puede distinguir un cuerpo de error de una respuesta
-        // normal y los errores se parsean como si fueran datos. Se documentó
-        // antes de implementarse: este fue el bug que corrigió el test de
-        // contrato del OpenAPI.
+        // RFC 7807 requires the Content-Type `application/problem+json`; without
+        // it, a client cannot distinguish an error body from a normal response,
+        // and errors are parsed as data. This was documented before it was
+        // implemented: the OpenAPI contract test caught this bug.
         let mut response = (
             status,
             [(
@@ -120,8 +119,8 @@ impl IntoResponse for AppError {
         )
             .into_response();
 
-        // `Retry-After` es lo que convierte un 429 en algo accionable: el
-        // cliente sabe cuándo volver a intentar en vez de martillar.
+        // `Retry-After` makes a 429 actionable: the client knows when to
+        // retry instead of hammering the server.
         if let AppError::TooManyRequests { retry_after_secs } = &self
             && let Ok(value) = retry_after_secs.to_string().parse()
         {
@@ -131,5 +130,28 @@ impl IntoResponse for AppError {
         }
 
         response
+    }
+}
+
+#[cfg(test)]
+mod translation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn configuration_error_detail_is_english() {
+        let response = AppError::Config("private".into()).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.headers()[axum::http::header::CONTENT_TYPE],
+            "application/problem+json"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["detail"], "The server is misconfigured.");
+        assert_eq!(body["title"], "Configuration Error");
+        assert_eq!(body["status"], 500);
+        assert_eq!(body["type"], "about:blank");
     }
 }

@@ -1,33 +1,33 @@
-//! Validación de entradas de autenticación.
+//! Authentication input validation.
 //!
-//! Se valida en el borde (antes de tocar la DB) y se devuelve un error que el
-//! cliente puede accionar. No hay dependencia de un crate de validación: las
-//! reglas son pocas y explícitas.
+//! Validate at the boundary (before touching the DB) and return an actionable
+//! error to the client. There is no dependency on a validation crate: the
+//! rules are few and explicit.
 
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
-    #[error("el email no es válido")]
+    #[error("the email is invalid")]
     EmailInvalid,
-    #[error("la contraseña debe tener al menos {min} caracteres")]
+    #[error("the password must contain at least {min} characters")]
     PasswordTooShort { min: usize },
-    #[error("la contraseña supera el máximo de {max} bytes")]
+    #[error("the password exceeds the maximum of {max} bytes")]
     PasswordTooLong { max: usize },
-    #[error("la contraseña es demasiado común")]
+    #[error("the password is too common")]
     PasswordTooCommon,
 }
 
-/// Máximo en bytes, no en caracteres: argon2 procesa bytes y una contraseña de
-/// 1 MB es un DoS trivial.
+/// Maximum in bytes, not characters: argon2 processes bytes and a 1 MB
+/// password is a trivial DoS.
 pub const MAX_PASSWORD_BYTES: usize = 1024;
 
-/// Lista mínima de contraseñas prohibidas. Crece cuando aparezcan casos
-/// reales; no pretendo cubrir el espacio completo acá (eso es trabajo de
-/// una librería dedicada el día que haga falta).
+/// Minimal list of forbidden passwords. It grows as real cases arise; it does
+/// not attempt to cover the entire space (that is the job of a dedicated
+/// library when needed).
 const FORBIDDEN_PASSWORDS: &[&str] = &[
     "password",
-    "contraseña",
+    "contrase\u{f1}a",
     "123456789012",
     "qwertyuiopas",
     "administrador",
@@ -53,11 +53,11 @@ pub fn validate_password(password: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// Normaliza y valida un email.
+/// Normalize and validate an email.
 ///
-/// Normalización: recorta espacios y baja a minúsculas. La DB usa CITEXT, así
-/// que el unique es case-insensitive igual; esto es para que lo que se guarda
-/// sea canónico y las comparaciones en Rust no dependan de la DB.
+/// Normalization trims whitespace and lowercases. The DB uses CITEXT, so the
+/// unique constraint is case-insensitive anyway; this makes stored values
+/// canonical and Rust comparisons independent of the DB.
 pub fn normalize_email(raw: &str) -> Result<String, ValidationError> {
     let trimmed = raw.trim().to_lowercase();
 
@@ -68,9 +68,9 @@ pub fn normalize_email(raw: &str) -> Result<String, ValidationError> {
     Ok(trimmed)
 }
 
-/// Validación deliberadamente simple: exactamente un `@`, algo antes, un
-/// dominio con al menos un punto y sin espacios. La validación definitiva de
-/// que el email existe es mandarle un correo; una regex RFC 5322 no prueba eso.
+/// Deliberately simple validation: exactly one `@`, something before it, a
+/// domain with at least one dot, and no spaces. Definitive validation that the
+/// email exists requires sending mail; an RFC 5322 regex does not prove it.
 fn is_plausible_email(email: &str) -> bool {
     if email.is_empty() || email.len() > 254 || email.contains(char::is_whitespace) {
         return false;
@@ -95,8 +95,8 @@ impl fmt::Display for ValidatedEmail {
     }
 }
 
-/// Email que ya pasó por `normalize_email`. No se puede construir a mano, y por
-/// eso cualquier función que lo reciba sabe que está normalizado y válido.
+/// Email already passed through `normalize_email`. It cannot be constructed
+/// by hand, so any function receiving it knows it is normalized and valid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedEmail(String);
 
@@ -135,17 +135,14 @@ mod tests {
             "usuario@do..minio",
             "con espacio@dominio.com",
         ] {
-            assert!(
-                ValidatedEmail::parse(bad).is_err(),
-                "debió rechazar {bad:?}"
-            );
+            assert!(ValidatedEmail::parse(bad).is_err(), "should reject {bad:?}");
         }
     }
 
     #[test]
     fn accepts_realistic_emails() {
-        // `a@b.c` incluido a propósito: es estructuralmente válido y no
-        // validamos TLDs (la lista envejece y no prueba que el buzón exista).
+        // `a@b.c` is included deliberately: it is structurally valid and we
+        // do not validate TLDs (the list ages and does not prove the mailbox exists).
         for good in [
             "juan@pyme.com",
             "juan.perez@pyme.com.ar",
@@ -154,7 +151,7 @@ mod tests {
         ] {
             assert!(
                 ValidatedEmail::parse(good).is_ok(),
-                "debió aceptar {good:?}"
+                "should accept {good:?}"
             );
         }
     }

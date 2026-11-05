@@ -1,8 +1,8 @@
-//! Límite de intentos fallidos por cuenta, persistido en Postgres.
+//! Per-account failed-attempt limit, persisted in Postgres.
 //!
-//! Por qué en la DB y no en memoria: el bloqueo debe **sobrevivir un reinicio**.
-//! Si reiniciar el servidor limpia el contador, el atacante solo necesita
-//! esperar un deploy o tirar el proceso para recuperar sus intentos.
+//! Why the DB rather than memory: the lock must **survive a restart**. If
+//! restarting the server clears the counter, an attacker only needs to wait
+//! for a deploy or crash the process to recover their attempts.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -10,12 +10,12 @@ use sqlx::PgPool;
 use super::AccountPolicy;
 use crate::auth::validation::ValidatedEmail;
 
-/// Estado del límite para una cuenta, después de evaluarla.
+/// Account limit state after evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// Puede intentar.
+    /// May attempt.
     Allowed { remaining: i32 },
-    /// Bloqueada hasta el instante indicado.
+    /// Locked until the indicated time.
     Blocked { until: DateTime<Utc> },
 }
 
@@ -40,10 +40,10 @@ impl AccountLimiter {
         self.policy
     }
 
-    /// Consulta si la cuenta puede intentar un login.
+    /// Check whether the account may attempt a login.
     ///
-    /// No bloquea ni incrementa: solo lee. El incremento lo hace
-    /// [`record_failure`](Self::record_failure) cuando el intento falla.
+    /// Does not lock or increment: only reads. The increment is performed by
+    /// [`record_failure`](Self::record_failure) when an attempt fails.
     pub async fn check(&self, email: &ValidatedEmail) -> Result<Decision, sqlx::Error> {
         let row = sqlx::query!(
             r#"
@@ -57,23 +57,22 @@ impl AccountLimiter {
         .await?;
 
         let Some(row) = row else {
-            // Nunca intentó: puede.
+            // Never attempted: allowed.
             return Ok(Decision::Allowed {
                 remaining: self.policy.max_failures,
             });
         };
 
-        // Bloqueo vigente: se responde con el instante de expiración para que
-        // el cliente pueda informar al usuario cuánto falta, sin revelar nada
-        // que no sea el propio bloqueo de esa cuenta.
+        // Active lock: return the expiration time so the client can tell the
+        // user how long remains, without revealing anything beyond that
+        // account's own lock.
         if let Some(until) = row.blocked_until
             && until > Utc::now()
         {
             return Ok(Decision::Blocked { until });
         }
 
-        // Bloqueo vencido: se libera el contador. Se hace acá, en lectura, para
-        // no necesitar un job que limpie bloqueos.
+        // Expired lock: clear the counter here on read so no cleanup job is needed.
         if row.blocked_until.is_some() {
             sqlx::query!(
                 r#"
@@ -99,13 +98,13 @@ impl AccountLimiter {
         })
     }
 
-    /// Registra un intento fallido y, si corresponde, bloquea la cuenta.
+    /// Record a failed attempt and lock the account if appropriate.
     ///
-    /// Es un `UPSERT` atómico: dos intentos simultáneos no pueden ambos
-    /// "empezar de cero" y perder el conteo del otro.
+    /// This is an atomic `UPSERT`: two concurrent attempts cannot both
+    /// "start from zero" and lose each other's count.
     ///
-    /// La ventana se reinicia cuando `now() > window_start + window`, así que
-    /// los intentos viejos no suman para siempre.
+    /// The window resets when `now() > window_start + window`, so old attempts
+    /// do not count forever.
     pub async fn record_failure(&self, email: &ValidatedEmail) -> Result<Decision, sqlx::Error> {
         let window_secs = self.policy.window.as_secs_f64();
         let block_secs = self.policy.block_duration.as_secs_f64();
@@ -116,7 +115,7 @@ impl AccountLimiter {
             VALUES ($1, 1, now(), NULL, now())
             ON CONFLICT (email) DO UPDATE
             SET failed_count = CASE
-                    -- Ventana vencida: el conteo vuelve a empezar.
+                    -- Expired window: the count starts again.
                     WHEN login_attempts.window_start + make_interval(secs => $2) < now()
                         THEN 1
                     ELSE login_attempts.failed_count + 1
@@ -126,9 +125,9 @@ impl AccountLimiter {
                         THEN now()
                     ELSE login_attempts.window_start
                 END,
-                -- Se bloquea al alcanzar el máximo. El bloqueo se aplica aunque
-                -- ya estuviera vencido el anterior: un intento nuevo lo renueva
-                -- solo si vuelve a acumular fallas.
+                -- Lock on reaching the maximum. The lock applies even if the
+                -- previous one expired: a new attempt renews it only after
+                -- failures accumulate again.
                 blocked_until = CASE
                     WHEN (CASE
                             WHEN login_attempts.window_start + make_interval(secs => $2) < now()
@@ -157,12 +156,11 @@ impl AccountLimiter {
         }
     }
 
-    /// Limpia el bloqueo tras un login exitoso.
+    /// Clear the lock after a successful login.
     ///
-    /// Necesario: sin esto, un usuario que se equivocó 5 veces y después
-    /// recordó su contraseña queda bloqueado igual, y el bloqueo expira recién
-    /// por tiempo. Un login correcto es prueba suficiente de que no es un
-    /// atacante.
+    /// Necessary: without this, a user who made 5 mistakes and then remembered
+    /// their password remains locked until timeout. A successful login is
+    /// sufficient evidence that this is not an attacker.
     pub async fn record_success(&self, email: &ValidatedEmail) -> Result<(), sqlx::Error> {
         sqlx::query!(
             "DELETE FROM login_attempts WHERE email = $1",
@@ -174,10 +172,10 @@ impl AccountLimiter {
         Ok(())
     }
 
-    /// Borra contadores de cuentas sin actividad reciente.
+    /// Delete counters for accounts without recent activity.
     ///
-    /// Sin esto la tabla crece con cada email que alguien tipeó mal una vez.
-    /// Devuelve cuántas filas eliminó.
+    /// Without this, the table grows with every email someone mistyped once.
+    /// Returns the number of rows deleted.
     pub async fn purge_stale(&self, older_than: std::time::Duration) -> Result<u64, sqlx::Error> {
         let result = sqlx::query!(
             r#"
@@ -197,8 +195,8 @@ impl AccountLimiter {
 mod tests {
     use super::*;
 
-    // Los tests de comportamiento contra DB viven en tests/ratelimit.rs:
-    // necesitan una base real y `#[sqlx::test]` no aplica a unitarios.
+    // DB behavior tests live in tests/ratelimit.rs: they need a real database
+    // and `#[sqlx::test]` does not apply to unit tests.
 
     #[test]
     fn decision_knows_when_blocked() {

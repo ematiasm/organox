@@ -1,22 +1,22 @@
-//! Límite de requests por IP, en memoria.
+//! In-memory per-IP request limit.
 //!
-//! # Por qué en memoria
+//! # Why in memory
 //!
-//! Es la capa que corta el ataque **antes** de tocar la base de datos. Un
-//! atacante que hace 10 000 requests por segundo no debe provocar 10 000
-//! queries a Postgres ni 10 000 hashes de argon2: eso ya sería un ataque de
-//! denegación de servicio exitoso, aunque nunca adivine una contraseña.
+//! This layer stops attacks **before** touching the database. An attacker
+//! making 10,000 requests per second must not cause 10,000 Postgres queries
+//! or 10,000 argon2 hashes: that would already be a successful denial-of-service
+//! attack, even without guessing a password.
 //!
-//! # Costo asumido
+//! # Accepted cost
 //!
-//! El estado vive en el proceso, así que:
-//!  * no se comparte entre réplicas: con N réplicas, el límite efectivo es N×;
-//!  * se pierde al reiniciar.
+//! State lives in the process, so:
+//!  * it is not shared across replicas: with N replicas, the effective limit is N×;
+//!  * it is lost on restart.
 //!
-//! Es aceptable porque esta capa es una **primera barrera**, no la defensa
-//! principal. La defensa que sobrevive reinicios y réplicas es la de por cuenta
-//! (Postgres). Si algún día se necesita un límite por IP distribuido, se mueve a
-//! Redis sin cambiar la interfaz de [`IpLimiter`].
+//! This is acceptable because this layer is a **first barrier**, not the main
+//! defense. The defense surviving restarts and replicas is per-account
+//! (Postgres). If a distributed per-IP limit is needed, move it to Redis
+//! without changing the [`IpLimiter`] interface.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -25,10 +25,10 @@ use std::time::Instant;
 
 use super::IpPolicy;
 
-/// Ventana fija por IP.
+/// Fixed window per IP.
 ///
-/// Se elige ventana fija y no deslizante porque el objetivo es cortar picos, no
-/// ser exacto al milisegundo, y así el estado por IP es de dos números.
+/// A fixed rather than sliding window is chosen to stop spikes, not to be
+/// millisecond-accurate, keeping per-IP state to two numbers.
 #[derive(Debug, Clone, Copy)]
 struct Bucket {
     window_start: Instant,
@@ -38,8 +38,8 @@ struct Bucket {
 pub struct IpLimiter {
     policy: IpPolicy,
     buckets: Mutex<HashMap<IpAddr, Bucket>>,
-    /// Techo de entradas para que el mapa no crezca sin límite con IPs
-    /// spoofeadas o un escaneo desde muchos orígenes.
+    /// Entry cap to prevent unbounded map growth from spoofed IPs or scans
+    /// from many origins.
     max_entries: usize,
 }
 
@@ -52,27 +52,26 @@ impl IpLimiter {
         }
     }
 
-    /// Registra un request y dice si está permitido.
+    /// Record a request and say whether it is allowed.
     ///
-    /// Devuelve `None` si se permite, o los segundos sugeridos de espera si se
-    /// rechaza.
+    /// Returns `None` if allowed, or the suggested seconds to wait if rejected.
     pub fn check_and_record(&self, ip: IpAddr) -> Result<(), u64> {
         self.check_and_record_at(ip, Instant::now())
     }
 
-    /// Variante con tiempo inyectable, para tests deterministas.
+    /// Variant with injectable time, for deterministic tests.
     fn check_and_record_at(&self, ip: IpAddr, now: Instant) -> Result<(), u64> {
         let limit = self.policy.max_requests.saturating_add(self.policy.burst);
 
-        // Un mutex envenenado no debe tumbar el servidor: si eso pasa, el
-        // limitador se reinicia, lo que es degradar la defensa y no caer.
+        // A poisoned mutex must not crash the server: if it happens, the
+        // limiter resets, degrading the defense rather than going down.
         let mut buckets = match self.buckets.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        // Poda simple: si el mapa creció demasiado, se descartan las ventanas
-        // vencidas. Solo ocurre bajo presión, así que no vale un LRU.
+        // Simple pruning: if the map grew too large, discard expired windows.
+        // This happens only under pressure, so an LRU is not worthwhile.
         if buckets.len() > self.max_entries {
             buckets.retain(|_, b| now.duration_since(b.window_start) < self.policy.window);
         }
@@ -144,7 +143,7 @@ mod tests {
 
         assert!(limiter.check_and_record_at(a, now).is_ok());
         assert!(limiter.check_and_record_at(a, now).is_err());
-        // La IP b no paga los platos rotos de la a.
+        // IP b does not suffer the consequences of IP a.
         assert!(limiter.check_and_record_at(b, now).is_ok());
     }
 
@@ -156,7 +155,7 @@ mod tests {
 
         assert!(limiter.check_and_record_at(ip, now).is_ok());
         assert!(limiter.check_and_record_at(ip, now).is_err());
-        // Pasada la ventana, se vuelve a permitir.
+        // Once the window expires, requests are allowed again.
         let later = now + Duration::from_secs(61);
         assert!(limiter.check_and_record_at(ip, later).is_ok());
     }
@@ -171,6 +170,6 @@ mod tests {
         let retry = limiter
             .check_and_record_at(ip, now + Duration::from_secs(20))
             .unwrap_err();
-        assert_eq!(retry, 40, "faltan 40s de una ventana de 60s");
+        assert_eq!(retry, 40, "40s remain in a 60s window");
     }
 }

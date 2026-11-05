@@ -1,5 +1,5 @@
-//! Rutas. La raíz de la API vive bajo `/api/v1` desde el día uno: versionar
-//! después implica romper clientes, versionar ahora es gratis.
+//! Routes. The API root lives under `/api/v1` from day one: versioning later
+//! breaks clients; versioning now is free.
 
 use axum::Router;
 use axum::extract::State;
@@ -11,8 +11,8 @@ use crate::AppState;
 use crate::db;
 use crate::error::AppError;
 
-/// Directorio con el build del frontend. Configurable para no atar el binario
-/// a una ruta relativa fija.
+/// Frontend build directory. Configurable to avoid tying the binary to a fixed
+/// relative path.
 const FRONTEND_DIR: &str = "frontend/build";
 
 pub fn router(state: AppState) -> Router {
@@ -20,35 +20,33 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .nest("/api/v1", api_v1(state.clone()))
-        // El fallback va ÚLTIMO y después de `/api/v1`: si se declara antes, un
-        // `fetch` a la API que no matchea ninguna ruta recibe `index.html` en
-        // vez de un 404 JSON, y el frontend falla con un error de parseo que no
-        // dice nada.
+        // The fallback goes LAST and after `/api/v1`: if declared earlier, an
+        // API `fetch` matching no route receives `index.html` instead of a JSON
+        // 404, and the frontend fails with an uninformative parsing error.
         .fallback(spa_fallback)
         .with_state(state)
 }
 
-/// Sirve el build de SvelteKit.
+/// Serve the SvelteKit build.
 ///
-/// Como es una SPA (`adapter-static` con `fallback: 'index.html'`), cualquier
-/// ruta que no sea un archivo real devuelve `index.html` y el router del
-/// navegador la resuelve. Sin esto, `/products` funciona al navegar pero da 404
-/// al refrescar.
+/// As this is an SPA (`adapter-static` with `fallback: 'index.html'`), any
+/// route that is not a real file returns `index.html` and the browser router
+/// resolves it. Without this, `/products` works when navigating but returns 404
+/// on refresh.
 fn frontend_service() -> ServeDir<ServeFile> {
     ServeDir::new(FRONTEND_DIR).fallback(ServeFile::new(format!("{FRONTEND_DIR}/index.html")))
 }
 
-/// Fallback de todas las rutas no reconocidas.
+/// Fallback for all unrecognized routes.
 ///
-/// Dos comportamientos distintos según el prefijo, y esto importa:
+/// Two different behaviors depending on the prefix, and this matters:
 ///
-///  * **`/api/*` sin ruta declarada** → `404` JSON (`application/problem+json`).
-///    Si acá se devolviera `index.html`, un `fetch` a un endpoint inexistente
-///    recibiría HTML con status 200 y el frontend fallaría con un error de
-///    parseo que no dice nada. Lo detectó el test
-///    `unknown_api_route_returns_404`.
-///  * **Cualquier otra ruta** → el build de la SPA (archivo real, o
-///    `index.html` para las rutas que resuelve el router del navegador).
+///  * **`/api/*` without a declared route** → JSON `404` (`application/problem+json`).
+///    Returning `index.html` here would give a `fetch` to a nonexistent endpoint
+///    HTML with status 200, and the frontend would fail with an uninformative
+///    parsing error. The `unknown_api_route_returns_404` test caught this.
+///  * **Any other route** → the SPA build (a real file, or `index.html` for
+///    routes resolved by the browser router).
 async fn spa_fallback(request: axum::extract::Request) -> axum::response::Response {
     use axum::response::IntoResponse;
     use tower::ServiceExt;
@@ -60,17 +58,17 @@ async fn spa_fallback(request: axum::extract::Request) -> axum::response::Respon
     match frontend_service().oneshot(request).await {
         Ok(response) => response.into_response(),
         Err(err) => {
-            tracing::error!(error = ?err, "no se pudo servir el frontend");
-            AppError::Internal("no se pudo servir el frontend".to_string()).into_response()
+            tracing::error!(error = ?err, "could not serve the frontend");
+            AppError::Internal("could not serve the frontend".to_string()).into_response()
         }
     }
 }
 
-/// Acá se enchufan los módulos de dominio a medida que existan.
+/// Domain modules are plugged in here as they become available.
 fn api_v1(state: AppState) -> Router<AppState> {
     Router::new()
-        // Swagger UI expone el spec en `/openapi.json`; declararlo aparte
-        // provocaba "Overlapping method route". La UI vive en `/api/v1/docs`.
+        // Swagger UI exposes the spec at `/openapi.json`; declaring it separately
+        // caused "Overlapping method route". The UI lives at `/api/v1/docs`.
         .merge(
             utoipa_swagger_ui::SwaggerUi::new("/docs").url("/openapi.json", crate::openapi::spec()),
         )
@@ -79,14 +77,14 @@ fn api_v1(state: AppState) -> Router<AppState> {
         .merge(crate::sales::handlers::router())
 }
 
-/// Liveness: el proceso está vivo. No toca dependencias externas.
-/// Si esta ruta falla, el orquestador debe reiniciar el proceso.
+/// Liveness: the process is alive. Does not touch external dependencies.
+/// If this route fails, the orchestrator should restart the process.
 async fn healthz() -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
-/// Readiness: el proceso puede atender tráfico. Si esta falla, el balanceador
-/// debe sacarlo de rotación pero NO reiniciarlo.
+/// Readiness: the process can handle traffic. If this fails, the load balancer
+/// should remove it from rotation but NOT restart it.
 async fn readyz(State(state): State<AppState>) -> Result<StatusCode, AppError> {
     db::ping(&state.pool)
         .await

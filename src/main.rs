@@ -1,5 +1,5 @@
-//! Punto de entrada. Responsabilidad única: cargar config, inicializar logging,
-//! conectar la DB, armar el router y servir. Sin lógica de negocio.
+//! Entry point. Sole responsibility: load config, initialize logging, connect
+//! the DB, assemble the router and serve. No business logic.
 
 use std::process::ExitCode;
 
@@ -15,9 +15,8 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            // En este punto el logger puede no estar inicializado, por eso
-            // también escribimos a stderr.
-            eprintln!("error fatal: {err}");
+            // The logger may not yet be initialized, so also write to stderr.
+            eprintln!("fatal error: {err}");
             ExitCode::FAILURE
         }
     }
@@ -27,9 +26,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
     telemetry::init(config.log_format, &config.rust_log);
 
-    // Precalentar el hash señuelo fuera del camino de una request: si se
-    // calculara en el primer login fallido, esa latencia extra distinguiría
-    // "email inexistente" de "contraseña incorrecta".
+    // Warm the dummy hash outside the request path: if calculated on the
+    // first failed login, that extra latency would distinguish "unknown email"
+    // from "incorrect password".
     tokio::task::spawn_blocking(organox::auth::service::warm_dummy_hash)
         .await
         .ok();
@@ -38,11 +37,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(
         bind = %config.bind_addr,
         db_max_connections = pool.options().get_max_connections(),
-        "iniciando organox"
+        "starting organox"
     );
 
-    // El CookieManagerLayer tiene que envolver al router: los extractores
-    // `Cookies` y `AuthUser` dependen de él.
+    // CookieManagerLayer must wrap the router: the `Cookies` and `AuthUser`
+    // extractors depend on it.
     let state = AppState::with_policies(
         pool,
         config.cookie_secure,
@@ -56,17 +55,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
-        // El request id debe generarse ANTES del span de trace para que el
-        // span ya lo vea, y propagarse en la respuesta.
+        // Generate the request id BEFORE the trace span so the span sees it,
+        // and propagate it in the response.
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
-    tracing::info!("escuchando en http://{}", listener.local_addr()?);
+    tracing::info!("listening on http://{}", listener.local_addr()?);
 
-    // `into_make_service_with_connect_info` es lo que permite al middleware de
-    // rate limiting ver la IP de la conexión. Sin esto, todas las requests
-    // caen bajo loopback y el límite por IP sería inútil en producción.
+    // `into_make_service_with_connect_info` lets rate limiting middleware see
+    // the connection IP. Without it, all requests fall under loopback and the
+    // per-IP limit would be useless in production.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -77,19 +76,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Espera SIGINT o SIGTERM para cerrar ordenadamente (deja de aceptar
-/// conexiones y termina las requests en curso).
+/// Wait for SIGINT or SIGTERM to shut down gracefully (stop accepting
+/// connections and finish in-flight requests).
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
-            .expect("no se pudo instalar el handler de Ctrl+C");
+            .expect("could not install the Ctrl+C handler");
     };
 
     #[cfg(unix)]
     let terminate = async {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("no se pudo instalar el handler de SIGTERM")
+            .expect("could not install the SIGTERM handler")
             .recv()
             .await;
     };
@@ -102,5 +101,5 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 
-    tracing::info!("señal de apagado recibida, cerrando");
+    tracing::info!("shutdown signal received, shutting down");
 }

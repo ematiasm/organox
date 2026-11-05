@@ -1,46 +1,46 @@
-//! Especificación OpenAPI 3.1 generada desde el código.
+//! OpenAPI 3.1 specification generated from code.
 //!
-//! # Por qué existe
+//! # Why it exists
 //!
-//! El frontend consume tipos de TypeScript **generados** desde este spec, no
-//! escritos a mano. Si el backend cambia un campo, el `schema.d.ts` cambia y
-//! `svelte-check` falla. Sin esto, el contrato vive en la cabeza de quien
-//! escribió el handler.
+//! The frontend consumes TypeScript types **generated** from this spec, not
+//! handwritten. If the backend changes a field, `schema.d.ts` changes and
+//! `svelte-check` fails. Without this, the contract lives in the head of the
+//! person who wrote the handler.
 //!
-//! # La regla que el spec debe respetar
+//! # The rule the spec must respect
 //!
-//! Los decimales son **string** en ambos sentidos:
+//! Decimals are **strings** in both directions:
 //!
-//! - **Salida**: `price`, `stock`, `min_stock`, `quantity`, `unit_cost` son
-//!   `String` en los DTOs. Un `f64` en JSON pierde precisión en dinero.
-//! - **Entrada**: el servidor *también* acepta números (`rust_decimal` los
-//!   deserializa), pero el spec documenta **solo string** porque es el contrato
-//!   que el frontend debe usar. Aceptar números es tolerancia del parseo, no
-//!   parte del contrato.
-//!   Ver `tests/catalog.rs::decimal_inputs_accept_both_string_and_number`.
+//! - **Output**: `price`, `stock`, `min_stock`, `quantity`, `unit_cost` are
+//!   `String` in DTOs. An `f64` in JSON loses monetary precision.
+//! - **Input**: the server *also* accepts numbers (`rust_decimal` deserializes
+//!   them), but the spec documents **only strings** because that is the
+//!   contract the frontend must use. Accepting numbers is parsing tolerance,
+//!   not part of the contract.
+//!   See `tests/catalog.rs::decimal_inputs_accept_both_string_and_number`.
 //!
-//! # Errores
+//! # Errors
 //!
-//! Todas las respuestas de error usan `application/problem+json` (RFC 7807) con
-//! el schema [`Problem`]. El `429` agrega el header `Retry-After`.
+//! All error responses use `application/problem+json` (RFC 7807) with the
+//! [`Problem`] schema. `429` adds the `Retry-After` header.
 
 use utoipa::OpenApi;
 
-/// Cuerpo de error RFC 7807. Mismo shape para todos los códigos.
+/// RFC 7807 error body. Same shape for every status code.
 #[derive(utoipa::ToSchema)]
 #[allow(dead_code)]
 pub struct Problem {
-    /// URI que identifica el tipo de problema. Siempre `about:blank` hoy.
+    /// URI identifying the problem type. Currently always `about:blank`.
     #[schema(example = "about:blank")]
     pub r#type: String,
-    /// Resumen legible y estable del problema.
+    /// Human-readable, stable summary of the problem.
     #[schema(example = "Unauthorized")]
     pub title: String,
-    /// Código HTTP, repetido en el cuerpo para clientes que no leen headers.
+    /// HTTP status, repeated in the body for clients that do not read headers.
     #[schema(example = 401)]
     pub status: u16,
-    /// Explicación accionable para el usuario.
-    #[schema(example = "Credenciales inválidas o sesión vencida.")]
+    /// Actionable explanation for the user.
+    #[schema(example = "Invalid credentials or expired session.")]
     pub detail: String,
 }
 
@@ -49,16 +49,16 @@ pub struct Problem {
     info(
         title = "organox",
         version = env!("CARGO_PKG_VERSION"),
-        description = "Administrador de negocio para una PyME (stock e insumos). \
+        description = "Business administration for a small or medium enterprise (stock and supplies). \
                        Single-tenant.\n\n\
-                       **Autenticación**: salvo `POST /api/v1/auth/login`, toda ruta \
-                       requiere la cookie de sesión `session` (HttpOnly, SameSite=Strict). \
-                       Sin ella devuelve `401`.\n\n\
-                       **Errores**: todas las respuestas de error usan \
-                       `application/problem+json` (RFC 7807). El `429` incluye además \
-                       el header `Retry-After` en segundos.\n\n\
-                       **Decimales**: viajan siempre como **string** (`\"1500.50\"`, \
-                       `\"12.5\"`), nunca como número, para no perder precisión."
+                       **Authentication**: except `POST /api/v1/auth/login`, every route \
+                       requires the `session` cookie (HttpOnly, SameSite=Strict). \
+                       Without it, routes return `401`.\n\n\
+                       **Errors**: all error responses use \
+                       `application/problem+json` (RFC 7807). A `429` also includes \
+                       the `Retry-After` header in seconds.\n\n\
+                       **Decimals**: always transmitted as **strings** (`\"1500.50\"`, \
+                       `\"12.5\"`), never numbers, to avoid losing precision."
     ),
     paths(
         crate::auth::handlers::login_doc,
@@ -107,14 +107,14 @@ pub struct Problem {
         crate::sales::model::SaleStatus,
     )),
     tags(
-        (name = "auth", description = "Sesión y usuarios"),
-        (name = "catalog", description = "Productos, servicios y libro de stock"),
-        (name = "sales", description = "Carrito persistido y cobro"),
+        (name = "auth", description = "Sessions and users"),
+        (name = "catalog", description = "Products, services and stock ledger"),
+        (name = "sales", description = "Persisted cart and checkout"),
     )
 )]
 pub struct ApiDoc;
 
-/// El spec completo.
+/// The complete spec.
 pub fn spec() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }
@@ -124,10 +124,10 @@ mod tests {
     use super::*;
 
     fn json() -> serde_json::Value {
-        serde_json::to_value(spec()).expect("el spec debe serializar")
+        serde_json::to_value(spec()).expect("the spec must serialize")
     }
 
-    /// El contrato que el frontend consume: los decimales de salida son string.
+    /// The contract consumed by the frontend: output decimals are strings.
     #[test]
     fn decimal_outputs_are_documented_as_string() {
         let doc = json();
@@ -137,11 +137,11 @@ mod tests {
             let schema = serde_json::to_string(&product[field]).unwrap();
             assert!(
                 schema.contains("\"string\""),
-                "ProductResponse.{field} debe documentarse como string, fue: {schema}"
+                "ProductResponse.{field} must be documented as string, was: {schema}"
             );
             assert!(
                 !schema.contains("\"number\""),
-                "ProductResponse.{field} NO debe documentarse como número: {schema}"
+                "ProductResponse.{field} must NOT be documented as number: {schema}"
             );
         }
     }
@@ -155,7 +155,7 @@ mod tests {
             let schema = serde_json::to_string(&create[field]).unwrap();
             assert!(
                 schema.contains("\"string\""),
-                "CreateProductRequest.{field} debe documentarse como string: {schema}"
+                "CreateProductRequest.{field} must be documented as string: {schema}"
             );
         }
     }
@@ -165,15 +165,15 @@ mod tests {
         let doc = json();
         let paths = doc["paths"].as_object().expect("paths");
 
-        assert!(!paths.is_empty(), "el spec no debe estar vacío");
+        assert!(!paths.is_empty(), "the spec must not be empty");
         for path in paths.keys() {
             assert!(
                 path.starts_with("/api/v1/"),
-                "toda ruta documentada debe vivir bajo /api/v1: {path}"
+                "every documented route must live under /api/v1: {path}"
             );
         }
 
-        // Las once rutas reales del backend.
+        // The eleven real backend routes.
         for expected in [
             "/api/v1/auth/login",
             "/api/v1/auth/logout",
@@ -184,13 +184,16 @@ mod tests {
             "/api/v1/products/{id}/deactivate",
             "/api/v1/products/{id}/movements",
         ] {
-            assert!(paths.contains_key(expected), "falta documentar {expected}");
+            assert!(
+                paths.contains_key(expected),
+                "missing documentation for {expected}"
+            );
         }
     }
 
-    /// Barrido general: NINGÚN campo decimal puede documentarse como objeto o
-    /// número. El caso de `UpdateProductRequest.price` se coló como `object`
-    /// y lo detectó este test, no una lectura.
+    /// General sweep: NO decimal field may be documented as an object or
+    /// number. `UpdateProductRequest.price` slipped in as `object`, and this
+    /// test caught it, not a manual reading.
     #[test]
     fn no_decimal_field_is_documented_as_object_or_number() {
         const DECIMAL_FIELDS: &[(&str, &[&str])] = &[
@@ -210,19 +213,19 @@ mod tests {
         for (schema_name, fields) in DECIMAL_FIELDS {
             for field in *fields {
                 let raw = serde_json::to_string(&schemas[schema_name]["properties"][field])
-                    .unwrap_or_else(|_| panic!("{schema_name}.{field} ausente"));
+                    .unwrap_or_else(|_| panic!("{schema_name}.{field} missing"));
 
                 assert!(
                     !raw.contains("\"number\""),
-                    "{schema_name}.{field} no debe ser número: {raw}"
+                    "{schema_name}.{field} must not be number: {raw}"
                 );
                 assert!(
                     !raw.contains("\"object\""),
-                    "{schema_name}.{field} no debe ser object: {raw}"
+                    "{schema_name}.{field} must not be object: {raw}"
                 );
                 assert!(
                     raw.contains("\"string\""),
-                    "{schema_name}.{field} debe ser string: {raw}"
+                    "{schema_name}.{field} must be string: {raw}"
                 );
             }
         }
@@ -236,7 +239,7 @@ mod tests {
         for field in ["type", "title", "status", "detail"] {
             assert!(
                 !problem[field].is_null(),
-                "Problem debe declarar el campo {field}"
+                "Problem must declare field {field}"
             );
         }
     }

@@ -1,8 +1,8 @@
-//! Configuración tipada, cargada una sola vez al arrancar.
+//! Typed configuration, loaded once at startup.
 //!
-//! Regla: si falta una variable o tiene un valor inválido, el proceso no
-//! arranca y el mensaje dice exactamente qué corregir. Nunca defaults
-//! silenciosos para secretos ni para la URL de la base.
+//! Rule: if a variable is missing or invalid, the process does not start and
+//! the message says exactly what to fix. Never silently default secrets or the
+//! database URL.
 
 use std::net::SocketAddr;
 
@@ -20,14 +20,14 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub log_format: LogFormat,
     pub rust_log: String,
-    /// `Secure` en la cookie de sesión. Default `true`; en dev con HTTP local
-    /// se baja con `APP_COOKIE_SECURE=false`.
+    /// `Secure` on the session cookie. Defaults to `true`; for local HTTP in
+    /// development, disable with `APP_COOKIE_SECURE=false`.
     pub cookie_secure: bool,
-    /// Intentos fallidos por cuenta antes de bloquearla.
+    /// Failed attempts per account before locking it.
     pub login_max_failures: i32,
-    /// Minutos que dura el bloqueo por cuenta.
+    /// Duration of the account lock in minutes.
     pub login_block_minutes: i64,
-    /// Logins por minuto permitidos por IP.
+    /// Logins allowed per minute per IP.
     pub login_ip_max_per_minute: u32,
 }
 
@@ -52,7 +52,7 @@ impl Config {
 }
 
 impl Config {
-    /// Lee la configuración del entorno. Pensado para llamarse una vez al inicio.
+    /// Read configuration from the environment. Intended to run once at startup.
     pub fn from_env() -> Result<Self, AppError> {
         let database_url = required("DATABASE_URL")?;
         let bind_addr = parse("APP_BIND_ADDR", "0.0.0.0:3000")?;
@@ -61,7 +61,7 @@ impl Config {
             Some("json") => LogFormat::Json,
             Some(other) => {
                 return Err(AppError::Config(format!(
-                    "APP_LOG_FORMAT debe ser \"pretty\" o \"json\", recibido: {other:?}"
+                    "APP_LOG_FORMAT must be \"pretty\" or \"json\", received: {other:?}"
                 )));
             }
         };
@@ -74,7 +74,7 @@ impl Config {
 
         if login_max_failures < 1 {
             return Err(AppError::Config(
-                "APP_LOGIN_MAX_FAILURES debe ser al menos 1".to_string(),
+                "APP_LOGIN_MAX_FAILURES must be at least 1".to_string(),
             ));
         }
 
@@ -98,7 +98,7 @@ fn optional(key: &str) -> Option<String> {
 fn required(key: &str) -> Result<String, AppError> {
     optional(key).ok_or_else(|| {
         AppError::Config(format!(
-            "falta la variable de entorno {key}. Copiá .env.example a .env"
+            "missing environment variable {key}. Copy .env.example to .env"
         ))
     })
 }
@@ -111,7 +111,7 @@ fn parse_bool(key: &str, default: bool) -> Result<bool, AppError> {
         "true" | "1" | "yes" => Ok(true),
         "false" | "0" | "no" => Ok(false),
         other => Err(AppError::Config(format!(
-            "{key} debe ser true o false, recibido: {other:?}"
+            "{key} must be true or false, received: {other:?}"
         ))),
     }
 }
@@ -124,5 +124,5 @@ where
     let value = optional(key).unwrap_or_else(|| default.to_string());
     value
         .parse()
-        .map_err(|e| AppError::Config(format!("{key} tiene un valor inválido ({value:?}): {e}")))
+        .map_err(|e| AppError::Config(format!("{key} has an invalid value ({value:?}): {e}")))
 }

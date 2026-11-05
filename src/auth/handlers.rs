@@ -1,8 +1,7 @@
-//! Handlers HTTP de autenticación.
+//! Authentication HTTP handlers.
 //!
-//! Responsabilidad acotada: traducir HTTP ↔ casos de uso. Sin SQL, sin reglas
-//! de negocio, sin decisión de autorización (esa vive en el service y en los
-//! extractores).
+//! Limited responsibility: translate HTTP ↔ use cases. No SQL, business rules,
+//! or authorization decisions (those live in the service and extractors).
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -25,9 +24,8 @@ pub fn router(state: AppState) -> Router<AppState> {
     use axum::middleware::from_fn_with_state;
     use axum::routing::post;
 
-    // El límite por IP se aplica SOLO al login. Aplicarlo a toda la API
-    // castigaría a un frontend legítimo que hace polling y no aporta nada
-    // contra fuerza bruta.
+    // Apply the IP limit ONLY to login. Applying it to the entire API would
+    // penalize a legitimate polling frontend and add nothing against brute force.
     let guarded_login =
         Router::new()
             .route("/auth/login", post(login))
@@ -45,7 +43,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
 // --- DTOs ---------------------------------------------------------------
 //
-// Nunca se serializa la struct del dominio. Estos tipos son el contrato HTTP.
+// Never serialize the domain struct. These types are the HTTP contract.
 
 #[derive(Deserialize, ToSchema)]
 pub struct LoginRequest {
@@ -101,13 +99,13 @@ async fn login(
     {
         LoginOutcome::InvalidCredentials => Err(AppError::Unauthorized),
         LoginOutcome::Locked { until } => {
-            // Se calcula el resto en segundos y se informa por `Retry-After`.
-            // Sin esto el cliente no sabe si esperar 2 segundos o 2 días.
+            // Compute the remaining seconds and report them via `Retry-After`.
+            // Without this the client cannot know whether to wait 2 seconds or 2 days.
             let secs = (until - chrono::Utc::now()).num_seconds().max(1) as u64;
             tracing::warn!(
                 email = %body.email,
                 retry_after_secs = secs,
-                "login bloqueado por intentos fallidos"
+                "login locked due to failed attempts"
             );
             Err(AppError::TooManyRequests {
                 retry_after_secs: secs,
@@ -138,8 +136,8 @@ async fn logout(
     user: AuthUser,
     cookies: Cookies,
 ) -> Result<StatusCode, AppError> {
-    // Se borra la sesión en la DB, no solo la cookie: si la cookie fue robada,
-    // el token deja de servir en el próximo request.
+    // Delete the session from the DB, not just the cookie: if the cookie was
+    // stolen, the token stops working on the next request.
     service::logout_by_hash(&state.pool, user.token_hash()).await?;
     cookies.remove(removal_cookie(state.cookie_secure));
 
@@ -159,7 +157,7 @@ async fn create_user(
     user: AuthUser,
     Json(body): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<CreateUserResponse>), AppError> {
-    // 403 antes de tocar la DB o gastar un hash de argon2.
+    // 403 before touching the DB or spending an argon2 hash.
     user.require_user_management()?;
 
     let id = service::create_user(
@@ -180,9 +178,9 @@ fn session_cookie(value: String, expires_at: DateTime<Utc>, secure: bool) -> Coo
     let mut cookie = Cookie::new(SESSION_COOKIE, value);
     cookie.set_http_only(true);
     cookie.set_secure(secure);
-    // Strict: la cookie no viaja en requests originadas por otro sitio, lo que
-    // corta CSRF de raíz para esta API. Lax también serviría con un frontend
-    // en otro origen, pero entonces haría falta token CSRF explícito.
+    // Strict: the cookie does not travel on requests originating from another
+    // site, stopping CSRF at the root for this API. Lax would also support a
+    // frontend on another origin, but would require an explicit CSRF token.
     cookie.set_same_site(SameSite::Strict);
     cookie.set_path("/");
     cookie.set_expires(
@@ -198,12 +196,12 @@ fn removal_cookie(secure: bool) -> Cookie<'static> {
     cookie.set_secure(secure);
     cookie.set_same_site(SameSite::Strict);
     cookie.set_path("/");
-    // Expirar en el pasado es la forma canónica de borrar una cookie.
+    // Expiring in the past is the canonical way to delete a cookie.
     cookie.make_removal();
     cookie
 }
 
-// --- Errores ------------------------------------------------------------
+// --- Errors -------------------------------------------------------------
 
 impl From<AuthError> for AppError {
     fn from(err: AuthError) -> Self {
@@ -213,85 +211,87 @@ impl From<AuthError> for AppError {
                 retry_after_secs: (until - chrono::Utc::now()).num_seconds().max(1) as u64,
             },
             AuthError::Validation(v) => AppError::Validation(v.to_string()),
-            AuthError::EmailTaken => AppError::Conflict("el email ya está registrado".to_string()),
+            AuthError::EmailTaken => {
+                AppError::Conflict("the email is already registered".to_string())
+            }
             AuthError::Internal(repo_err) => AppError::Internal(repo_err.to_string()),
         }
     }
 }
 
-// --- Documentación OpenAPI ---------------------------------------------
+// --- OpenAPI documentation ---------------------------------------------
 //
-// Stubs: solo existen para que `#[utoipa::path]` genere el PathItem. La ruta
-// real la sirve el handler correspondiente arriba. Se declaran acá, junto al
-// handler, para que un cambio de firma rompa la compilación en el mismo lugar.
+// Stubs exist only for `#[utoipa::path]` to generate the PathItem. The real
+// route is served by the corresponding handler above. They are declared here,
+// alongside the handler, so a signature change breaks compilation in one place.
 
-/// Inicia sesión.
+/// Log in.
 ///
-/// Devuelve la cookie `session` (HttpOnly, SameSite=Strict) y el usuario.
+/// Returns the `session` cookie (HttpOnly, SameSite=Strict) and the user.
 ///
-/// `429` significa cuenta bloqueada por intentos fallidos; incluye
-/// `Retry-After` con los segundos que faltan.
+/// `429` means the account is locked after failed attempts; includes
+/// `Retry-After` with the remaining seconds.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/login",
     tag = "auth",
     request_body = LoginRequest,
     responses(
-        (status = 200, description = "Sesión iniciada", body = LoginResponse,
+        (status = 200, description = "Session started", body = LoginResponse,
          headers(("Set-Cookie", description = "session=<token>; HttpOnly; SameSite=Strict"))),
-        (status = 401, description = "Credenciales inválidas", body = crate::openapi::Problem,
+        (status = 401, description = "Invalid credentials", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 429, description = "Cuenta bloqueada por intentos fallidos", body = crate::openapi::Problem,
+        (status = 429, description = "Account locked after failed attempts", body = crate::openapi::Problem,
          content_type = "application/problem+json",
-         headers(("Retry-After", description = "Segundos hasta poder reintentar"))),
+         headers(("Retry-After", description = "Seconds until retry"))),
     )
 )]
 #[allow(dead_code)]
 fn login_doc() {}
 
-/// Cierra la sesión en el servidor, no solo en el cliente.
+/// End the session on the server, not just the client.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/logout",
     tag = "auth",
     responses(
-        (status = 204, description = "Sesión borrada"),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 204, description = "Session deleted"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn logout_doc() {}
 
-/// Usuario autenticado en la request actual.
+/// Authenticated user in the current request.
 #[utoipa::path(
     get,
     path = "/api/v1/auth/me",
     tag = "auth",
     responses(
-        (status = 200, description = "Usuario actual", body = UserResponse),
-        (status = 401, description = "Sin sesión o sesión vencida", body = crate::openapi::Problem,
+        (status = 200, description = "Current user", body = UserResponse),
+        (status = 401, description = "No session or expired session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn me_doc() {}
 
-/// Crea un usuario. Solo `owner`.
+/// Create a user. Only `owner`.
 #[utoipa::path(
     post,
     path = "/api/v1/users",
     tag = "auth",
     request_body = CreateUserRequest,
     responses(
-        (status = 201, description = "Usuario creado", body = CreateUserResponse),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 201, description = "User created", body = CreateUserResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 403, description = "El rol no permite gestionar usuarios", body = crate::openapi::Problem,
+        (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "El email ya está registrado", body = crate::openapi::Problem,
+        (status = 409, description = "Email is already registered", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 422, description = "Entrada inválida (email o contraseña)", body = crate::openapi::Problem,
+        (status = 422, description = "Invalid input (email or password)", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]

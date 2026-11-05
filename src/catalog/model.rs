@@ -1,8 +1,8 @@
-//! Tipos del catálogo.
+//! Catalog types.
 //!
-//! Decisión de esta capa: el stock **no es un campo**. Es la suma firmada de los
-//! movimientos. `Product` no tiene `stock`, y `ProductWithStock` lo agrega como
-//! resultado de una consulta, nunca como algo almacenado y editable.
+//! Layer decision: stock **is not a field**. It is the signed sum of movements.
+//! `Product` has no `stock`, and `ProductWithStock` adds it as a query result,
+//! never as something stored and editable.
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -11,7 +11,7 @@ use std::fmt;
 use std::str::FromStr;
 use uuid::Uuid;
 
-/// Un ítem del catálogo puede llevar stock o no.
+/// A catalog item may or may not track stock.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
 )]
@@ -30,8 +30,8 @@ impl ProductKind {
         }
     }
 
-    /// Solo los productos llevan stock. Esta es la regla que el servicio
-    /// consulta antes de aceptar un movimiento, y la misma que la DB impone con
+    /// Only products track stock. This rule is consulted by the service before
+    /// accepting a movement, and also enforced by the DB with
     /// `products_service_has_no_min_stock`.
     pub fn tracks_stock(self) -> bool {
         matches!(self, ProductKind::Product)
@@ -51,14 +51,12 @@ impl FromStr for ProductKind {
         match s.to_ascii_lowercase().as_str() {
             "product" | "producto" => Ok(ProductKind::Product),
             "service" | "servicio" => Ok(ProductKind::Service),
-            other => Err(format!(
-                "tipo desconocido: {other:?} (válidos: product, service)"
-            )),
+            other => Err(format!("unknown kind: {other:?} (valid: product, service)")),
         }
     }
 }
 
-/// Por qué se movió el stock.
+/// Why stock was moved.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema,
 )]
@@ -81,10 +79,10 @@ impl MovementReason {
         }
     }
 
-    /// El signo que el motivo aplica al stock. La cantidad se guarda siempre
-    /// positiva; esta función es la única que decide si suma o resta. Tenerla
-    /// acá (y no en SQL disperso) evita el bug clásico de una venta que suma
-    /// porque alguien se olvidó el `-`.
+    /// The sign the reason applies to stock. Quantity is always stored positive;
+    /// only this function decides whether to add or subtract. Keeping it here
+    /// (rather than in scattered SQL) avoids the classic bug of a sale adding
+    /// stock because someone forgot the `-`.
     pub fn sign(self) -> i8 {
         match self {
             MovementReason::Purchase | MovementReason::Adjustment => 1,
@@ -92,7 +90,7 @@ impl MovementReason {
         }
     }
 
-    /// Cuánto aporta este movimiento al stock, con signo.
+    /// This movement's signed contribution to stock.
     pub fn signed_effect(self, quantity: Decimal) -> Decimal {
         quantity * Decimal::from(self.sign())
     }
@@ -112,15 +110,15 @@ impl FromStr for MovementReason {
             "purchase" | "compra" => Ok(MovementReason::Purchase),
             "sale" | "venta" => Ok(MovementReason::Sale),
             "adjustment" | "ajuste" => Ok(MovementReason::Adjustment),
-            "loss" | "perdida" | "pérdida" => Ok(MovementReason::Loss),
+            "loss" | "perdida" | "p\u{e9}rdida" => Ok(MovementReason::Loss),
             other => Err(format!(
-                "motivo desconocido: {other:?} (válidos: purchase, sale, adjustment, loss)"
+                "unknown reason: {other:?} (valid: purchase, sale, adjustment, loss)"
             )),
         }
     }
 }
 
-/// Ítem del catálogo tal como vive en la DB. Sin stock: el stock se calcula.
+/// Catalog item as stored in the DB. No stock field: stock is calculated.
 #[derive(Debug, Clone)]
 pub struct Product {
     pub id: Uuid,
@@ -135,18 +133,18 @@ pub struct Product {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Producto + stock calculado. `stock` es `None` para servicios: no es cero,
-/// es "no aplica". Esa distinción importa en la API.
+/// Product + calculated stock. `stock` is `None` for services: it is not zero,
+/// it is "not applicable". That distinction matters in the API.
 #[derive(Debug, Clone)]
 pub struct ProductWithStock {
     pub product: Product,
     pub stock: Option<Decimal>,
 }
 
-/// Si el producto está por debajo del mínimo.
+/// Whether the product is below the minimum.
 ///
-/// Un producto sin `min_stock` configurado nunca está bajo: no hay umbral que
-/// violar. Un servicio tampoco, porque no lleva stock.
+/// A product without `min_stock` configured is never low: there is no threshold
+/// to violate. Neither is a service, because it does not track stock.
 pub fn is_low_stock(product: &Product, stock: Option<Decimal>) -> Option<bool> {
     let (min_stock, stock) = (product.min_stock?, stock?);
     Some(stock <= min_stock)
@@ -173,7 +171,7 @@ mod tests {
 
     #[test]
     fn signed_effect_never_changes_the_stored_quantity() {
-        // La cantidad guardada es siempre positiva; el signo es derivado.
+        // Stored quantity is always positive; the sign is derived.
         let qty = dec!(3.5);
         assert_eq!(MovementReason::Sale.signed_effect(qty), dec!(-3.5));
         assert_eq!(MovementReason::Purchase.signed_effect(qty), dec!(3.5));
@@ -195,6 +193,10 @@ mod tests {
             MovementReason::from_str("venta").unwrap(),
             MovementReason::Sale
         );
+        assert_eq!(
+            MovementReason::from_str("p\u{e9}rdida").unwrap(),
+            MovementReason::Loss
+        );
         assert!(MovementReason::from_str("merma").is_err());
     }
 
@@ -213,14 +215,14 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        // Sin umbral configurado: no hay alerta posible.
+        // No configured threshold: no alert is possible.
         assert_eq!(is_low_stock(&product, Some(dec!(0))), None);
 
         product.min_stock = Some(dec!(5));
         assert_eq!(is_low_stock(&product, Some(dec!(3))), Some(true));
         assert_eq!(is_low_stock(&product, Some(dec!(5))), Some(true));
         assert_eq!(is_low_stock(&product, Some(dec!(6))), Some(false));
-        // Servicio: stock no aplica, nunca alerta.
+        // Service: stock does not apply, never alerts.
         assert_eq!(is_low_stock(&product, None), None);
     }
 }

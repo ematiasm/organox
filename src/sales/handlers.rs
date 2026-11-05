@@ -1,8 +1,8 @@
-//! Handlers HTTP de ventas.
+//! Sales HTTP handlers.
 //!
-//! El carrito vive en el servidor: cada acción devuelve la **venta completa**
-//! recalculada. El cliente no suma ni valida nada — solo muestra. Es la
-//! diferencia entre un total que se puede cobrar y uno que el navegador cree.
+//! The cart lives on the server: each action returns the recalculated **full
+//! sale**. The client neither adds nor validates anything—it only displays.
+//! This is the difference between a chargeable total and one the browser believes.
 
 use axum::Json;
 use axum::Router;
@@ -41,8 +41,8 @@ pub fn router() -> Router<AppState> {
 pub struct SaleItemResponse {
     pub product_id: Uuid,
     pub product_name: String,
-    /// Cantidad como string: `numeric(12,3)` no cabe en un float sin perder
-    /// precisión en cantidades fraccionarias.
+    /// Quantity as a string: `numeric(12,3)` does not fit in a float without
+    /// losing precision for fractional quantities.
     pub quantity: String,
     pub unit_price: String,
     pub subtotal: String,
@@ -53,7 +53,7 @@ pub struct SaleResponse {
     pub id: Uuid,
     pub status: SaleStatus,
     pub items: Vec<SaleItemResponse>,
-    /// Calculado en el servidor. El cliente lo muestra, no lo decide.
+    /// Calculated on the server. The client displays it, not decides it.
     pub total: String,
     pub item_count: usize,
     pub created_at: DateTime<Utc>,
@@ -63,7 +63,7 @@ pub struct SaleResponse {
 #[derive(Serialize, ToSchema)]
 pub struct DraftResponse {
     pub id: Uuid,
-    /// `true` si se reutilizó el borrador que ya estaba abierto.
+    /// `true` if the existing open draft was reused.
     pub reused: bool,
 }
 
@@ -180,14 +180,14 @@ async fn list_sales(
     Ok(Json(sales.into_iter().map(to_response).collect()))
 }
 
-// --- Conversiones -------------------------------------------------------
+// --- Conversions --------------------------------------------------------
 
-/// Dinero con 2 decimales exactos (`"1500.50"`), igual que en el catálogo.
+/// Money with exactly 2 decimals (`"1500.50"`), as in the catalog.
 fn format_money(value: Decimal) -> String {
     format!("{value:.2}")
 }
 
-/// Cantidades sin ceros sobrantes (`"2"`, `"1.5"`).
+/// Quantities without extra zeros (`"2"`, `"1.5"`).
 fn format_quantity(value: Decimal) -> String {
     value.normalize().to_string()
 }
@@ -229,7 +229,7 @@ impl From<SalesError> for AppError {
                 available,
                 requested,
             } => AppError::Conflict(format!(
-                "stock insuficiente de {product_name}: disponible {}, pedido {}",
+                "insufficient stock for {product_name}: available {}, requested {}",
                 format_quantity(available),
                 format_quantity(requested)
             )),
@@ -240,164 +240,164 @@ impl From<SalesError> for AppError {
     }
 }
 
-// --- Documentación OpenAPI ---------------------------------------------
+// --- OpenAPI documentation ---------------------------------------------
 //
-// Stubs: existen solo para que `#[utoipa::path]` genere el PathItem.
+// Stubs exist only for `#[utoipa::path]` to generate the PathItem.
 
-/// Abre un borrador de venta, o devuelve el que ya estaba abierto.
+/// Open a sale draft, or return the one already open.
 ///
-/// Un usuario tiene **un** borrador a la vez: recargar la pantalla de venta no
-/// crea carritos nuevos.
+/// A user has **one** draft at a time: reloading the sale screen does not
+/// create new carts.
 #[utoipa::path(
     post,
     path = "/api/v1/sales/draft",
     tag = "sales",
     responses(
-        (status = 201, description = "Borrador nuevo", body = DraftResponse),
-        (status = 200, description = "Se reutilizó el borrador abierto", body = DraftResponse),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 201, description = "New draft", body = DraftResponse),
+        (status = 200, description = "Open draft reused", body = DraftResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn open_draft_doc() {}
 
-/// Venta con sus ítems y el total calculado por el servidor.
+/// Sale with its items and server-calculated total.
 #[utoipa::path(
     get,
     path = "/api/v1/sales/{id}",
     tag = "sales",
-    params(("id" = Uuid, Path, description = "Id de la venta")),
+    params(("id" = Uuid, Path, description = "Sale ID")),
     responses(
-        (status = 200, description = "Venta", body = SaleResponse),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 200, description = "Sale", body = SaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 404, description = "No existe", body = crate::openapi::Problem,
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn get_sale_doc() {}
 
-/// Agrega un producto al borrador. Si ya estaba, suma la cantidad.
+/// Add a product to the draft. If already present, add the quantity.
 ///
-/// Devuelve la venta recalculada: el cliente no suma nada.
+/// Returns the recalculated sale: the client does not add anything.
 #[utoipa::path(
     post,
     path = "/api/v1/sales/{id}/items",
     tag = "sales",
-    params(("id" = Uuid, Path, description = "Id de la venta")),
+    params(("id" = Uuid, Path, description = "Sale ID")),
     request_body = AddItemRequest,
     responses(
-        (status = 200, description = "Venta actualizada", body = SaleResponse),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 200, description = "Sale updated", body = SaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 404, description = "Venta o producto inexistente", body = crate::openapi::Problem,
+        (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "La venta ya está cerrada", body = crate::openapi::Problem,
+        (status = 409, description = "Sale is already closed", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 422, description = "Cantidad inválida o el ítem es un servicio", body = crate::openapi::Problem,
+        (status = 422, description = "Invalid quantity or item is a service", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn add_item_doc() {}
 
-/// Fija la cantidad de un ítem. Cantidad 0 lo quita.
+/// Set an item's quantity. Quantity 0 removes it.
 #[utoipa::path(
     put,
     path = "/api/v1/sales/{id}/items/{product_id}",
     tag = "sales",
     params(
-        ("id" = Uuid, Path, description = "Id de la venta"),
-        ("product_id" = Uuid, Path, description = "Id del producto"),
+        ("id" = Uuid, Path, description = "Sale ID"),
+        ("product_id" = Uuid, Path, description = "Product ID"),
     ),
     request_body = SetQuantityRequest,
     responses(
-        (status = 200, description = "Venta actualizada", body = SaleResponse),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 200, description = "Sale updated", body = SaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 404, description = "Venta o producto inexistente", body = crate::openapi::Problem,
+        (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "La venta ya está cerrada", body = crate::openapi::Problem,
+        (status = 409, description = "Sale is already closed", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn set_quantity_doc() {}
 
-/// Quita un ítem del borrador.
+/// Remove an item from the draft.
 #[utoipa::path(
     delete,
     path = "/api/v1/sales/{id}/items/{product_id}",
     tag = "sales",
     params(
-        ("id" = Uuid, Path, description = "Id de la venta"),
-        ("product_id" = Uuid, Path, description = "Id del producto"),
+        ("id" = Uuid, Path, description = "Sale ID"),
+        ("product_id" = Uuid, Path, description = "Product ID"),
     ),
     responses(
-        (status = 200, description = "Venta actualizada", body = SaleResponse),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 200, description = "Sale updated", body = SaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 404, description = "Venta o producto inexistente", body = crate::openapi::Problem,
+        (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn remove_item_doc() {}
 
-/// Cobra la venta.
+/// Complete the sale.
 ///
-/// En una sola transacción: valida stock con la fila del producto bloqueada,
-/// escribe un movimiento de salida por ítem y cierra la venta. Si falta stock,
-/// rechaza con 409 y **no** deja movimientos ni cambia el estado.
+/// In one transaction: validate stock with the product row locked, write an
+/// outflow movement per item and close the sale. If stock is insufficient,
+/// reject with 409 and leave **no** movements or status change.
 #[utoipa::path(
     post,
     path = "/api/v1/sales/{id}/complete",
     tag = "sales",
-    params(("id" = Uuid, Path, description = "Id de la venta")),
+    params(("id" = Uuid, Path, description = "Sale ID")),
     responses(
-        (status = 200, description = "Venta cobrada", body = CompletedSaleResponse),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 200, description = "Sale completed", body = CompletedSaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 404, description = "No existe", body = crate::openapi::Problem,
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "Stock insuficiente o venta ya cerrada", body = crate::openapi::Problem,
+        (status = 409, description = "Insufficient stock or sale already closed", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 422, description = "La venta está vacía", body = crate::openapi::Problem,
+        (status = 422, description = "Sale is empty", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn complete_sale_doc() {}
 
-/// Cancela un borrador. No toca el libro de stock, porque nunca lo tocó.
+/// Cancel a draft. Does not touch the stock ledger, because it never did.
 #[utoipa::path(
     post,
     path = "/api/v1/sales/{id}/cancel",
     tag = "sales",
-    params(("id" = Uuid, Path, description = "Id de la venta")),
+    params(("id" = Uuid, Path, description = "Sale ID")),
     responses(
-        (status = 204, description = "Borrador cancelado"),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 204, description = "Draft cancelled"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 404, description = "No existe", body = crate::openapi::Problem,
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "La venta ya no es editable", body = crate::openapi::Problem,
+        (status = 409, description = "Sale is no longer editable", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn cancel_sale_doc() {}
 
-/// Últimas ventas cobradas.
+/// Latest completed sales.
 #[utoipa::path(
     get,
     path = "/api/v1/sales",
     tag = "sales",
     responses(
-        (status = 200, description = "Ventas completadas", body = Vec<SaleResponse>),
-        (status = 401, description = "Sin sesión", body = crate::openapi::Problem,
+        (status = 200, description = "Completed sales", body = Vec<SaleResponse>),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]

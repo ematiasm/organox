@@ -1,8 +1,8 @@
-//! Catálogo de productos y servicios, y el libro de stock.
+//! Product and service catalog, and stock ledger.
 //!
-//! Invariante central del módulo: **el stock no se guarda, se calcula**. Es la
-//! suma firmada de `stock_movements`. `products` no tiene columna de stock y
-//! `stock_movements` es append-only (lo impone un trigger en la DB).
+//! Central module invariant: **stock is not stored, it is calculated**. It is
+//! the signed sum of `stock_movements`. `products` has no stock column and
+//! `stock_movements` is append-only (enforced by a DB trigger).
 
 pub mod handlers;
 pub mod model;
