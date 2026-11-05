@@ -1,165 +1,167 @@
-# Rate limiting en login
+# Login rate limiting
 
-## Qué es y qué no es
+## What it is and what it is not
 
-**No prohíbe el abuso: lo acota.** No impide que alguien intente adivinar una
-contraseña; hace que intentarlo sea lento, finito y observable.
+**It does not prohibit abuse: it bounds it.** It does not stop someone from trying
+to guess a password; it makes attempts slow, finite, and observable.
 
-La distinción no es semántica, es de diseño. Cualquier sistema que prometa
-*prohibir* el abuso termina en uno de dos lugares:
+The distinction is not semantic, but a design choice. Any system that promises
+to *prohibit* abuse ends up in one of two places:
 
-1. **Miente**: el atacante igual intenta, solo que más despacio.
-2. **Niega servicio a usuarios legítimos**: es lo que pasa cuando el bloqueo es
-   duro y permanente.
+1. **It lies**: the attacker still tries, only more slowly.
+2. **It denies service to legitimate users**: this is what happens with a hard,
+   permanent lockout.
 
-El objetivo real es otro: **hacer que el ataque sea económicamente inviable y
-dejar rastro**. 5 intentos cada 5 minutos son 1440 por día. Contra un espacio de
-~10¹² combinaciones razonables, es irrelevante. Y cada intento queda logueado.
+The real goal is different: **make the attack economically unviable and leave a
+trace**. 5 attempts every 5 minutes are 1440 per day. Against a space of ~10¹²
+reasonable combinations, that is irrelevant. And each attempt is logged.
 
-## Tres amenazas, tres defensas
+## Three threats, three defenses
 
-| Amenaza | Qué es | Defensa |
+| Threat | What it is | Defense |
 |---|---|---|
-| **Fuerza bruta vertical** | Muchas IPs contra **una** cuenta (el dueño) | Límite por cuenta, en Postgres |
-| **Fuerza bruta horizontal** | Una IP contra **muchas** cuentas con contraseñas comunes | Límite por IP, en memoria |
-| **Amplificación de CPU** | Inundar `/auth/login` sabiendo que cada request gasta 400 ms de argon2 | Límite por IP + cortar **antes** de hashear |
+| **Vertical brute force** | Many IPs against **one** account (the owner) | Per-account limit, in Postgres |
+| **Horizontal brute force** | One IP against **many** accounts with common passwords | Per-IP limit, in memory |
+| **CPU amplification** | Flooding `/auth/login` knowing each request costs 400 ms of argon2 | Per-IP limit + block **before** hashing |
 
-Las dos primeras capas son necesarias y no se sustituyen:
+The first two layers are both necessary and do not replace each other:
 
-- **Solo por IP**: un botnet con 1000 IPs prueba 1000 contraseñas por minuto sin
-  activar ningún límite.
-- **Solo por cuenta**: el atacante prueba 1 contraseña en cada una de 100 000
-  cuentas. Ninguna cuenta se bloquea, y las contraseñas comunes caen igual.
+- **IP only**: a botnet with 1000 IPs tries 1000 passwords per minute without
+  triggering any limit.
+- **Account only**: the attacker tries 1 password on each of 100,000 accounts.
+  No account is locked, and common passwords still fall.
 
-## Capa 1 — Por cuenta (Postgres)
+## Layer 1 — Per account (Postgres)
 
-Tabla `login_attempts`, una fila por email normalizado.
+Table `login_attempts`, one row per normalized email.
 
-**Por qué Postgres y no memoria**: el bloqueo debe sobrevivir un reinicio. Si
-reiniciar el proceso limpia el contador, el atacante solo necesita esperar un
-deploy — o tirar el proceso él mismo.
+**Why Postgres and not memory**: the lockout must survive a restart. If
+restarting the process clears the counter, the attacker only needs to wait for
+a deployment—or crash the process themselves.
 
-**Por qué se cuentan los emails inexistentes**: si solo contaran los usuarios
-reales, la diferencia entre "429 bloqueado" y "401 credenciales inválidas"
-permitiría **enumerar qué emails están registrados**. Es el mismo oráculo que se
-cierra con el hash señuelo, por otra vía.
+**Why nonexistent emails are counted**: if only real users counted, the
+difference between "429 locked" and "401 invalid credentials" would allow
+**enumeration of registered emails**. It is the same oracle closed by the dummy
+hash, through another route.
 
-### Semántica exacta
+### Exact semantics
 
-Con `APP_LOGIN_MAX_FAILURES=3`:
+With `APP_LOGIN_MAX_FAILURES=3`:
 
-| Intento | Contraseña | Respuesta |
+| Attempt | Password | Response |
 |---|---|---|
-| 1 | incorrecta | `401` |
-| 2 | incorrecta | `401` |
-| 3 | incorrecta | `401` ← **dispara el bloqueo, pero informa la verdad** |
-| 4 | cualquiera | `429` + `Retry-After` ← ni se evalúa |
+| 1 | incorrect | `401` |
+| 2 | incorrect | `401` |
+| 3 | incorrect | `401` ← **triggers the lockout, but tells the truth** |
+| 4 | any | `429` + `Retry-After` ← not even evaluated |
 
-El tercer intento devuelve **401, no 429**, porque su contraseña *era*
-efectivamente incorrecta. Decirle "demasiados intentos" en el mismo intento que
-lo bloqueó es mentirle al usuario. El bloqueo rige desde el siguiente.
+The third attempt returns **401, not 429**, because its password *was* actually
+incorrect. Telling the user "too many attempts" on the same attempt that locked
+them out is lying. The lockout applies from the next attempt.
 
-Esto se descubrió con un test que falló (`account_is_locked_after_max_failures`):
-el código devolvía 429 en el tercero, y la semántica documentada era otra. Se
-corrigió el código, no el test.
+This was discovered by a failing test (`account_is_locked_after_max_failures`):
+the code returned 429 on the third attempt, and the documented semantics were
+different. The code was fixed, not the test.
 
-### Por qué el bloqueo es suave
+### Why the lockout is soft
 
-Dura `APP_LOGIN_BLOCK_MINUTES` (5 por defecto) y expira solo.
+It lasts `APP_LOGIN_BLOCK_MINUTES` (5 by default) and expires on its own.
 
-Un bloqueo duro (hasta intervención manual) convierte esta defensa en un **vector
-de denegación de servicio**: cualquiera que conozca el email del dueño lo deja
-fuera de su propio sistema escribiendo mal la contraseña. En un sistema
-administrativo de una PyME, eso es peor que el ataque que intenta evitar.
+A hard lockout (until manual intervention) turns this defense into a **denial
+of service vector**: anyone who knows the owner's email can lock them out of
+their own system by entering the wrong password. In an SMB administrative
+system, that is worse than the attack it is meant to prevent.
 
-Contrapartida asumida: un atacante puede esperar 5 minutos y volver a probar 5
-contraseñas. El límite no impide el ataque, lo hace **irrelevante en volumen**.
+Accepted trade-off: an attacker can wait 5 minutes and try 5 passwords again.
+The limit does not stop the attack; it makes it **irrelevant in volume**.
 
-### Un login correcto limpia el contador
+### A successful login clears the counter
 
-Sin esto, alguien que se equivocó 3 veces y después recordó su contraseña queda
-bloqueado igual. Un login exitoso es prueba suficiente de que no es un atacante.
+Without this, someone who makes 3 mistakes and then remembers their password
+would still be locked out. A successful login is sufficient proof that it is not
+an attacker.
 
-### Ventana y limpieza
+### Window and cleanup
 
-Los intentos se cuentan dentro de una ventana de 15 minutos: fuera de ella, el
-contador vuelve a empezar. `AccountLimiter::purge_stale` borra filas sin
-actividad (aún no está enganchado a un job; ver "Lo que falta").
+Attempts are counted within a 15-minute window: outside it, the counter starts
+over. `AccountLimiter::purge_stale` deletes rows with no activity (not yet
+hooked up to a job; see "What is missing").
 
-## Capa 2 — Por IP (memoria)
+## Layer 2 — Per IP (memory)
 
-`IpLimiter`, ventana fija, `APP_LOGIN_IP_MAX_PER_MINUTE` + un burst.
+`IpLimiter`, fixed window, `APP_LOGIN_IP_MAX_PER_MINUTE` + a burst.
 
-**Por qué en memoria**: es la barrera que corta **antes** de tocar la base y
-antes de gastar un hash. Un atacante que hace 10 000 requests por segundo no debe
-provocar 10 000 queries ni 10 000 argon2: eso ya sería un ataque exitoso sin
-adivinar una sola contraseña. Se verificó: una vez bloqueado, la respuesta llega
-en **0 ms** en vez de 400 ms.
+**Why memory**: it is the barrier that blocks **before** touching the database
+and before spending time on a hash. An attacker making 10,000 requests per
+second must not cause 10,000 queries or 10,000 argon2 hashes: that would already
+be a successful attack without guessing a single password. Verified: once
+blocked, the response arrives in **0 ms** instead of 400 ms.
 
-**Costo asumido**: el estado vive en el proceso.
-- No se comparte entre réplicas: con N réplicas el límite efectivo es N×.
-- Se pierde al reiniciar.
+**Accepted cost**: state lives in the process.
+- It is not shared between replicas: with N replicas the effective limit is N×.
+- It is lost on restart.
 
-Es aceptable porque esta capa es una **primera barrera**, no la defensa
-principal. La que sobrevive reinicios y réplicas es la de por cuenta. Si algún
-día hace falta un límite por IP distribuido, se mueve a Redis sin cambiar la
-interfaz de `IpLimiter`.
+This is acceptable because this layer is a **first barrier**, not the primary
+defense. The per-account layer is the one that survives restarts and replicas.
+If a distributed IP limit is ever needed, it can move to Redis without changing
+the `IpLimiter` interface.
 
-### `X-Forwarded-For` se ignora, a propósito
+### `X-Forwarded-For` is ignored, deliberately
 
-El middleware lee la IP de `ConnectInfo` (la conexión TCP), **no** del header
-`X-Forwarded-For`.
+The middleware reads the IP from `ConnectInfo` (the TCP connection), **not**
+from the `X-Forwarded-For` header.
 
-Ese header lo controla el cliente. Honrarlo sin un proxy confiable delante
-permite a un atacante elegir una IP distinta en cada request y **anular el límite
-por completo**. Es la forma más común de romper esta defensa sin darse cuenta.
+The client controls that header. Honoring it without a trusted proxy in front
+lets an attacker choose a different IP on every request and **completely bypass
+the limit**. This is the most common way to break this defense without noticing.
 
-Si algún día hay un reverse proxy (nginx, Caddy, un balanceador), hay que:
+If a reverse proxy is added someday (nginx, Caddy, a load balancer):
 
-1. configurar en el proxy que **sobrescriba** `X-Forwarded-For` (no que lo
-   agregue), y
-2. agregar a la app una lista de proxies confiables, y solo entonces leer el
-   header desde ellos.
+1. configure the proxy to **overwrite** `X-Forwarded-For` (not append it), and
+2. add a trusted proxy list to the app, and only then read the header from them.
 
-## `Retry-After` es lo que hace el 429 accionable
+## `Retry-After` makes 429 actionable
 
-Toda respuesta 429 trae `Retry-After` en segundos. Sin él, el cliente no sabe si
-esperar 2 segundos o 2 días, y su opción por defecto es martillar — que es
-exactamente lo que el límite intenta evitar.
+Every 429 response includes `Retry-After` in seconds. Without it, the client
+does not know whether to wait 2 seconds or 2 days, and its default option is to
+hammer the server—exactly what the limit is intended to prevent.
 
-## Configuración
+## Configuration
 
-| Variable | Default | Qué controla |
+| Variable | Default | What it controls |
 |---|---|---|
-| `APP_LOGIN_MAX_FAILURES` | `5` | Intentos fallidos por cuenta antes de bloquear |
-| `APP_LOGIN_BLOCK_MINUTES` | `5` | Duración del bloqueo |
-| `APP_LOGIN_IP_MAX_PER_MINUTE` | `30` | Logins por minuto por IP (+ burst de 10) |
+| `APP_LOGIN_MAX_FAILURES` | `5` | Failed attempts per account before lockout |
+| `APP_LOGIN_BLOCK_MINUTES` | `5` | Lockout duration |
+| `APP_LOGIN_IP_MAX_PER_MINUTE` | `30` | Logins per minute per IP (+ burst of 10) |
 
-Un valor inválido **impide arrancar**, con el nombre exacto de la variable:
+An invalid value **prevents startup**, naming the exact variable:
 
 ```
-error fatal: error de configuración: APP_LOGIN_MAX_FAILURES debe ser al menos 1
-error fatal: error de configuración: APP_LOGIN_MAX_FAILURES tiene un valor inválido ("cinco"): invalid digit found in string
+fatal error: configuration error: APP_LOGIN_MAX_FAILURES must be at least 1
+fatal error: configuration error: APP_LOGIN_MAX_FAILURES has an invalid value ("five"): invalid digit found in string
 ```
 
-## Qué NO hace
+## What it does NOT do
 
-- **No protege contra credenciales filtradas.** Si `duenio@pyme.com` aparece en
-  un dump de otra empresa y usa la misma contraseña, entra en el primer intento.
-  Eso se ataca con 2FA y con verificación contra listas de contraseñas filtradas.
-- **No protege contra phishing.** El dueño entrega su contraseña en una web
-  falsa; el límite no se activa porque no hay intentos fallidos. También 2FA.
-- **No distribuye el estado entre réplicas** (ver arriba).
-- **No bloquea IPs de forma permanente**, ni debería: lista negra de IPs es un
-  juego perdido contra NAT compartido y movilidad móvil.
+- **It does not protect against leaked credentials.** If `owner@pyme.com`
+  appears in another company's dump and uses the same password, the attacker
+  gets in on the first attempt. This is addressed by 2FA and checks against
+  leaked password lists.
+- **It does not protect against phishing.** The owner gives their password to a
+  fake website; the limit does not trigger because there are no failed attempts.
+  Again, 2FA.
+- **It does not distribute state between replicas** (see above).
+- **It does not permanently block IPs**, nor should it: an IP blacklist is a
+  losing game against shared NAT and mobile mobility.
 
-## Lo que falta
+## What is missing
 
-- **Job de limpieza** de `login_attempts` y `sessions` vencidas. Las funciones
-  existen (`purge_stale`, `purge_expired_sessions`) pero no hay scheduler. Una
-  consulta cada hora en el arranque alcanza para una PyME.
-- **2FA (TOTP)** para `owner`. Es la defensa que sí cierra el hueco de
-  credenciales filtradas, que el rate limiting no toca.
-- **Notificación** al dueño cuando su cuenta se bloquea repetidamente: el log ya
-  lo registra (`WARN login bloqueado por intentos fallidos`), falta el aviso.
-- **Lista de contraseñas comprometidas** (Have I Been Pwned, k-anonymity).
+- **Cleanup job** for expired `login_attempts` and `sessions`. The functions
+  exist (`purge_stale`, `purge_expired_sessions`) but there is no scheduler. One
+  query per hour at startup is enough for an SMB.
+- **2FA (TOTP)** for `owner`. This defense closes the leaked-credentials gap
+  that rate limiting does not address.
+- **Notification** to the owner when their account is repeatedly locked: the
+  log already records it (`WARN login blocked by failed attempts`), but the
+  notification is missing.
+- **Compromised password list** (Have I Been Pwned, k-anonymity).

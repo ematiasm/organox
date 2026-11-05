@@ -1,51 +1,51 @@
-# Autenticación y autorización
+# Authentication and authorization
 
-## Modelo
+## Model
 
-Single-tenant: no hay `tenant_id`. Un despliegue = un negocio.
+Single-tenant: there is no `tenant_id`. One deployment = one business.
 
-| Concepto | Implementación |
+| Concept | Implementation |
 |---|---|
-| Identidad | `users.email` (`citext`, unique). Login case-insensitive. |
-| Contraseña | argon2id, hash PHC. Nunca plaintext, nunca `bcrypt`. |
-| Sesión | Fila en `sessions`, clave = SHA-256 del token. |
-| Token | 32 bytes de CSPRNG, base64url. Viaja en cookie `HttpOnly`. |
-| Actor | Extractor `AuthUser`. Única vía para conocer quién hace la request. |
-| Autorización | `Role` + `Role::can_manage_users()`. Punto único. |
+| Identity | `users.email` (`citext`, unique). Case-insensitive login. |
+| Password | argon2id, PHC hash. Never plaintext, never `bcrypt`. |
+| Session | Row in `sessions`, key = SHA-256 of the token. |
+| Token | 32 bytes from a CSPRNG, base64url. Sent in an `HttpOnly` cookie. |
+| Actor | `AuthUser` extractor. The only way to identify who makes the request. |
+| Authorization | `Role` + `Role::can_manage_users()`. Single source of truth. |
 
-## Por qué sesión y no JWT
+## Why sessions instead of JWT
 
-Un admin web necesita **logout real** y **revocación inmediata**. Con JWT, cerrar
-sesión es una sugerencia al cliente y revocar exige una lista negra en la DB — o
-sea, volver al estado que evita. Aquí el logout borra la fila y el token deja de
-servir en el request siguiente.
+A web admin needs **real logout** and **immediate revocation**. With JWT, logout
+is a suggestion to the client and revocation requires a blacklist in the DB—in
+other words, bringing back the state it avoids. Here logout deletes the row and
+the token stops working on the next request.
 
-## Por qué solo el SHA-256 del token en la DB
+## Why store only the token's SHA-256 in the DB
 
-El token ya tiene 256 bits de entropía de un CSPRNG: no hay diccionario que
-atacar. Guardar el hash significa que una lectura de la tabla `sessions` permite
-saber que hay sesiones, no usarlas. SHA-256 (no argon2) porque se calcula en cada
-request autenticada y la entropía ya está en el token.
+The token already has 256 bits of entropy from a CSPRNG: there is no dictionary
+to attack. Storing the hash means reading the `sessions` table reveals that
+sessions exist, not how to use them. SHA-256 (not argon2) is used because it is
+calculated on every authenticated request and the token already has entropy.
 
-## Por qué argon2id y no bcrypt
+## Why argon2id instead of bcrypt
 
-argon2id es el estándar actual (recomendado por OWASP) y sus parámetros de costo
-están dentro del propio PHC string: subir el costo no invalida hashes viejos.
-Coste medido en esta máquina: ~390 ms por hash. Eso es intencional, y es la razón
-de que el hashing corra en `spawn_blocking` y no en el runtime de tokio.
+argon2id is the current standard (recommended by OWASP), and its cost parameters
+are in the PHC string itself: increasing the cost does not invalidate old
+hashes. Cost measured on this machine: ~390 ms per hash. That is intentional,
+and is why hashing runs in `spawn_blocking` rather than the tokio runtime.
 
-## Prevención de enumeración de usuarios
+## Preventing user enumeration
 
-`POST /auth/login` devuelve **el mismo 401 y el mismo cuerpo** para:
+`POST /auth/login` returns **the same 401 and the same body** for:
 
-- email inexistente
-- contraseña incorrecta
-- email malformado
+- nonexistent email
+- incorrect password
+- malformed email
 
-Además, cuando el email no existe se verifica la contraseña contra un hash
-señuelo de costo equivalente, precalculado al arrancar el servidor. Sin ese
-precalentamiento, el primer intento fallido pagaba el costo de generar el señuelo
-y la latencia lo delataba como oráculo (medido: 773 ms vs 391 ms).
+In addition, when the email does not exist, the password is checked against a
+dummy hash of equivalent cost, precomputed at server startup. Without this
+warm-up, the first failed attempt paid the cost of generating the dummy hash,
+and the latency exposed it as an oracle (measured: 773 ms vs 391 ms).
 
 ## Cookies
 
@@ -53,30 +53,30 @@ y la latencia lo delataba como oráculo (medido: 773 ms vs 391 ms).
 Set-Cookie: session=<token>; HttpOnly; Secure; SameSite=Strict; Path=/; Expires=...
 ```
 
-- `HttpOnly`: JavaScript no puede leerla (mitiga XSS de robo de sesión).
-- `SameSite=Strict`: no viaja en requests originadas por otro sitio. Corta CSRF
-  sin necesitar token CSRF, siempre que el frontend se sirva desde el mismo
-  origen.
-- `Secure`: obligatorio en producción. `APP_COOKIE_SECURE=false` solo para
-  desarrollo sobre `http://localhost`.
+- `HttpOnly`: JavaScript cannot read it (mitigates session theft via XSS).
+- `SameSite=Strict`: it is not sent on requests originating from another site.
+  This stops CSRF without a CSRF token, provided the frontend is served from the
+  same origin.
+- `Secure`: required in production. `APP_COOKIE_SECURE=false` is only for
+  development over `http://localhost`.
 
-**Si el frontend queda en otro origen** (`app.pyme.com` + `api.pyme.com`),
-`SameSite=Strict` deja de funcionar: hay que pasar a `Lax` con dominio padre
-común, o a `None` + token CSRF explícito. Es la decisión de despliegue que
-condiciona esto.
+**If the frontend is on another origin** (`app.pyme.com` + `api.pyme.com`),
+`SameSite=Strict` no longer works: switch to `Lax` with a common parent domain,
+or to `None` + an explicit CSRF token. This depends on the deployment decision.
 
-## Vida de la sesión
+## Session lifetime
 
-- Deslizante: cada request autenticada la extiende 7 días.
-- Tope absoluto: 30 días desde su creación, aunque se use todos los días.
-  Sin ese tope, una cookie robada es válida indefinidamente.
+- Sliding: every authenticated request extends it by 7 days.
+- Absolute cap: 30 days from creation, even if used every day. Without this cap,
+  a stolen cookie is valid indefinitely.
 
 ## Roles
 
-Hoy: `owner` (todo) y `encargado` (todo menos gestionar usuarios).
+Today: `owner` (everything) and `manager` (everything except managing users).
 
-**No hay tablas `roles`/`permissions`.** Con dos roles donde ningún permiso cruza
-roles, una tabla de permisos es andamiaje sin uso. La regla vive en un solo lugar:
+**There are no `roles`/`permissions` tables.** With two roles and no permission
+that crosses roles, a permissions table is unused scaffolding. The rule lives in
+one place:
 
 ```rust
 impl Role {
@@ -86,44 +86,44 @@ impl Role {
 }
 ```
 
-Cuando aparezca un permiso que cruce roles (por ejemplo "depósito carga stock
-pero no ve precios"), el cambio es:
+When a permission crosses roles (for example, "warehouse staff enter stock but
+cannot see prices"), the change is:
 
-1. Migración nueva con `permissions` y `role_permissions`.
-2. Cambiar **el cuerpo** de las funciones `can_*` en `src/auth/model.rs`.
+1. A new migration with `permissions` and `role_permissions`.
+2. Change **the body** of the `can_*` functions in `src/auth/model.rs`.
 
-Los handlers no se tocan, porque ya piden `user.require_user_management()` y no
-inspeccionan el rol a mano.
+Handlers do not change, because they already call
+`user.require_user_management()` rather than inspecting the role manually.
 
-## Alta del primer usuario
+## Creating the first user
 
-`create-user` es el único mecanismo de alta fuera de la API. **No hay seed
-automático al arrancar**, y es deliberado:
+`create-user` is the only creation mechanism outside the API. **There is no
+automatic seed at startup**, deliberately:
 
-| Seed por `.env` al bootear | `create-user` |
+| Seed via `.env` at boot | `create-user` |
 |---|---|
-| La contraseña queda en plaintext en el `.env` para siempre | No persiste plaintext |
-| Condición de carrera con 2 réplicas (SELECT+INSERT) | No |
-| Resucita usuarios borrados | No |
-| Pisa contraseñas cambiadas | No |
-| Sirve para el usuario 2..N | Sí |
+| Password remains plaintext in `.env` forever | Does not persist plaintext |
+| Race condition with 2 replicas (SELECT+INSERT) | No |
+| Resurrects deleted users | No |
+| Overwrites changed passwords | No |
+| Works for users 2..N | Yes |
 
 ```bash
-# interactivo (pide sin eco)
-cargo run --bin create-user -- --email duenio@pyme.com --role owner
+# interactive (prompts without echo)
+cargo run --bin create-user -- --email owner@pyme.com --role owner
 
-# en Docker / no interactivo
+# in Docker / non-interactive
 printf '%s' "$ADMIN_PW" | docker compose exec -T app create-user \
-  --email duenio@pyme.com --role owner --password-stdin
+  --email owner@pyme.com --role owner --password-stdin
 ```
 
-La contraseña nunca va por argumento: quedaría visible en `ps aux` de cualquier
-usuario del sistema.
+The password is never passed as an argument: it would be visible in `ps aux` to
+any system user.
 
-## Lo que falta
+## What is missing
 
-- **Rate limiting en login.** Un solo endpoint de login sin límite es fuerza
-  bruta distribuida. `tower_governor` por IP, más bloqueo por cuenta.
-- **Cambio de contraseña** (`POST /auth/password`) y revocación de todas las
-  sesiones del usuario.
-- **Desbloqueo**: no hay bloqueo por intentos fallidos todavía.
+- **Login rate limiting.** A single unlimited login endpoint enables distributed
+  brute force. `tower_governor` per IP, plus per-account lockout.
+- **Password change** (`POST /auth/password`) and revocation of all the user's
+  sessions.
+- **Unlocking**: there is no lockout for failed attempts yet.

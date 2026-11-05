@@ -1,198 +1,256 @@
 # organox
 
-Administrador de negocio para una PyME: stock e insumos.
-Backend en Rust/Axum + PostgreSQL + sqlx. Single-tenant.
+Business management for an SMB: stock and supplies.
+Backend in Rust/Axum + PostgreSQL + sqlx. Single-tenant.
 
-## Requisitos
+## Requirements
 
-- Rust estable (lo fija `rust-toolchain.toml`)
+- Stable Rust (pinned by `rust-toolchain.toml`)
 - Docker + Docker Compose
 - `sqlx-cli`: `cargo install sqlx-cli --no-default-features --features postgres,rustls`
 
-## Puesta en marcha
+## Getting started
 
 ```bash
-cp .env.example .env      # ajustar si hace falta
-make db-up                # Postgres en Docker
-make migrate              # aplica migraciones
-make create-user EMAIL=duenio@pyme.com ROLE=owner   # crea el primer usuario
+cp .env.example .env      # adjust if needed
+make db-up                # Postgres in Docker
+make migrate              # apply migrations
+make create-user EMAIL=owner@pyme.com ROLE=owner   # create the first user
 make run                  # http://localhost:3000
 ```
 
-Comprobación rápida:
+Quick check:
 
 ```bash
-curl -i localhost:3000/healthz   # 204 - el proceso vive
-curl -i localhost:3000/readyz    # 204 - la DB responde
+curl -i localhost:3000/healthz   # 204 - the process is alive
+curl -i localhost:3000/readyz    # 204 - the DB responds
 ```
 
-## Comandos
+## Commands
 
-`make help` lista todo. Los importantes:
+`make help` lists everything. The important ones:
 
-| Comando | Qué hace |
+| Command | What it does |
 |---|---|
-| `make db-up` / `db-down` | Levanta / baja Postgres (conserva datos) |
-| `make db-reset` | Recrea la DB desde cero (borra datos, pide confirmación) |
-| `make migrate` | Aplica migraciones pendientes |
-| `make new-migration NAME=...` | Crea una migración reversible |
-| `make create-user EMAIL=... ROLE=...` | Crea un usuario (pide la contraseña sin eco) |
-| `make prepare` | Regenera `.sqlx/` (necesario al cambiar queries) |
-| `make fe-install` | Instala dependencias del frontend |
-| `make fe-dev` | Frontend con HMR en `:5173` (proxy `/api` → `:3000`) |
-| `make fe-build` | Compila el frontend a `frontend/build` |
-| `make fe-check` | Type-check del frontend |
-| `make fe-schema` | Regenera los tipos TS desde el OpenAPI |
-| `make check` | `fmt` + `clippy -D warnings` + `test` |
+| `make db-up` / `db-down` | Starts / stops Postgres (preserves data) |
+| `make db-reset` | Recreates the DB from scratch (deletes data, asks for confirmation) |
+| `make migrate` | Applies pending migrations |
+| `make new-migration NAME=...` | Creates a reversible migration |
+| `make create-user EMAIL=... ROLE=...` | Creates a user (prompts for a password without echo) |
+| `make prepare` | Regenerates `.sqlx/` (required when queries change) |
+| `make fe-install` | Installs frontend dependencies |
+| `make fe-dev` | Frontend with HMR on `:5173` (proxy `/api` → `:3000`) |
+| `make fe-build` | Builds the frontend to `frontend/build` |
+| `make fe-check` | Type-checks the frontend |
+| `make fe-schema` | Regenerates TS types from OpenAPI |
+| `make check` | `fmt` + `clippy -D warnings` + `test` + `fe-check` |
 
-## Estructura
+## Project structure
 
 ```
 src/
-  main.rs        arranque: config, logging, DB, router, serve
-  lib.rs         AppState y módulos
-  config.rs      configuración tipada desde entorno
+  main.rs        startup: config, logging, DB, router, serve
+  lib.rs         AppState and modules
+  config.rs      typed configuration from the environment
   error.rs       AppError -> application/problem+json
-  telemetry.rs   tracing (pretty en dev, json en prod)
-  db.rs          pool de conexiones y ping
-  routes.rs      router HTTP (/healthz, /readyz, /api/v1)
+  telemetry.rs   tracing (pretty in dev, json in prod)
+  db.rs          connection pool and ping
+  routes.rs      HTTP router (/healthz, /readyz, /api/v1)
   auth/
-    model.rs      User, Role, PasswordHash, TTLs de sesión
-    validation.rs email y reglas de contraseña
+    model.rs      User, Role, PasswordHash, session TTLs
+    validation.rs email and password rules
     password.rs   argon2id
-    token.rs      token de sesión y su SHA-256
-    repository.rs SQL de auth (único lugar con queries)
-    service.rs    casos de uso y política
-    extract.rs    AuthUser (única vía para conocer al actor)
+    token.rs      session token and its SHA-256
+    repository.rs auth SQL (the only place with queries)
+    service.rs    use cases and policy
+    extract.rs    AuthUser (the only way to identify the actor)
   catalog/
-    model.rs      Product, ProductKind, MovementReason, signo del movimiento
-    validation.rs nombre, SKU, precio, cantidad
-    repository.rs SQL del catálogo y cálculo de stock
-    service.rs    reglas: stock negativo, servicio sin stock, transacción
-    handlers.rs   endpoints del catálogo
+    model.rs      Product, ProductKind, MovementReason, movement sign
+    validation.rs name, SKU, price, quantity
+    repository.rs catalog SQL and stock calculation
+    service.rs    rules: negative stock, service without stock, transaction
+    handlers.rs   catalog endpoints
   sales/
     model.rs      Sale, SaleItem, SaleStatus
-    repository.rs SQL de ventas y el cobro transaccional
-    service.rs    reglas: un borrador por cajero, servicio no vendible
-    handlers.rs   endpoints de venta
+    repository.rs sales SQL and transactional checkout
+    service.rs    rules: one draft per cashier, non-saleable service
+    handlers.rs   sales endpoints
   ratelimit/
-    account.rs    intentos fallidos por cuenta (Postgres)
-    ip.rs         requests por IP (memoria)
-    middleware.rs aplica el límite por IP solo a /auth/login
-migrations/      migraciones SQL versionadas
-  bin/create-user.rs  alta de usuarios por terminal
-  openapi.rs     spec OpenAPI 3.1 generado desde el código
-  bin/openapi.rs imprime el spec (cargo run --bin openapi)
-tests/           tests de integración (Router en memoria + DB real)
-frontend/        SvelteKit 3 + Svelte 5 + TS 6 (SPA, adapter-static)
-docs/            decisiones de diseño
-.sqlx/           cache de queries (commiteado: compila sin DB)
+    account.rs    failed attempts per account (Postgres)
+    ip.rs         requests per IP (memory)
+    middleware.rs applies the IP limit only to /auth/login
+migrations/      versioned SQL migrations
+src/bin/         CLI binaries (create-user, openapi)
+src/openapi.rs   OpenAPI 3.1 spec generated from code
+tests/           integration tests (in-memory Router + real DB)
+docs/            design decisions
+.sqlx/           query cache (committed: builds without a DB)
+
+frontend/
+  src/routes/
+    +layout.svelte      root layout: ModeWatcher (system theme, manual toggle)
+    +layout.ts          ssr = false, prerender = false (SPA)
+    (app)/              every private screen, behind the session guard
+      +layout.svelte    the single navigation rail
+      +layout.ts        session guard: api.me(), 401 -> /login
+      products/         product list, search, stock
+      operations/pos/   point of sale with barcode scanner
+      operations/movements/  stock ledger history
+      users/            users (owner only)
+    (app)/pos/          redirect -> /operations/pos
+    login/              the first screen
+  src/lib/
+    api/client.ts        typed fetch wrapper, 401 -> /login, Retry-After
+    api/schema.d.ts      generated from openapi.json (never hand-edited)
+    components/app-shell.svelte  the rail: groups, expand, user menu
+    components/ui/       shadcn-svelte primitives (vega, olive)
+  vite.config.ts     Tailwind v4 plugin, adapter-static, /api dev proxy
 ```
 
-## Convenciones del proyecto
+## Project conventions
 
-- Las migraciones aplicadas son **inmutables**. Un cambio de schema es una
-  migración nueva, nunca una edición de la anterior.
-- Toda ruta de negocio vive bajo `/api/v1`.
-- Un solo tipo de error (`AppError`); los detalles internos se loguean, no se
-  serializan al cliente.
-- Timestamps: `TIMESTAMPTZ` en UTC. Ids: `uuid` (v7). Dinero: nunca `f64`.
-- La app **no** corre migraciones al arrancar: las corre `make migrate`.
-- `/healthz` = liveness (proceso vivo, no toca la DB). `/readyz` = readiness
-  (la DB responde).
-- Compilación sin DB: `SQLX_OFFLINE=true cargo build` usa `.sqlx/`. Si cambiás
-  una query, corré `make prepare`.
-- **El stock no se guarda, se calcula** (suma de `stock_movements`). El libro es
-  append-only: se corrige con un ajuste, nunca editando historial.
-- Decimales viajan como **string** en JSON, nunca como número: `"1500.50"`.
-- **Rate limiting no prohíbe el abuso, lo acota.** 5 fallos por cuenta → bloqueo
-  de 5 min que expira solo. Un bloqueo permanente dejaría a cualquiera dejar
-  afuera al dueño escribiendo mal su contraseña.
-- `X-Forwarded-For` se ignora: se usa la IP de la conexión TCP. Honrarlo sin
-  proxy confiable anula el límite por IP.
+- Documentation and code are written in English; see `AGENTS.md` for the convention.
+- Applied migrations are **immutable**. A schema change requires a new migration,
+  never an edit to an earlier one.
+- Every business route lives under `/api/v1`.
+- One error type (`AppError`); internal details are logged, not serialized to
+  the client.
+- Timestamps: `TIMESTAMPTZ` in UTC. IDs: `uuid` (v7). Money: never `f64`.
+- The app does **not** run migrations on startup: `make migrate` runs them.
+- `/healthz` = liveness (process alive, does not touch the DB). `/readyz` =
+  readiness (the DB responds).
+- Building without a DB: `SQLX_OFFLINE=true cargo build` uses `.sqlx/`. If you
+  change a query, run `make prepare`.
+- **Stock is not stored; it is calculated** (the sum of `stock_movements`). The
+  ledger is append-only: correct it with an adjustment, never by editing history.
+- Decimals travel as **strings** in JSON, never as numbers: `"1500.50"`.
+- **Rate limiting does not prohibit abuse; it bounds it.** 5 failures per account
+  → a 5-minute lockout that expires on its own. A permanent lockout would let
+  anyone lock out the owner by entering the wrong password.
+- `X-Forwarded-For` is ignored: the TCP connection IP is used. Honoring it
+  without a trusted proxy nullifies the IP limit.
 
 ## API
 
-Base: `/api/v1`. Errores en `application/problem+json` (RFC 7807).
+Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 
-| Método | Ruta | Auth | Descripción |
+| Method | Route | Auth | Description |
 |---|---|---|---|
-| POST | `/auth/login` | — | `{email, password}` → usuario + cookie de sesión |
-| POST | `/auth/logout` | sesión | Borra la sesión en la DB |
-| GET | `/auth/me` | sesión | Usuario actual |
-| POST | `/users` | `owner` | `{email, password, role}` → 201 con id |
-| GET | `/products` | sesión | Lista con stock calculado (`?kind=&search=&include_inactive=`) |
-| POST | `/products` | sesión | Alta de producto o servicio |
-| GET | `/products/{id}` | sesión | Detalle con stock |
-| PATCH | `/products/{id}` | sesión | Actualiza solo los campos enviados |
-| POST | `/products/{id}/deactivate` | sesión | Baja lógica, idempotente |
-| GET | `/products/{id}/movements` | sesión | Historial, más nuevo primero |
-| POST | `/products/{id}/movements` | sesión | Registra movimiento de stock |
-| POST | `/sales/draft` | sesión | Abre (o reusa) el carrito |
-| GET | `/sales/{id}` | sesión | Venta con total calculado por el servidor |
-| POST | `/sales/{id}/items` | sesión | Agrega ítem |
-| PUT | `/sales/{id}/items/{product_id}` | sesión | Fija cantidad (0 = quitar) |
-| DELETE | `/sales/{id}/items/{product_id}` | sesión | Quita ítem |
-| POST | `/sales/{id}/complete` | sesión | Cobra y descuenta stock |
-| POST | `/sales/{id}/cancel` | sesión | Cancela el borrador |
-| GET | `/sales` | sesión | Ventas cobradas |
+| POST | `/auth/login` | — | `{email, password}` → user + session cookie |
+| POST | `/auth/logout` | session | Deletes the session in the DB |
+| GET | `/auth/me` | session | Current user |
+| POST | `/users` | `owner` | `{email, password, role}` → 201 with id |
+| GET | `/products` | session | List with calculated stock (`?kind=&search=&include_inactive=`) |
+| POST | `/products` | session | Create a product or service |
+| GET | `/products/{id}` | session | Details with stock |
+| PATCH | `/products/{id}` | session | Updates only the fields supplied |
+| POST | `/products/{id}/deactivate` | session | Soft-deactivate, idempotent |
+| GET | `/products/{id}/movements` | session | History, newest first |
+| POST | `/products/{id}/movements` | session | Records a stock movement |
+| POST | `/sales/draft` | session | Opens (or reuses) the cart |
+| GET | `/sales/{id}` | session | Sale with server-calculated total |
+| POST | `/sales/{id}/items` | session | Adds an item |
+| PUT | `/sales/{id}/items/{product_id}` | session | Sets quantity (0 = remove) |
+| DELETE | `/sales/{id}/items/{product_id}` | session | Removes an item |
+| POST | `/sales/{id}/complete` | session | Completes checkout and deducts stock |
+| POST | `/sales/{id}/cancel` | session | Cancels the draft |
+| GET | `/sales` | session | Completed sales |
 
 ```bash
-# login y guardar cookie
+# log in and save the cookie
 curl -c jar.txt -X POST localhost:3000/api/v1/auth/login \
   -H 'content-type: application/json' \
-  -d '{"email":"duenio@pyme.com","password":"..."}'
+  -d '{"email":"owner@pyme.com","password":"..."}'
 
 curl -b jar.txt localhost:3000/api/v1/auth/me
 ```
 
-## Estado actual
+## Current state
 
-Rebanadas 1–3: esqueleto, autenticación y catálogo con libro de stock.
+Slices 1–3: skeleton, authentication, and catalog with a stock ledger.
 
-- **Auth**: login/logout/`me`, sesiones en DB revocables, cookie
-  `HttpOnly`+`SameSite=Strict`, argon2id. RBAC binario (`owner`, `encargado`).
-- **Catálogo**: productos y servicios, SKU único, búsqueda, baja lógica.
-- **Stock**: libro append-only. El stock **no es una columna**, es la suma
-  firmada de movimientos. No se puede vender lo que no hay.
-- **Rate limiting en login**: bloqueo por cuenta (sobrevive reinicios) y por IP
-  (corta antes de gastar argon2), con `429` + `Retry-After`.
-- **Ventas**: carrito persistido en el servidor con cobro transaccional.
-- **113 tests** (unitarios + integración contra Postgres real).
-- **UI**: SvelteKit (SPA) servida por el mismo Axum. Login, **un único rail de
-  navegación** (expandible, con grupos y menú de usuario), listado de productos,
-  movimientos y **punto de venta con lector de código de barras** en
-  `/operations/pos`.
-- **OpenAPI 3.1** generado desde el código; los tipos del frontend se generan
-  de ese spec (`make fe-schema`).
+- **Auth**: login/logout/`me`, revocable DB sessions, `HttpOnly`+`SameSite=Strict`
+  cookie, argon2id. Binary RBAC (`owner`, `manager`).
+- **Catalog**: products and services, unique SKU, search, soft deactivation.
+- **Stock**: append-only ledger. Stock **is not a column**; it is the signed sum
+  of movements. You cannot sell what is not available.
+- **Login rate limiting**: per-account lockout (survives restarts) and per-IP
+  limit (blocks before spending time on argon2), with `429` + `Retry-After`.
+- **Sales**: server-persisted cart with transactional checkout.
+- **114 tests** (unit + integration against real Postgres).
+- **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
+  navigation rail** (expandable, with groups and user menu), product list,
+  movements, and **point of sale with barcode scanner** at `/operations/pos`.
+- **OpenAPI 3.1** generated from code; frontend types are generated from that
+  spec (`make fe-schema`).
 
-Ver `docs/auth.md`, `docs/catalog.md` y `docs/ratelimit.md` para el razonamiento
-y qué falta.
+See `docs/auth.md`, `docs/catalog.md`, `docs/ratelimit.md` and `docs/sales.md`
+for the reasoning and what is missing.
 
-## Desarrollo del frontend
+## Frontend
 
-Dos opciones:
+The UI is a **SvelteKit SPA** served by the same Axum process. Adding a UI meant
+adding three decisions, not just a framework:
 
-**Con HMR** (recomendado mientras trabajás en la UI):
+**SvelteKit over a hand-rolled SPA.** A single-page app still needs routing,
+lazy chunks and a dev server with a proxy. SvelteKit gives all three plus type
+generation from routes; building those three by hand is the part of a frontend
+that rots first.
+
+**`adapter-static` with `fallback: 'index.html'`.** The frontend has no server of
+its own, so it builds to static files and Axum serves `frontend/build/` with a
+fallback to `index.html`. One container, one origin, no CORS. The one contract:
+Axum answers `/api/v1/*`, `/healthz` and `/readyz` first and only then falls back
+to the SPA — otherwise an unknown API route would return `index.html` with `200`
+instead of a `404`.
+
+**Server-rendered data, client-rendered screens.** Every screen loads through a
+`+page.ts` against the API, so the total, the stock and the permissions are
+always the server's answer. The client renders; it never sums or authorizes.
+
+**Tailwind v4 + shadcn-svelte** (preset `vega`, base color `olive`) for
+styling, with tokens documented in `design/system.md`. Dark mode follows the
+system theme (`mode-watcher`) with a manual toggle. The design directions
+considered before implementing are in `design/admin-ui/`.
+
+Stack: **Vite 8 + Svelte 5 (runes) + TypeScript 6**, `@sveltejs/kit` 3.
+
+## Frontend development
+
+Two options:
+
+**With HMR** (recommended while working on the UI):
 
 ```bash
 make db-up && make migrate
-make run          # terminal 1: backend en :3000
-make fe-dev       # terminal 2: frontend en :5173
+make run          # terminal 1: backend on :3000
+make fe-dev       # terminal 2: frontend on :5173
 ```
 
-El proxy de Vite reenvía `/api` a `:3000`, así el navegador ve **un solo
-origen** y la cookie `SameSite=Strict` funciona. Sin el proxy, todo da 401.
+The Vite proxy forwards `/api` to `:3000`, so the browser sees **a single
+origin** and the `SameSite=Strict` cookie works. Without the proxy, everything
+returns 401.
 
-**Producción local** (un solo servidor):
+**Local production** (one server):
 
 ```bash
-make fe-build     # genera frontend/build
-make run          # Axum sirve la SPA con fallback a index.html
+make fe-build     # generates frontend/build
+make run          # Axum serves the SPA with a fallback to index.html
 ```
 
-Abrí `http://localhost:3000`. La documentación interactiva de la API está en
+Open `http://localhost:3000`. Interactive API documentation is at
 `http://localhost:3000/api/v1/docs`.
 
-Próxima rebanada: alta y edición de productos en la UI, listado de usuarios, o
-el primer reporte de negocio.
+`make fe-check` runs `svelte-kit sync` + `svelte-check`; it is part of
+`make check`, so a type error in a component fails the same gate as a clippy
+warning. There is no frontend unit-test runner yet: the behavior that matters
+lives in the Rust integration tests, and `frontend/e2e/nav-shell.cjs` is a manual
+Playwright script for the navigation shell that needs a running app and
+credentials.
+
+When an API type changes, regenerate instead of editing: `make fe-schema`
+runs the OpenAPI generator and then `openapi-typescript`. `schema.d.ts` is
+generated; never edit it by hand.
+
+Next slice: product creation and editing in the UI, user listing, or the first
+business report.
