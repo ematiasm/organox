@@ -1,5 +1,4 @@
-// SPA: sin SSR. El navegador recibe un cascarón y arma todo.
-// `prerender = false` porque las rutas necesitan datos de la DB que no existen
-// durante `vite build`.
+// SPA without SSR: the browser receives a shell and renders the application.
+// `prerender = false` because routes need database data unavailable at build time.
 export const ssr = false;
 export const prerender = false;

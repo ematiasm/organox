@@ -1,13 +1,9 @@
 import { api, type Movement, type Product } from '$lib/api/client';
 
 /**
- * Carga de Movimientos.
- *
- * El backend solo expone los movimientos de UN producto
- * (`GET /api/v1/products/{id}/movements`), no un historial global con
- * paginación. Para que la pantalla muestre datos reales y no una lista vacía,
- * se toman los últimos productos y se piden sus movimientos en paralelo,
- * ordenando después por fecha.
+ * Load movements. The backend exposes movements for one product at a time
+ * (`GET /api/v1/products/{id}/movements`), not a paginated global history.
+ * Fetch recent products' movements in parallel and sort them by date.
  */
 const MAX_PRODUCTS = 12;
 

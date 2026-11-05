@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 
-// `/pos` fue la primera URL del punto de venta. Se mantiene como redirección
-// para no romper enlaces guardados ni el historial de los cajeros.
+// `/pos` was the first POS URL. Keep it as a redirect to preserve saved links
+// and cashiers' history.
 export function load() {
 	redirect(307, '/operations/pos');
 }

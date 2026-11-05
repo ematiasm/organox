@@ -3,14 +3,10 @@
 @import 'shadcn-svelte/tailwind.css';
 
 /*
-  Tema: preset vega + base color olive (shadcn-svelte).
-  Los valores de color son los del registry oficial; el bloque `@theme inline`
-  los expone como utilidades de Tailwind (`bg-background`, `text-foreground`…).
-
-  Convención del proyecto: se usan los tokens de shadcn (`--background`,
-  `--foreground`, `--card`, `--primary`…) y NO se inventan variables propias.
-  Para el verde de marca se usa `--primary`; para las alertas de stock,
-  `--destructive` (stock cero) y `--chart-4`/ámbar equivalente.
+  Theme: vega preset + olive base color (shadcn-svelte).
+  Official registry colors are exposed as Tailwind utilities by `@theme inline`.
+  Use shadcn tokens: `--primary` for brand green, `--destructive` for zero
+  stock and `--chart-4`/amber for stock alerts.
 */
 
 @custom-variant dark (&:is(.dark *));
@@ -41,9 +37,8 @@
 	--chart-5: oklch(0.269 0 0);
 	--radius: 0.625rem;
 
-	/* Token propio del proyecto (no viene del preset): advertencia de stock
-	   bajo. El preset no trae un color de alerta y los `--chart-*` de vega son
-	   escala de grises, así que no sirven para esto. */
+	/* Project-specific low-stock warning token: the preset has no warning color,
+	   and vega's `--chart-*` colors are grayscale. */
 	--warn: oklch(0.68 0.15 70);
 	--sidebar: oklch(0.988 0.003 106.5);
 	--sidebar-foreground: oklch(0.153 0.006 107.1);

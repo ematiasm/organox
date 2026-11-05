@@ -12,9 +12,9 @@
 		"sourceMap": true,
 		"strict": true,
 		"noUncheckedIndexedAccess": true,
-		// SvelteKit 3 eliminó `$lib`. Se redefine acá (paths) y en
-		// `vite.config.ts` (resolve.alias), que son las dos capas que lo
-		// necesitan: svelte-check lee el tsconfig, Vite resuelve en dev/build.
+		// SvelteKit 3 dropped `$lib`. It is redefined here (paths) and in
+		// `vite.config.ts` (resolve.alias), the two layers that need it:
+		// svelte-check reads the tsconfig, Vite resolves at dev/build time.
 		"paths": {
 			"$lib": ["./src/lib"],
 			"$lib/*": ["./src/lib/*"]

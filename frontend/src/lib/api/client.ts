@@ -1,25 +1,17 @@
 /**
- * Cliente HTTP de la API.
- *
- * Reglas que este archivo centraliza para que ninguna pantalla las repita:
- *
- *  1. **Rutas relativas** (`/api/v1/...`). Nunca una URL con host: en dev las
- *     resuelve el proxy de Vite y en producción el mismo Axum. Hardcodear el
- *     host es lo que hace que una app funcione en dev y falle al desplegarse.
- *  2. **`401` → login.** Una sesión vencida no debe producir un error raro
- *     distinto en cada pantalla.
- *  3. **`429` → tiempo de espera.** El backend manda `Retry-After`; mostrarlo
- *     es lo que hace el mensaje accionable.
- *  4. **Errores en `application/problem+json`** (RFC 7807). Se parsean a
- *     `ApiError`, no a un string suelto.
+ * API HTTP client. Centralizes rules shared by all screens:
+ *  1. Relative paths work through Vite's proxy in development and Axum in
+ *     production without a hardcoded host.
+ *  2. `401` redirects expired sessions to login consistently.
+ *  3. `429` exposes `Retry-After` to make errors actionable.
+ *  4. `application/problem+json` errors (RFC 7807) become `ApiError` objects.
  */
 
 import type { components } from './schema';
 
-// ---------- Tipos derivados del spec OpenAPI ----------
+// ---------- Types derived from the OpenAPI spec ----------
 //
-// No se escriben a mano: si el backend cambia un campo, `schema.d.ts` cambia y
-// estos alias arrastran el cambio hasta la pantalla.
+// These aliases propagate backend changes from generated `schema.d.ts` to the UI.
 
 export type Product = components['schemas']['ProductResponse'];
 export type ProductList = components['schemas']['ProductListResponse'];
@@ -35,10 +27,10 @@ export type CompletedSale = components['schemas']['CompletedSaleResponse'];
 export type Draft = components['schemas']['DraftResponse'];
 export type Problem = components['schemas']['Problem'];
 
-/** Error normalizado de la API. */
+/** Normalized API error. */
 export class ApiError extends Error {
 	readonly status: number;
-	/** Segundos hasta reintentar, solo presente en un `429`. */
+	/** Seconds until retry, only present on a `429`. */
 	readonly retryAfter: number | null;
 	readonly problem: Problem | null;
 
@@ -62,9 +54,9 @@ export class ApiError extends Error {
 type RequestOptions = {
 	method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 	body?: unknown;
-	/** Query params. Los `undefined` se omiten. */
+	/** Query parameters; `undefined` values are omitted. */
 	query?: Record<string, string | number | boolean | undefined | null>;
-	/** Evita el redirect automático a /login (lo usa el guard del layout). */
+	/** Skip automatic redirect to /login (used by the layout guard). */
 	skipAuthRedirect?: boolean;
 };
 
@@ -84,15 +76,15 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
 	const response = await fetch(buildUrl(path, query), {
 		method,
-		// Mismo origen: la cookie HttpOnly viaja sola. `same-origin` es explícito
-		// para que nadie lo cambie por `include` sin pensarlo.
+		// Same origin sends the HttpOnly cookie. Keep `same-origin` explicit so
+		// it is not casually changed to `include`.
 		credentials: 'same-origin',
 		headers: body === undefined ? undefined : { 'content-type': 'application/json' },
 		body: body === undefined ? undefined : JSON.stringify(body)
 	});
 
 	if (response.ok) {
-		// 204 No Content: no hay body que parsear.
+		// 204 No Content: there is no body to parse.
 		if (response.status === 204) return undefined as T;
 		return (await response.json()) as T;
 	}
@@ -103,8 +95,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 	const problem = (await response.json().catch(() => null)) as Problem | null;
 
 	if (response.status === 401 && !skipAuthRedirect) {
-		// Sesión vencida o inexistente: una sola pantalla, un solo destino.
-		// `replace` para no dejar la página protegida en el historial.
+		// Expired or missing session: use one destination. `replace` keeps the
+		// protected page out of history.
 		window.location.replace('/login');
 	}
 
@@ -138,10 +130,10 @@ export const api = {
 
 	listMovements: (id: string) => request<Movement[]>(`/api/v1/products/${id}/movements`),
 
-	// --- Ventas ---
+	// --- Sales ---
 	//
-	// Cada mutación devuelve la venta COMPLETA recalculada. El cliente no suma
-	// ni valida: solo muestra lo que el servidor dice.
+	// Every mutation returns the complete recalculated sale. The client only
+	// displays the server response; it does not add or validate totals.
 
 	openDraft: () => request<Draft>('/api/v1/sales/draft', { method: 'POST' }),
 

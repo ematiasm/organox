@@ -4,31 +4,31 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import path from 'node:path';
 import { defineConfig } from 'vite';
 
-// SvelteKit 3 eliminó `svelte.config.js`: la configuración va en el plugin.
-// (En Kit 2 esto vivía en svelte.config.js; si encontrás tutoriales viejos,
-// ese es el motivo de la diferencia.)
+// SvelteKit 3 dropped `svelte.config.js`: configuration goes in the plugin.
+// (In Kit 2 this lived in svelte.config.js; if you find old tutorials, that is
+// the reason for the difference.)
 export default defineConfig({
 	plugins: [
 		tailwindcss(),
 		sveltekit({
-			// SPA pura: todo el ruteo ocurre en el navegador y Axum entrega
-			// `index.html` como fallback. `strict: false` es necesario porque
-			// hay rutas dinámicas (/products/[id]) que no se prerenderizan.
+			// Pure SPA: all routing happens in the browser and Axum serves
+			// `index.html` as the fallback. `strict: false` is required because
+			// there are dynamic routes (/products/[id]) that are not prerendered.
 			adapter: adapter({ fallback: 'index.html', strict: false })
 		})
 	],
 	resolve: {
-		// Alias estándar de Vite (no la opción `sveltekit({ alias })`, que está
-		// deprecada en Kit 3).
+		// Standard Vite alias (not the `sveltekit({ alias })` option, which is
+		// deprecated in Kit 3).
 		alias: {
 			$lib: path.resolve('./src/lib')
 		}
 	},
 	server: {
 		port: 5173,
-		// El proxy es lo que permite que la cookie de sesión funcione en dev.
-		// Sin esto, el navegador ve dos orígenes (:5173 y :3000), SameSite=Strict
-		// no manda la cookie, y todo da 401.
+		// The proxy is what makes the session cookie work in dev. Without it the
+		// browser sees two origins (:5173 and :3000), SameSite=Strict does not
+		// send the cookie, and everything returns 401.
 		proxy: {
 			'/api': {
 				target: 'http://localhost:3000',

@@ -21,15 +21,9 @@
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
 
 	/**
-	 * Cáscara de toda pantalla privada: un único sistema de navegación.
-	 *
-	 * Vive en el layout raíz (fuera de los grupos con guard) porque el guard de
-	 * sesión es asíncrono: si el rail dependiera de sus datos, cada navegación
-	 * desmontaría y remontaría la navegación, y el estado expandido se perdería.
-	 * Acá los datos se piden una vez y el rail queda montado de punta a punta.
-	 *
-	 * El ítem activo se deriva de la URL: no hay estado que se desincronice al
-	 * usar Atrás.
+	 * Shell for private screens with a single navigation system. Session data is
+	 * loaded once, preserving the rail across navigation. The active item is
+	 * derived from the URL, so it stays in sync when using Back.
 	 */
 	let { user, children }: { user: SessionUser; children?: Snippet } = $props();
 
@@ -38,43 +32,42 @@
 		label: string;
 		icon: typeof CartIcon;
 		current?: (path: string) => boolean;
-		// Solo `owner` ve Usuarios. Ocultar el link es cosmético: el 403 real lo
-		// decide el backend. Ver docs/auth.md y S11 de odd/tasks/ui-admin.md.
+		// Only `owner` sees Users. Hiding the link is cosmetic; the backend enforces
+		// the 403. See docs/auth.md and S11 in odd/tasks/ui-admin.md.
 		ownerOnly?: boolean;
 	};
 
 	type Group = { label: string; items: Item[] };
 
-	// Iniciar venta no es un destino más: es la acción primaria del local. Se
-	// pidió explícitamente que se abra desde el rail y no desde la página.
+	// Starting a sale is the primary action, requested from the rail, not the page.
 	const groups: Group[] = [
 		{
-			label: 'Operación',
-			items: [{ href: '/operations/pos', label: 'Venta', icon: CartIcon }]
+			label: 'Operations',
+			items: [{ href: '/operations/pos', label: 'Sale', icon: CartIcon }]
 		},
 		{
-			label: 'Catálogo',
+			label: 'Catalog',
 			items: [
-				// `current` propio: el prefijo `/products` también matchearía un
-				// futuro `/products/...` de detalle, que sí debe marcar Productos.
+				// The `/products` prefix also matches future detail pages, which
+				// should mark Products as current.
 				{
 					href: '/products',
-					label: 'Productos',
+					label: 'Products',
 					icon: ListIcon,
 					current: (path) => path.startsWith('/products')
 				},
 				{
 					href: '/operations/movements',
-					label: 'Movimientos',
+					label: 'Movements',
 					icon: ArrowLeftRightIcon,
 					current: (path) => path.startsWith('/operations/movements')
 				}
 			]
 		},
 		{
-			label: 'Sistema',
+			label: 'System',
 			items: [
-				{ href: '/users', label: 'Usuarios', icon: UsersIcon, ownerOnly: true }
+				{ href: '/users', label: 'Users', icon: UsersIcon, ownerOnly: true }
 			]
 		}
 	];
@@ -94,8 +87,8 @@
 
 	const initials = $derived((user.email.split('@')[0] ?? user.email).slice(0, 2).toUpperCase());
 
-	// Preferencia de la barra, no dato del servidor: se lee al montar y se
-	// escribe en cada cambio. Sin `localStorage` (SSR) el rail nace compacto.
+	// Rail preference, not server data: read on mount and written on change.
+	// Without `localStorage` (SSR), the rail starts collapsed.
 	const EXPANDED_KEY = 'organox:rail-expanded';
 	let expanded = $state(false);
 
@@ -112,8 +105,8 @@
 		try {
 			localStorage.setItem(EXPANDED_KEY, expanded ? '1' : '0');
 		} catch {
-			// Modo privado o storage lleno: la preferencia es cosmética, no se
-			// interrumpe la sesión por no poder recordarla.
+			// Private mode or full storage: this cosmetic preference must not
+			// interrupt the session if it cannot be saved.
 		}
 	}
 
@@ -124,12 +117,12 @@
 </script>
 
 <div class="shell" class:rail-expanded={expanded}>
-	<aside class="rail" class:expanded aria-label="Navegación principal">
+	<aside class="rail" class:expanded aria-label="Main navigation">
 		<div class="rail-head">
 			<div class="logo" aria-hidden="true">A</div>
 			<div class="brand-text">
-				<span class="brand">Almacén</span>
-				<small>Administración</small>
+				<span class="brand">Store</span>
+				<small>Administration</small>
 			</div>
 		</div>
 
@@ -138,12 +131,12 @@
 			type="button"
 			aria-expanded={expanded}
 			aria-controls="sidenav"
-			aria-label={expanded ? 'Contraer menú' : 'Expandir menú'}
+			aria-label={expanded ? 'Collapse menu' : 'Expand menu'}
 			onclick={toggleRail}
 		>
 			<ChevronLeftIcon class="chev" />
-			<span class="label t-closed">Expandir</span>
-			<span class="label t-open">Contraer</span>
+			<span class="label t-closed">Expand</span>
+			<span class="label t-open">Collapse</span>
 		</button>
 
 		<nav id="sidenav">
@@ -168,7 +161,7 @@
 			<DropdownMenu>
 				<DropdownMenuTrigger>
 					{#snippet child({ props })}
-						<button {...props} class="user" title="Cuenta">
+						<button {...props} class="user" title="Account">
 							<span class="avatar" aria-hidden="true">{initials}</span>
 							<span class="user-text">
 								<span class="u-email">{user.email}</span>
@@ -190,7 +183,7 @@
 					<DropdownMenuSeparator />
 					<DropdownMenuItem variant="destructive" onSelect={logout}>
 						<LogOutIcon />
-						Salir
+						Sign out
 					</DropdownMenuItem>
 				</DropdownMenuContent>
 			</DropdownMenu>
@@ -366,7 +359,7 @@
 		outline-offset: 2px;
 	}
 
-	/* ---------- rail compacto: sólo iconos ---------- */
+	/* ---------- compact rail: icons only ---------- */
 	.rail:not(.expanded) .rail-toggle,
 	.rail:not(.expanded) nav a {
 		justify-content: center;
@@ -394,7 +387,7 @@
 		white-space: nowrap;
 	}
 
-	/* ---------- pie: usuario ---------- */
+	/* ---------- footer: user ---------- */
 	.rail-foot {
 		margin-top: auto;
 		padding-top: 0.6rem;
@@ -474,13 +467,13 @@
 		transform: rotate(180deg);
 	}
 
-	/* ---------- contenido ---------- */
+	/* ---------- content ---------- */
 	.main {
 		min-width: 0;
 		padding: 1.15rem 1.5rem 1.5rem;
 	}
 
-	/* Pantallas de pantalla completa (venta) manejan su propio alto. */
+	/* Full-screen pages (sale) manage their own height. */
 	:global(.main:has(> .pos)) {
 		padding: 0;
 		min-height: 100vh;

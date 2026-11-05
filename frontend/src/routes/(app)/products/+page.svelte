@@ -13,9 +13,8 @@
 
 	let { data } = $props();
 
-	// `$derived` en vez de `$state` con semilla: el input refleja la URL, y la
-	// URL es la única fuente de verdad de la búsqueda. Evita el input y la URL
-	// desincronizados tras el botón Atrás.
+	// Use `$derived` instead of seeded `$state`: the URL is the source of truth
+	// for search, keeping the input in sync after using Back.
 	let search = $derived(data.search);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -24,37 +23,37 @@
 		clearTimeout(timer);
 		timer = setTimeout(() => {
 			const query = value.trim() ? `?search=${encodeURIComponent(value.trim())}` : '';
-			// `reset: false` preserva el foco en el input mientras se escribe;
-			// `replace` evita llenar el historial con cada letra.
+			// `reset: false` preserves input focus; `replace` avoids adding each
+			// keystroke to the history.
 			goto(`/products${query}`, { reset: false, replace: true });
 		}, 300);
 	}
 
-	/** Los decimales llegan como string ("1500.50") y así se muestran. */
+	/** Decimals arrive as strings ("1500.50") and are displayed unchanged. */
 	function money(value: string | null | undefined): string {
 		return value ?? '—';
 	}
 
 	function stock(product: { stock?: string | null; kind: string }): string {
-		// `null` en un servicio no es "cero": es "no aplica".
+		// `null` for a service means "not applicable", not "zero".
 		if (product.kind === 'service') return '—';
 		return product.stock ?? '0';
 	}
 </script>
 
-<!-- Iniciar venta vive en el rail: la página no repite el acceso. -->
-<h1 class="mb-4 text-xl font-semibold tracking-tight">Productos</h1>
+<!-- Starting a sale lives in the rail; the page does not repeat the link. -->
+<h1 class="mb-4 text-xl font-semibold tracking-tight">Products</h1>
 
 <div class="mb-4 max-w-sm">
-	<Input type="search" placeholder="Buscar por nombre…" value={search} oninput={onInput} />
+	<Input type="search" placeholder="Search by name…" value={search} oninput={onInput} />
 </div>
 
 {#if data.items.length === 0}
 	<div class="rounded-lg border border-border p-10 text-center text-sm text-muted-foreground">
 		{#if data.search}
-			No hay productos que coincidan con «{data.search}».
+			No products match “{data.search}”.
 		{:else}
-			Todavía no hay productos cargados.
+			No products have been added yet.
 		{/if}
 	</div>
 {:else}
@@ -62,10 +61,10 @@
 		<Table>
 			<TableHeader>
 				<TableRow>
-					<TableHead>Nombre</TableHead>
+					<TableHead>Name</TableHead>
 					<TableHead>SKU</TableHead>
-					<TableHead>Tipo</TableHead>
-					<TableHead class="text-right">Precio</TableHead>
+					<TableHead>Type</TableHead>
+					<TableHead class="text-right">Price</TableHead>
 					<TableHead class="text-right">Stock</TableHead>
 				</TableRow>
 			</TableHeader>
@@ -75,13 +74,13 @@
 						<TableCell class="font-medium">{product.name}</TableCell>
 						<TableCell class="text-muted-foreground">{product.sku ?? '—'}</TableCell>
 						<TableCell>
-							{product.kind === 'service' ? 'Servicio' : 'Producto'}
+							{product.kind === 'service' ? 'Service' : 'Product'}
 						</TableCell>
 						<TableCell class="text-right tabular-nums">{money(product.price)}</TableCell>
 						<TableCell class="text-right tabular-nums">
 							{stock(product)}
 							{#if product.low_stock}
-								<Badge variant="outline" class="ml-1.5 text-[10px] uppercase">bajo</Badge>
+								<Badge variant="outline" class="ml-1.5 text-[10px] uppercase">low</Badge>
 							{/if}
 						</TableCell>
 					</TableRow>
@@ -91,6 +90,6 @@
 	</div>
 
 	<p class="mt-3 text-sm text-muted-foreground">
-		{data.items.length} {data.items.length === 1 ? 'producto' : 'productos'}
+		{data.items.length} {data.items.length === 1 ? 'product' : 'products'}
 	</p>
 {/if}

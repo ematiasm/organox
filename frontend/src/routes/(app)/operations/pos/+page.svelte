@@ -4,14 +4,10 @@
 
 	let { data } = $props();
 
-	// La venta la calcula el servidor. Este estado solo refleja su respuesta:
-	// nunca sumamos ni validamos acá, porque un total que el navegador cree
-	// puede no ser el que se cobra.
-	//
-	// Se copia `data.sale` a estado local porque las mutaciones lo reemplazan
-	// sin navegar. Es una copia deliberada del valor inicial, no un `$derived`:
-	// si fuera derivado, cada respuesta del servidor tendría que pasar por una
-	// recarga de página.
+	// The server calculates the sale; this state only reflects its response.
+	// The browser never adds or validates totals that may differ from the charge.
+	// `data.sale` is copied to local state because mutations replace it without
+	// navigation. A derived value would require a page reload for each response.
 	let sale = $state<Sale>(untrack(() => data.sale));
 	let error = $state<string | null>(null);
 	let busy = $state(false);
@@ -19,8 +15,7 @@
 	let scanInput: HTMLInputElement | undefined = $state();
 	let completed = $state<{ total: string } | null>(null);
 
-	// Búsqueda en cliente sobre lo ya cargado: la grilla es de productos
-	// visibles, no un buscador de todo el catálogo.
+	// Client-side search covers loaded products, not the entire catalog.
 	const visible = $derived(
 		search.trim()
 			? data.products.filter(
@@ -35,7 +30,7 @@
 		(id: string) => sale.items.find((i) => i.product_id === id)
 	);
 
-	/** Aplica la respuesta del servidor. Es la única fuente de verdad del carrito. */
+	/** Apply the server response, the cart's only source of truth. */
 	function apply(next: Sale) {
 		sale = next;
 		error = null;
@@ -47,7 +42,7 @@
 		try {
 			apply(await action());
 		} catch (e) {
-			error = e instanceof ApiError ? e.message : 'No se pudo actualizar la venta.';
+			error = e instanceof ApiError ? e.message : 'Could not update the sale.';
 		} finally {
 			busy = false;
 		}
@@ -58,8 +53,7 @@
 	}
 
 	async function changeQuantity(productId: string, current: string, delta: number) {
-		// Los decimales viajan como string; se opera con Number solo para el
-		// incremento de a 1, que no pierde precisión.
+		// Decimals travel as strings; Number is used only for the exact increment of 1.
 		const next = Math.max(0, Number(current) + delta);
 		await run(() => api.setItemQuantity(sale.id, productId, String(next)));
 	}
@@ -75,9 +69,8 @@
 			const done = await api.completeSale(sale.id);
 			completed = { total: done.total };
 		} catch (e) {
-			// 409 con stock insuficiente: el mensaje del servidor dice de qué
-			// producto y cuánto hay. Se muestra tal cual.
-			error = e instanceof ApiError ? e.message : 'No se pudo cobrar la venta.';
+			// On 409 insufficient stock, show the server's product and quantity message.
+			error = e instanceof ApiError ? e.message : 'Could not charge the sale.';
 		} finally {
 			busy = false;
 		}
@@ -90,13 +83,13 @@
 			await api.cancelSale(sale.id);
 			window.location.href = '/pos';
 		} catch (e) {
-			error = e instanceof ApiError ? e.message : 'No se pudo cancelar.';
+			error = e instanceof ApiError ? e.message : 'Could not cancel.';
 		} finally {
 			busy = false;
 		}
 	}
 
-	/** El lector de código de barras escribe y manda Enter. */
+	/** The barcode scanner types and sends Enter. */
 	function onScanKey(event: KeyboardEvent) {
 		if (event.key !== 'Enter') return;
 		event.preventDefault();
@@ -121,14 +114,14 @@
 <div class="pos">
 	<section class="main">
 		<header class="head">
-			<h1>Nueva venta</h1>
-			<span class="pill">{sale.item_count} {sale.item_count === 1 ? 'ítem' : 'ítems'}</span>
+			<h1>New sale</h1>
+			<span class="pill">{sale.item_count} {sale.item_count === 1 ? 'item' : 'items'}</span>
 		</header>
 
 		{#if completed}
 			<div class="done" role="status">
-				<strong>Venta cobrada.</strong> Total {completed.total}. El stock ya está descontado.
-				<button type="button" onclick={() => (window.location.href = '/pos')}>Nueva venta</button>
+				<strong>Sale charged.</strong> Total {completed.total}. Stock has been deducted.
+				<button type="button" onclick={() => (window.location.href = '/pos')}>New sale</button>
 			</div>
 		{/if}
 
@@ -142,15 +135,15 @@
 				bind:value={search}
 				onkeydown={onScanKey}
 				type="text"
-				placeholder="Escaneá un código o buscá por nombre…"
-				aria-label="Escanear o buscar"
+				placeholder="Scan a code or search by name…"
+				aria-label="Scan or search"
 			/>
-			<span class="hint"><kbd>F2</kbd> foco · <kbd>Enter</kbd> agrega</span>
+			<span class="hint"><kbd>F2</kbd> focus · <kbd>Enter</kbd> add</span>
 		</div>
 
 		{#if visible.length === 0}
 			<div class="empty">
-				{search ? `Sin resultados para «${search}».` : 'No hay productos cargados todavía.'}
+				{search ? `No results for “${search}”.` : 'No products have been added yet.'}
 			</div>
 		{:else}
 			<div class="grid">
@@ -164,7 +157,7 @@
 						class:out
 						onclick={() => add(product)}
 						disabled={busy || out}
-						title={out ? 'Sin stock' : `Agregar ${product.name}`}
+						title={out ? 'Out of stock' : `Add ${product.name}`}
 					>
 						{#if inCart}
 							<span class="qty-badge">{inCart.quantity}</span>
@@ -172,7 +165,7 @@
 						<span class="n">{product.name}</span>
 						<span class="p">{product.price ?? '—'}</span>
 						<span class="m">
-							<span class="s">{out ? 'sin stock' : `${product.stock} u.`}</span>
+							<span class="s">{out ? 'out of stock' : `${product.stock} ${Number(product.stock) === 1 ? 'unit' : 'units'}`}</span>
 							<span>{product.sku ?? '—'}</span>
 						</span>
 					</button>
@@ -181,16 +174,16 @@
 		{/if}
 	</section>
 
-	<!-- El carrito vive en el servidor: este panel solo dibuja su respuesta. -->
-	<aside class="cart" aria-label="Carrito">
+	<!-- The cart lives on the server; this panel only displays its response. -->
+	<aside class="cart" aria-label="Cart">
 		<div class="cart-head">
-			<span class="t">Carrito</span>
-			<span class="n">{sale.item_count} {sale.item_count === 1 ? 'ítem' : 'ítems'}</span>
+			<span class="t">Cart</span>
+			<span class="n">{sale.item_count} {sale.item_count === 1 ? 'item' : 'items'}</span>
 		</div>
 
 		{#if sale.items.length === 0}
 			<div class="empty-cart">
-				Escaneá un producto o tocá una tarjeta para empezar la venta.
+				Scan a product or tap a card to start the sale.
 			</div>
 		{:else}
 			<div class="lines">
@@ -203,14 +196,14 @@
 						<div class="qty">
 							<button
 								type="button"
-								aria-label="Quitar uno"
+								aria-label="Remove one"
 								disabled={busy}
 								onclick={() => changeQuantity(item.product_id, item.quantity, -1)}>−</button
 							>
 							<span class="v">{item.quantity}</span>
 							<button
 								type="button"
-								aria-label="Agregar uno"
+								aria-label="Add one"
 								disabled={busy}
 								onclick={() => changeQuantity(item.product_id, item.quantity, 1)}>+</button
 							>
@@ -219,7 +212,7 @@
 						<button
 							type="button"
 							class="rm"
-							aria-label={`Quitar ${item.product_name}`}
+							aria-label={`Remove ${item.product_name}`}
 							disabled={busy}
 							onclick={() => remove(item.product_id)}>×</button
 						>
@@ -230,10 +223,10 @@
 
 		<div class="totals">
 			<div class="trow big"><span>Total</span><span>{sale.total}</span></div>
-			<p class="note">Calculado por el servidor. El stock se descuenta al cobrar.</p>
+			<p class="note">Calculated by the server. Stock is deducted when the sale is charged.</p>
 			<div class="pay">
 				<button type="button" onclick={cancel} disabled={busy || sale.item_count === 0}>
-					Cancelar
+					Cancel
 				</button>
 				<button
 					type="button"
@@ -241,7 +234,7 @@
 					onclick={complete}
 					disabled={busy || sale.item_count === 0}
 				>
-					{busy ? 'Procesando…' : 'Cobrar'}
+					{busy ? 'Processing…' : 'Charge'}
 				</button>
 			</div>
 		</div>
@@ -255,7 +248,7 @@
 		min-height: 100vh;
 	}
 
-	/* --- Grilla --- */
+	/* --- Grid --- */
 	.main {
 		padding: 1.15rem 1.5rem 1.5rem;
 		min-width: 0;
@@ -379,7 +372,7 @@
 		font-variant-numeric: tabular-nums;
 	}
 
-	/* --- Carrito --- */
+	/* --- Cart --- */
 	.cart {
 		background: var(--color-card);
 		border-left: 1px solid var(--color-border);
