@@ -1,4 +1,4 @@
-# Postgres de desarrollo. Un solo servicio: suficiente hasta que exista dominio.
+# Development Postgres. A single service: enough until there is a domain.
 services:
   db:
     image: postgres:17-alpine
