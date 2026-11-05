@@ -1,28 +1,28 @@
-//! Tests de integración de autenticación.
+//! Authentication integration tests.
 //!
-//! Cada test corre contra una base de datos efímera creada por `#[sqlx::test]`
-//! y ejerce el `Router` en memoria (sin abrir puerto ni proceso servidor).
+//! Each test runs against an ephemeral database created by `#[sqlx::test]`
+//! and exercises the in-memory `Router` without a port or server process.
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use organox::AppState;
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
 use organox::auth::{password, validation};
 use organox::routes::router;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
 
-const PASSWORD: &str = "contrasena-bastante-larga-123";
+const PASSWORD: &str = "password-long-enough-123";
 
 fn app(pool: sqlx::PgPool) -> axum::Router {
     router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
 }
 
-/// Inserta un usuario directo en la DB, sin pasar por HTTP.
+/// Inserts a user directly into the database, without HTTP.
 async fn seed_user(pool: &sqlx::PgPool, email: &str, role: Role) {
-    let email = validation::ValidatedEmail::parse(email).expect("email válido");
+    let email = validation::ValidatedEmail::parse(email).expect("valid email");
     let hash = password::hash(PASSWORD).expect("hash");
 
     repository::create_user(
@@ -34,7 +34,7 @@ async fn seed_user(pool: &sqlx::PgPool, email: &str, role: Role) {
         },
     )
     .await
-    .expect("crear usuario");
+    .expect("create user");
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -55,12 +55,12 @@ fn login_request(email: &str, password: &str) -> Request<Body> {
         .unwrap()
 }
 
-/// Extrae la cookie de sesión de un `Set-Cookie`.
+/// Extracts the session cookie from `Set-Cookie`.
 fn session_cookie(response: &axum::response::Response) -> String {
     let header = response
         .headers()
         .get("set-cookie")
-        .expect("debe emitir set-cookie")
+        .expect("must emit set-cookie")
         .to_str()
         .unwrap();
 
@@ -69,15 +69,15 @@ fn session_cookie(response: &axum::response::Response) -> String {
         .next()
         .and_then(|pair| pair.split_once('='))
         .map(|(_, v)| v.to_string())
-        .expect("cookie con formato name=value");
+        .expect("cookie in name=value format");
 
     assert!(
         header.contains("HttpOnly"),
-        "la cookie de sesión debe ser HttpOnly: {header}"
+        "the session cookie must be HttpOnly: {header}"
     );
     assert!(
         header.contains("SameSite=Strict"),
-        "la cookie de sesión debe ser SameSite=Strict: {header}"
+        "the session cookie must be SameSite=Strict: {header}"
     );
 
     value
@@ -87,11 +87,11 @@ fn session_cookie(response: &axum::response::Response) -> String {
 
 #[sqlx::test]
 async fn login_with_valid_credentials_returns_200_and_cookie(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
     let app = app(pool);
 
     let response = app
-        .oneshot(login_request("duenio@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", PASSWORD))
         .await
         .unwrap();
 
@@ -100,33 +100,33 @@ async fn login_with_valid_credentials_returns_200_and_cookie(pool: sqlx::PgPool)
     assert!(!cookie.is_empty());
 
     let body = body_json(response).await;
-    assert_eq!(body["user"]["email"], "duenio@pyme.com");
+    assert_eq!(body["user"]["email"], "owner@pyme.com");
     assert_eq!(body["user"]["role"], "owner");
-    // El hash nunca viaja en la respuesta.
+    // The hash is never sent in the response.
     assert!(body["user"].get("password_hash").is_none());
 }
 
 #[sqlx::test]
 async fn login_is_case_insensitive_on_email(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
     let app = app(pool);
 
     let response = app
-        .oneshot(login_request("  Duenio@PyME.COM ", PASSWORD))
+        .oneshot(login_request("  Owner@PyME.COM ", PASSWORD))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-/// El mismo 401 para "contraseña incorrecta" y "email inexistente": el cliente
-/// no puede distinguir si un email está registrado.
+/// The same 401 for an incorrect password and an unknown email: the client
+/// cannot distinguish whether an email is registered.
 #[sqlx::test]
 async fn login_failures_are_indistinguishable(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let wrong_password = app(pool.clone())
-        .oneshot(login_request("duenio@pyme.com", "otra-contrasena-123"))
+        .oneshot(login_request("owner@pyme.com", "another-password-123"))
         .await
         .unwrap();
 
@@ -134,7 +134,7 @@ async fn login_failures_are_indistinguishable(pool: sqlx::PgPool) {
     let wrong_password_body = body_json(wrong_password).await;
 
     let unknown_email = app(pool)
-        .oneshot(login_request("nadie@pyme.com", PASSWORD))
+        .oneshot(login_request("nobody@pyme.com", PASSWORD))
         .await
         .unwrap();
 
@@ -148,14 +148,14 @@ async fn login_failures_are_indistinguishable(pool: sqlx::PgPool) {
 #[sqlx::test]
 async fn login_with_malformed_email_returns_401(pool: sqlx::PgPool) {
     let response = app(pool)
-        .oneshot(login_request("no-es-email", PASSWORD))
+        .oneshot(login_request("not-an-email", PASSWORD))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-// --- Sesión -------------------------------------------------------------
+// --- Session ------------------------------------------------------------
 
 #[sqlx::test]
 async fn me_requires_session_cookie(pool: sqlx::PgPool) {
@@ -174,10 +174,10 @@ async fn me_requires_session_cookie(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn me_returns_authenticated_user(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("duenio@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", PASSWORD))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
@@ -194,7 +194,7 @@ async fn me_returns_authenticated_user(pool: sqlx::PgPool) {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(body_json(response).await["email"], "duenio@pyme.com");
+    assert_eq!(body_json(response).await["email"], "owner@pyme.com");
 }
 
 #[sqlx::test]
@@ -203,7 +203,7 @@ async fn me_rejects_forged_session_token(pool: sqlx::PgPool) {
         .oneshot(
             Request::builder()
                 .uri("/api/v1/auth/me")
-                .header("cookie", "session=token-inventado-que-no-existe")
+                .header("cookie", "session=made-up-nonexistent-token")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -215,15 +215,15 @@ async fn me_rejects_forged_session_token(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn me_rejects_expired_session(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("duenio@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", PASSWORD))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
 
-    // Expirar la sesión directamente en la DB.
+    // Expire the session directly in the database.
     sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 second'")
         .execute(&pool)
         .await
@@ -243,13 +243,13 @@ async fn me_rejects_expired_session(pool: sqlx::PgPool) {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// Logout borra la sesión en la DB: la cookie robada deja de servir.
+/// Logout deletes the database session: a stolen cookie no longer works.
 #[sqlx::test]
 async fn logout_invalidates_session_server_side(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("duenio@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", PASSWORD))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
@@ -268,7 +268,7 @@ async fn logout_invalidates_session_server_side(pool: sqlx::PgPool) {
         .unwrap();
     assert_eq!(logout.status(), StatusCode::NO_CONTENT);
 
-    // La misma cookie ya no autentica.
+    // The same cookie no longer authenticates.
     let after = app(pool)
         .oneshot(
             Request::builder()
@@ -282,13 +282,13 @@ async fn logout_invalidates_session_server_side(pool: sqlx::PgPool) {
     assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// El token en claro no se persiste: solo su SHA-256.
+/// The plaintext token is not persisted: only its SHA-256 is.
 #[sqlx::test]
 async fn session_token_is_not_stored_in_plaintext(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("duenio@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", PASSWORD))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
@@ -299,15 +299,15 @@ async fn session_token_is_not_stored_in_plaintext(pool: sqlx::PgPool) {
         .unwrap();
 
     assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].len(), 32, "el token guardado debe ser un SHA-256");
+    assert_eq!(stored[0].len(), 32, "the stored token must be a SHA-256");
     assert_ne!(
         stored[0],
         cookie.as_bytes(),
-        "el token en claro no debe estar en la DB"
+        "the plaintext token must not be in the database"
     );
 }
 
-// --- Alta de usuarios (RBAC) -------------------------------------------
+// --- User creation (RBAC) ----------------------------------------------
 
 fn create_user_request(cookie: &str, email: &str, role: &str) -> Request<Body> {
     Request::builder()
@@ -323,56 +323,53 @@ fn create_user_request(cookie: &str, email: &str, role: &str) -> Request<Body> {
 
 #[sqlx::test]
 async fn owner_can_create_user(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("duenio@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", PASSWORD))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
 
     let response = app(pool.clone())
-        .oneshot(create_user_request(
-            &cookie,
-            "empleado@pyme.com",
-            "encargado",
-        ))
+        .oneshot(create_user_request(&cookie, "employee@pyme.com", "manager"))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    let role: Role = sqlx::query_scalar("SELECT role FROM users WHERE email = 'empleado@pyme.com'")
+    let role: Role = sqlx::query_scalar("SELECT role FROM users WHERE email = 'employee@pyme.com'")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(role, Role::Encargado);
+    assert_eq!(role, Role::Manager);
 }
 
-/// RBAC: un encargado no puede crear usuarios. 403, y sin efectos: no se crea
-/// el usuario ni se gasta un hash.
+/// RBAC: a manager cannot create users. A 403 has no effects: no user is
+/// created and no hash is computed.
 #[sqlx::test]
-async fn encargado_cannot_create_user(pool: sqlx::PgPool) {
-    seed_user(&pool, "encargado@pyme.com", Role::Encargado).await;
+async fn manager_cannot_create_user(pool: sqlx::PgPool) {
+    seed_user(&pool, "manager@pyme.com", Role::Manager).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("encargado@pyme.com", PASSWORD))
+        .oneshot(login_request("manager@pyme.com", PASSWORD))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
 
     let response = app(pool.clone())
-        .oneshot(create_user_request(&cookie, "otro@pyme.com", "owner"))
+        .oneshot(create_user_request(&cookie, "other@pyme.com", "owner"))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE email = 'otro@pyme.com'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(count, 0, "un 403 no debe dejar efectos");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE email = 'other@pyme.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 0, "a 403 must leave no effects");
 }
 
 #[sqlx::test]
@@ -397,23 +394,23 @@ async fn anonymous_cannot_create_user(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn duplicate_email_returns_409_and_keeps_single_row(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("duenio@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", PASSWORD))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
 
     let response = app(pool.clone())
-        .oneshot(create_user_request(&cookie, "duenio@pyme.com", "encargado"))
+        .oneshot(create_user_request(&cookie, "owner@pyme.com", "manager"))
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
 
     let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM users WHERE email = 'duenio@pyme.com'")
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE email = 'owner@pyme.com'")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -422,10 +419,10 @@ async fn duplicate_email_returns_409_and_keeps_single_row(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn weak_password_is_rejected_without_creating_user(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("duenio@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", PASSWORD))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
@@ -438,7 +435,7 @@ async fn weak_password_is_rejected_without_creating_user(pool: sqlx::PgPool) {
                 .header("content-type", "application/json")
                 .header("cookie", format!("session={cookie}"))
                 .body(Body::from(
-                    json!({ "email": "debil@pyme.com", "password": "corta", "role": "encargado" })
+                    json!({ "email": "weak@pyme.com", "password": "short", "role": "manager" })
                         .to_string(),
                 ))
                 .unwrap(),
@@ -448,20 +445,19 @@ async fn weak_password_is_rejected_without_creating_user(pool: sqlx::PgPool) {
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM users WHERE email = 'debil@pyme.com'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE email = 'weak@pyme.com'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(count, 0);
 }
 
 #[sqlx::test]
 async fn invalid_role_in_payload_is_rejected(pool: sqlx::PgPool) {
-    seed_user(&pool, "duenio@pyme.com", Role::Owner).await;
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("duenio@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", PASSWORD))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
@@ -471,6 +467,6 @@ async fn invalid_role_in_payload_is_rejected(pool: sqlx::PgPool) {
         .await
         .unwrap();
 
-    // axum rechaza el body antes de llegar al handler.
+    // axum rejects the body before it reaches the handler.
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }

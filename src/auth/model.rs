@@ -1,8 +1,8 @@
-//! Tipos del dominio de autenticación.
+//! Authentication domain types.
 //!
-//! Regla de esta capa: el `PasswordHash` y el `Role` se construyen solo por
-//! caminos validados (`PasswordHash::from_phc`, `Role` viene de la DB), y el
-//! serializado hacia afuera usa DTOs explícitos, nunca estas structs.
+//! Layer rule: `PasswordHash` and `Role` are constructed only through validated
+//! paths (`PasswordHash::from_phc`, `Role` comes from the DB), and external
+//! serialization uses explicit DTOs, never these structs.
 
 use std::fmt;
 use std::str::FromStr;
@@ -12,17 +12,17 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Hash de contraseña ya verificado en formato PHC (argon2id).
+/// Already verified password hash in PHC format (argon2id).
 ///
-/// Es un newtype a propósito: no se puede construir desde un `String` arbitrario,
-/// solo desde la salida del hasher o desde un valor de la DB que ya cumple la
-/// restricción `CHECK (password_hash LIKE '$argon2%')`.
+/// A deliberate newtype: it cannot be constructed from an arbitrary `String`,
+/// only from the hasher output or a DB value already satisfying the
+/// `CHECK (password_hash LIKE '$argon2%')` constraint.
 #[derive(Clone)]
 pub struct PasswordHash(String);
 
 impl PasswordHash {
     pub(crate) fn from_phc(phc: String) -> Self {
-        debug_assert!(phc.starts_with("$argon2"), "PHC inválido: {phc}");
+        debug_assert!(phc.starts_with("$argon2"), "invalid PHC: {phc}");
         Self(phc)
     }
 
@@ -31,7 +31,7 @@ impl PasswordHash {
     }
 }
 
-/// Nunca se loguea ni se serializa. `Debug` redactado a propósito.
+/// Never logged or serialized. `Debug` is deliberately redacted.
 impl fmt::Debug for PasswordHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PasswordHash(<redacted>)")
@@ -45,24 +45,23 @@ impl fmt::Debug for PasswordHash {
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Owner,
-    Encargado,
+    Manager,
 }
 
 impl Role {
     pub fn as_str(self) -> &'static str {
         match self {
             Role::Owner => "owner",
-            Role::Encargado => "encargado",
+            Role::Manager => "manager",
         }
     }
 
-    /// Punto ÚNICO de autorización por rol.
+    /// The ONLY point of role-based authorization.
     ///
-    /// Hoy con dos roles y sin permisos que crucen roles, esto es un `match`
-    /// booleano. Cuando aparezca el caso "deposito carga stock pero no ve
-    /// precios", se agrega `permissions`/`role_permissions` y se cambia SOLO
-    /// el cuerpo de esta función (y la de las demás reglas): los handlers no
-    /// se tocan.
+    /// Today, with two roles and no permissions crossing roles, this is a
+    /// boolean `match`. When the case "warehouse staff add stock but cannot
+    /// see prices" arises, add `permissions`/`role_permissions` and change ONLY
+    /// the body of this function (and the other rules): handlers remain untouched.
     pub fn can_manage_users(self) -> bool {
         matches!(self, Role::Owner)
     }
@@ -80,15 +79,15 @@ impl FromStr for Role {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "owner" => Ok(Role::Owner),
-            "encargado" => Ok(Role::Encargado),
+            "manager" => Ok(Role::Manager),
             other => Err(format!(
-                "rol desconocido: {other:?} (válidos: owner, encargado)"
+                "unknown role: {other:?} (valid roles: owner, manager)"
             )),
         }
     }
 }
 
-/// Usuario tal como vive en la base. Nunca se serializa directo a HTTP.
+/// User as stored in the database. Never serialized directly to HTTP.
 #[derive(Debug, Clone)]
 pub struct User {
     pub id: Uuid,
@@ -104,15 +103,15 @@ impl User {
     }
 }
 
-/// Vida útil de una sesión. Deslizante: cada request válida la extiende.
-pub const SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 7); // 7 días
+/// Session lifetime. Sliding: each valid request extends it.
+pub const SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 7); // 7 days
 
-/// Vida útil máxima absoluta desde la creación, aunque se use todos los días.
-/// Sin este tope, una cookie robada es válida para siempre si el atacante la
-/// usa seguido.
-pub const SESSION_MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30); // 30 días
+/// Absolute maximum lifetime from creation, even if used every day.
+/// Without this cap, a stolen cookie remains valid forever if the attacker
+/// uses it frequently.
+pub const SESSION_MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30); // 30 days
 
-/// Sesión activa vista desde un request ya autenticado.
+/// Active session as seen from an already authenticated request.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub user_id: Uuid,
