@@ -3,6 +3,8 @@
 **English is the default language for every artifact in this repository.**
 Spanish is for conversation only.
 
+KISS; keep it simple stupid! philosophy.
+
 ## What is English
 
 | Artifact | Examples |
