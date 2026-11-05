@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>03 — Punto de venta: rail de iconos + grilla</title>
+<style>
+  /* Tokens de design/system.md (frontend/src/app.css convertido a sRGB).
+     El punto de venta sigue el tema como el resto de la app, no es oscuro fijo. */
+  :root {
+    color-scheme: light;
+    --bg: #ffffff; --surface: #ffffff; --border: #e8e8e3;
+    --text: #0c0c09; --muted: #7c7c67;
+    --accent: #1d1d16; --accent-fg: #fbfbf9; --danger: #e7000b; --warn: #d28500;
+    --surface2: #f4f4f0; /* --muted del sistema: hover de ítems y menús */
+    --rail-bg: #fbfbf9; --rail-border: #e8e8e3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #0c0c09; --surface: #1d1d16; --border: rgba(255, 255, 255, 0.10);
+      --text: #fbfbf9; --muted: #abab9c;
+      --accent: #e8e8e3; --accent-fg: #1d1d16; --danger: #ff6467; --warn: #eba941;
+      --surface2: #2b2b22;
+      --rail-bg: #1d1d16; --rail-border: rgba(255, 255, 255, 0.10);
+    }
+  }
+  :root {
+    --radius: 8px; --rail-collapsed: 64px; --rail-expanded: 236px;
+    --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 15px; line-height: 1.5; }
+
+  .shell { display: flex; align-items: stretch; min-height: 100vh; }
+
+  /* ---------- rail de navegación (único sidebar) ---------- */
+  .rail {
+    flex: none; width: var(--rail-collapsed); position: relative; z-index: 5;
+    background: var(--rail-bg); border-right: 1px solid var(--rail-border);
+    display: flex; flex-direction: column; gap: 0.35rem;
+    padding: 0.85rem 0.6rem; overflow: visible;
+    transition: width 160ms ease;
+  }
+  .rail.expanded { width: var(--rail-expanded); }
+
+  .rail-head { display: flex; align-items: center; gap: 0.65rem; padding: 0 0.35rem 0.15rem; }
+  .rail .logo { flex: none; width: 34px; height: 34px; border-radius: 9px; background: var(--accent); color: var(--accent-fg); display: grid; place-items: center; font-weight: 700; }
+  .rail .brand-text { display: flex; flex-direction: column; line-height: 1.25; overflow: hidden; }
+  .rail .brand-text .brand { font-size: 0.92rem; font-weight: 600; color: var(--text); white-space: nowrap; }
+  .rail .brand-text small { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); white-space: nowrap; }
+
+  .rail-toggle { display: flex; align-items: center; gap: 0.65rem; width: 100%; height: 32px; padding: 0 0.7rem; margin-bottom: 0.25rem; border: none; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 0.8rem; cursor: pointer; }
+  .rail-toggle:hover { background: var(--surface2); color: var(--text); }
+  .rail-toggle .chev { width: 16px; height: 16px; flex: none; transition: transform 160ms ease; }
+  .rail.expanded .rail-toggle .chev { transform: rotate(180deg); }
+  .rail-toggle .t-open { display: none; }
+  .rail.expanded .rail-toggle .t-open { display: inline; }
+  .rail.expanded .rail-toggle .t-closed { display: none; }
+
+  .rail nav { display: flex; flex-direction: column; gap: 0.15rem; }
+  /* separador por categorías: misma receta que 01-denso-sidebar-oscuro.html */
+  .rail .group { padding: 0.75rem 0.6rem 0.3rem; }
+  .rail .group .glabel { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); white-space: nowrap; }
+
+  .rail .nav-item { display: flex; align-items: center; gap: 0.7rem; width: 100%; height: 40px; padding: 0 0.7rem; border: none; border-radius: 9px; background: transparent; color: var(--muted); font: inherit; font-size: 0.92rem; cursor: pointer; text-align: left; }
+  .rail .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .rail .nav-item.active { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); font-weight: 600; }
+  .rail .nav-item svg { width: 19px; height: 19px; flex: none; }
+  .rail .nav-item .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .rail-toggle:focus-visible, .rail .nav-item:focus-visible, .rail .user:focus-visible, .um-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* estado colapsado: sólo iconos, grupos como separador de línea */
+  .rail:not(.expanded) .nav-item,
+  .rail:not(.expanded) .rail-toggle { justify-content: center; padding: 0; }
+  .rail:not(.expanded) .group { display: block; height: 1px; margin: 0.5rem 0.7rem; padding: 0; background: var(--rail-border); }
+  .rail:not(.expanded) .brand-text,
+  .rail:not(.expanded) .nav-item .label,
+  .rail:not(.expanded) .rail-toggle .label,
+  .rail:not(.expanded) .group .glabel,
+  .rail:not(.expanded) .user .user-text,
+  .rail:not(.expanded) .user .caret {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+
+  /* pie: usuario + menú con Salir */
+  .rail-foot { margin-top: auto; padding-top: 0.6rem; position: relative; }
+  .rail .user { display: flex; align-items: center; gap: 0.65rem; width: 100%; padding: 0.35rem 0.35rem; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+  .rail .user:hover { background: var(--surface2); border-color: var(--border); }
+  .rail:not(.expanded) .user { justify-content: center; padding: 0.35rem 0; }
+  .rail .avatar { flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--surface2); color: var(--text); display: grid; place-items: center; font-size: 0.78rem; font-weight: 600; border: 1px solid var(--border); }
+  .rail .user-text { display: flex; flex-direction: column; line-height: 1.2; overflow: hidden; }
+  .rail .u-email { font-size: 0.78rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rail .u-role { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
+  .rail .user .caret { width: 15px; height: 15px; margin-left: auto; color: var(--muted); transition: transform 160ms ease; }
+  .rail .user[aria-expanded="true"] .caret { transform: rotate(180deg); }
+
+  .user-menu { position: absolute; bottom: calc(100% + 8px); left: 0; width: 236px; z-index: 30; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.4rem; box-shadow: 0 14px 30px rgba(0,0,0,0.45); }
+  .user-menu[hidden] { display: none; }
+  .rail.expanded .user-menu { left: 0; right: 0; width: auto; }
+  .user-menu .um-head { padding: 0.45rem 0.55rem 0.6rem; border-bottom: 1px solid var(--border); margin-bottom: 0.35rem; }
+  .user-menu .um-head .um-email { display: block; font-size: 0.8rem; color: var(--text); }
+  .user-menu .um-head .um-role { display: block; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
+  .user-menu .um-item { display: block; width: 100%; text-align: left; padding: 0.5rem 0.55rem; border: none; border-radius: 6px; background: transparent; color: var(--text); font: inherit; font-size: 0.88rem; cursor: pointer; }
+  .user-menu .um-item:hover { background: var(--surface2); color: var(--text); }
+  .user-menu .um-item.danger:hover { background: color-mix(in srgb, var(--danger) 24%, var(--surface2)); }
+  .user-menu .um-item svg { width: 15px; height: 15px; vertical-align: -2px; margin-right: 0.4rem; }
+  .user-menu .um-sep { height: 1px; margin: 0.3rem 0.2rem; background: var(--border); }
+
+  /* ---------- venta ---------- */
+  .main { flex: 1 1 auto; min-width: 0; padding: 1.15rem 1.5rem 1.5rem; display: flex; flex-direction: column; min-height: 100vh; }
+  .head { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.1rem; }
+  .head h1 { font-size: 1.15rem; font-weight: 600; margin: 0; }
+  .head .pill { font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+
+  .scan { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+  .scan input { flex: 1; font: inherit; font-size: 1.05rem; padding: 0.7rem 0.85rem; border-radius: var(--radius); border: 1px solid var(--accent); background: var(--surface2); color: var(--text); }
+  .scan input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .scan .hint { font-size: 0.78rem; color: var(--muted); align-self: center; }
+
+  .filters { display: flex; gap: 0.4rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+  .filters button { font: inherit; font-size: 0.85rem; padding: 0.3rem 0.7rem; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; }
+  .filters button.on { background: var(--surface2); color: var(--text); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 0.6rem; align-content: start; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.7rem 0.75rem; text-align: left; cursor: pointer; font: inherit; color: inherit; display: flex; flex-direction: column; gap: 0.3rem; }
+  .tile:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: var(--surface2); }
+  .tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .tile .n { font-size: 0.92rem; font-weight: 500; line-height: 1.3; }
+  .tile .m { display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tile .p { font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile.out { opacity: 0.45; }
+  .tile.low .m .s { color: var(--warn); }
+
+  /* ---------- carrito ---------- */
+  .cart { flex: none; width: 380px; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+  .cart-head { padding: 1.1rem 1.25rem 0.9rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: baseline; }
+  .cart-head .t { font-weight: 600; }
+  .cart-head .n { font-size: 0.8rem; color: var(--muted); }
+  .lines { flex: 1; overflow-y: auto; padding: 0.5rem 1.25rem; }
+  .line { display: grid; grid-template-columns: 1fr auto auto; gap: 0.75rem; align-items: center; padding: 0.65rem 0; border-bottom: 1px solid var(--border); }
+  .line:last-child { border-bottom: none; }
+  .line .n { font-size: 0.9rem; }
+  .line .u { font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .qty { display: flex; align-items: center; gap: 0.2rem; }
+  .qty button { width: 24px; height: 24px; padding: 0; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-size: 0.9rem; line-height: 1; }
+  .qty .v { min-width: 2.2rem; text-align: center; font-variant-numeric: tabular-nums; font-size: 0.88rem; }
+  .line .sub { font-variant-numeric: tabular-nums; min-width: 4.5rem; text-align: right; font-size: 0.9rem; }
+  .empty-cart { padding: 2.5rem 1.25rem; text-align: center; color: var(--muted); font-size: 0.88rem; }
+
+  .totals { padding: 1rem 1.25rem; border-top: 1px solid var(--border); background: var(--surface2); }
+  .trow { display: flex; justify-content: space-between; font-size: 0.88rem; color: var(--muted); margin-bottom: 0.35rem; font-variant-numeric: tabular-nums; }
+  .trow.big { font-size: 1.35rem; font-weight: 700; color: var(--text); margin: 0.7rem 0 0.9rem; }
+  .pay { display: flex; gap: 0.5rem; }
+  .pay button { flex: 1; font: inherit; padding: 0.75rem; border-radius: var(--radius); border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-weight: 600; }
+  .pay button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .pay button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  kbd { font-family: var(--mono); font-size: 0.68rem; padding: 0.05rem 0.3rem; border-radius: 3px; border: 1px solid var(--border); color: var(--muted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rail, .rail-toggle .chev, .rail .user .caret { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail" aria-label="Navegación principal">
+    <div class="rail-head">
+      <div class="logo" aria-hidden="true">A</div>
+      <div class="brand-text"><span class="brand">Almacén</span><small>Administración</small></div>
+    </div>
+
+    <button class="rail-toggle" id="railToggle" type="button" aria-expanded="false" aria-controls="sidenav" aria-label="Expandir menú">
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+      <span class="label t-closed">Expandir</span>
+      <span class="label t-open">Contraer</span>
+    </button>
+
+    <nav id="sidenav">
+      <div class="group"><span class="glabel">Operación</span></div>
+      <button class="nav-item active" type="button" title="Venta" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18l-2 12H5L3 6z"/><path d="M8 6V4h8v2"/></svg><span class="label">Venta</span></button>
+      <div class="group"><span class="glabel">Catálogo</span></div>
+      <button class="nav-item" type="button" title="Productos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7h18M3 12h18M3 17h18"/></svg><span class="label">Productos</span></button>
+      <button class="nav-item" type="button" title="Movimientos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 4v16M4 7l3-3 3 3M17 20V4M14 17l3 3 3-3"/></svg><span class="label">Movimientos</span></button>
+      <div class="group"><span class="glabel">Sistema</span></div>
+      <button class="nav-item" type="button" title="Usuarios"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="label">Usuarios</span></button>
+    </nav>
+
+    <div class="rail-foot">
+      <button class="user" id="userBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu" title="Cuenta">
+        <span class="avatar" aria-hidden="true">du</span>
+        <span class="user-text"><span class="u-email">duenio@pyme.com</span><span class="u-role">owner</span></span>
+        <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+      </button>
+      <div class="user-menu" id="userMenu" role="menu" aria-labelledby="userBtn" hidden>
+        <div class="um-head"><span class="um-email">duenio@pyme.com</span><span class="um-role">owner</span></div>
+        <button class="um-item" type="button" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>Oscuro</button>
+        <div class="um-sep"></div>
+        <button class="um-item danger" type="button" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>Salir</button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="head">
+      <h1>Nueva venta</h1>
+      <span class="pill">Caja 1 · turno mañana</span>
+    </div>
+
+    <div class="scan">
+      <input type="text" placeholder="Escaneá un código o buscá por nombre…" aria-label="Escanear o buscar" autofocus />
+      <span class="hint"><kbd>F2</kbd> foco · <kbd>Enter</kbd> agrega</span>
+    </div>
+
+    <div class="filters">
+      <button class="on">Todos</button><button>Almacén</button><button>Bebidas</button><button>Limpieza</button><button>Servicios</button>
+    </div>
+
+    <div class="grid">
+      <button class="tile"><span class="n">Yerba mate 1kg</span><span class="p">2 800.00</span><span class="m"><span class="s">12.5 u.</span><span>YER-1</span></span></button>
+      <button class="tile low"><span class="n">Harina 000</span><span class="p">1 500.50</span><span class="m"><span class="s">3 u.</span><span>HAR-001</span></span></button>
+      <button class="tile"><span class="n">Aceite de girasol 1.5L</span><span class="p">3 450.00</span><span class="m"><span class="s">24 u.</span><span>ACE-002</span></span></button>
+      <button class="tile out"><span class="n">Azúcar refinada</span><span class="p">1 200.00</span><span class="m"><span class="s">sin stock</span><span>AZU-010</span></span></button>
+      <button class="tile"><span class="n">Café molido 500g</span><span class="p">5 900.00</span><span class="m"><span class="s">18 u.</span><span>CAF-003</span></span></button>
+      <button class="tile"><span class="n">Flete local</span><span class="p">8 000.00</span><span class="m"><span class="s">servicio</span><span>—</span></span></button>
+      <button class="tile"><span class="n">Molienda a pedido</span><span class="p">—</span><span class="m"><span class="s">servicio</span><span>—</span></span></button>
+      <button class="tile"><span class="n">Arroz largo fino 1kg</span><span class="p">1 950.00</span><span class="m"><span class="s">31 u.</span><span>ARR-004</span></span></button>
+    </div>
+  </div>
+
+  <div class="cart">
+    <div class="cart-head"><span class="t">Carrito</span><span class="n">3 ítems</span></div>
+    <div class="lines">
+      <div class="line">
+        <div><div class="n">Yerba mate 1kg</div><div class="u">2 800.00 ×</div></div>
+        <div class="qty"><button aria-label="Menos">−</button><span class="v">2</span><button aria-label="Más">+</button></div>
+        <div class="sub">5 600.00</div>
+      </div>
+      <div class="line">
+        <div><div class="n">Aceite de girasol 1.5L</div><div class="u">3 450.00 ×</div></div>
+        <div class="qty"><button aria-label="Menos">−</button><span class="v">1</span><button aria-label="Más">+</button></div>
+        <div class="sub">3 450.00</div>
+      </div>
+      <div class="line">
+        <div><div class="n">Flete local</div><div class="u">8 000.00 ×</div></div>
+        <div class="qty"><button aria-label="Menos">−</button><span class="v">1</span><button aria-label="Más">+</button></div>
+        <div class="sub">8 000.00</div>
+      </div>
+    </div>
+    <div class="totals">
+      <div class="trow"><span>Subtotal</span><span>17 050.00</span></div>
+      <div class="trow"><span>IVA 21%</span><span>3 580.50</span></div>
+      <div class="trow big"><span>Total</span><span>20 630.50</span></div>
+      <div class="pay">
+        <button>Cancelar <kbd>Esc</kbd></button>
+        <button class="primary">Cobrar <kbd>F9</kbd></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var rail = document.querySelector('.rail');
+    var toggle = document.getElementById('railToggle');
+    var userBtn = document.getElementById('userBtn');
+    var userMenu = document.getElementById('userMenu');
+
+    function setExpanded(open) {
+      rail.classList.toggle('expanded', open);
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.setAttribute('aria-label', open ? 'Contraer menú' : 'Expandir menú');
+    }
+
+    function setMenu(open) {
+      userMenu.hidden = !open;
+      userBtn.setAttribute('aria-expanded', String(open));
+    }
+
+    toggle.addEventListener('click', function () {
+      setExpanded(!rail.classList.contains('expanded'));
+    });
+
+    userBtn.addEventListener('click', function (event) {
+      event.stopPropagation();
+      setMenu(userMenu.hidden);
+    });
+
+    document.addEventListener('click', function (event) {
+      if (!userMenu.hidden && !userMenu.contains(event.target) && !userBtn.contains(event.target)) setMenu(false);
+    });
+
+    document.addEventListener('keydown', function (event) {
+      if (event.key !== 'Escape') return;
+      if (!userMenu.hidden) { setMenu(false); userBtn.focus(); }
+      else if (rail.classList.contains('expanded')) { setExpanded(false); toggle.focus(); }
+    });
+  }());
+</script>
+</body>
+</html>

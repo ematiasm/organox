@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>02 — Claro y aireado, sidebar en superficie</title>
+<style>
+  :root {
+    --bg: #f6f7f5; --surface: #ffffff; --border: #e2e5e0; --text: #1a1a18;
+    --muted: #6b6b66; --accent: #2f6f4e; --accent-fg: #ffffff;
+    --danger: #a8321f; --warn: #a8761f; --radius: 10px; --sidebar-w: 250px;
+    --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 15px; line-height: 1.5; }
+
+  .shell { display: grid; grid-template-columns: var(--sidebar-w) 1fr; min-height: 100vh; }
+
+  aside { background: var(--surface); border-right: 1px solid var(--border); padding: 1.5rem 1rem; display: flex; flex-direction: column; gap: 1.75rem; }
+  .brand { font-weight: 600; font-size: 1.02rem; padding: 0 0.5rem; color: var(--text); }
+  .brand small { display: block; font-weight: 400; font-size: 0.72rem; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; margin-top: 0.2rem; }
+  nav { display: flex; flex-direction: column; gap: 0.2rem; }
+  nav a { padding: 0.55rem 0.65rem; border-radius: 8px; color: var(--text); text-decoration: none; font-size: 0.94rem; }
+  nav a:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  nav a.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-weight: 600; }
+  nav .group { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); padding: 0.9rem 0.65rem 0.35rem; }
+  .who { margin-top: auto; border-top: 1px solid var(--border); padding: 0.85rem 0.5rem 0; }
+  .who .email { font-size: 0.84rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who .role { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); margin-bottom: 0.65rem; }
+  .who button { width: 100%; font: inherit; font-size: 0.84rem; padding: 0.4rem; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+
+  main { padding: 2.25rem 2.5rem 3rem; }
+  .topbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; margin-bottom: 2rem; }
+  .eyebrow { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.3rem; }
+  h1 { font-size: 1.75rem; font-weight: 600; margin: 0; letter-spacing: -0.02em; }
+  .topbar .actions { display: flex; gap: 0.5rem; }
+
+  input, select { font: inherit; padding: 0.55rem 0.7rem; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; padding: 0.55rem 1rem; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  .primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+
+  .searchrow { display: flex; gap: 0.6rem; margin-bottom: 1.75rem; }
+  .searchrow input { flex: 1; max-width: 30rem; }
+
+  .grid { display: grid; gap: 1rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.15rem 1.25rem; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.9rem; }
+  .card-title { font-size: 1rem; font-weight: 600; }
+  .card-sub { font-size: 0.82rem; color: var(--muted); }
+
+  .item { display: grid; grid-template-columns: 1fr auto auto auto; gap: 1rem; align-items: center; padding: 0.75rem 0; border-top: 1px solid var(--border); }
+  .item:first-of-type { border-top: none; }
+  .item .name { font-weight: 500; }
+  .item .sku { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); }
+  .item .price { font-variant-numeric: tabular-nums; min-width: 6.5rem; text-align: right; }
+  .item .stock { font-variant-numeric: tabular-nums; min-width: 5rem; text-align: right; }
+  .item .stock.low { color: var(--warn); font-weight: 600; }
+  .item .stock.none { color: var(--danger); font-weight: 600; }
+  .item .act { opacity: 0; transition: opacity 120ms; }
+  .item:hover .act, .item:focus-within .act { opacity: 1; }
+  .item .act button { padding: 0.3rem 0.6rem; font-size: 0.82rem; }
+  .svc { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-radius: 999px; padding: 0.05rem 0.45rem; margin-left: 0.5rem; }
+  .muted { color: var(--muted); }
+  .foot { font-size: 0.85rem; color: var(--muted); margin-top: 1.25rem; display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <div class="brand">Almacén<small>Administración</small></div>
+    <nav>
+      <div class="group">Catálogo</div>
+      <a class="active" href="#">Productos</a>
+      <a href="#">Movimientos</a>
+      <div class="group">Sistema</div>
+      <a href="#">Usuarios</a>
+    </nav>
+    <div class="who">
+      <div class="email">duenio@pyme.com</div>
+      <div class="role">owner</div>
+      <button type="button">Salir</button>
+    </div>
+  </aside>
+
+  <main>
+    <div class="topbar">
+      <div>
+        <div class="eyebrow">Catálogo</div>
+        <h1>Productos</h1>
+      </div>
+      <div class="actions">
+        <button>Exportar</button>
+        <button class="primary">Nuevo producto</button>
+      </div>
+    </div>
+
+    <div class="searchrow">
+      <input type="search" placeholder="Buscar por nombre o SKU…" aria-label="Buscar" />
+      <select aria-label="Tipo"><option>Todos</option><option>Productos</option><option>Servicios</option></select>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="card-title">Bajo mínimo</div>
+            <div class="card-sub">3 ítems requieren reposición</div>
+          </div>
+          <a href="#" style="font-size:.85rem;color:var(--accent)">Ver todos</a>
+        </div>
+        <div class="item">
+          <div><div class="name">Harina 000</div><div class="sku">HAR-001</div></div>
+          <div class="price">1 500.50</div>
+          <div class="stock low">3 <span class="muted" style="font-weight:400">/ 10</span></div>
+          <div class="act"><button>Reponer</button></div>
+        </div>
+        <div class="item">
+          <div><div class="name">Azúcar refinada</div><div class="sku">AZU-010</div></div>
+          <div class="price">1 200.00</div>
+          <div class="stock none">0 <span class="muted" style="font-weight:400">/ 8</span></div>
+          <div class="act"><button>Reponer</button></div>
+        </div>
+        <div class="item">
+          <div><div class="name">Café molido 500g</div><div class="sku">CAF-003</div></div>
+          <div class="price">5 900.00</div>
+          <div class="stock low">4 <span class="muted" style="font-weight:400">/ 6</span></div>
+          <div class="act"><button>Reponer</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="card-title">Todo el catálogo</div>
+            <div class="card-sub">128 ítems activos</div>
+          </div>
+        </div>
+        <div class="item">
+          <div><div class="name">Yerba mate 1kg</div><div class="sku">YER-1</div></div>
+          <div class="price">2 800.00</div>
+          <div class="stock">12.5</div>
+          <div class="act"><button>Editar</button></div>
+        </div>
+        <div class="item">
+          <div><div class="name">Aceite de girasol 1.5L</div><div class="sku">ACE-002</div></div>
+          <div class="price">3 450.00</div>
+          <div class="stock">24</div>
+          <div class="act"><button>Editar</button></div>
+        </div>
+        <div class="item">
+          <div><div class="name">Harina 000</div><div class="sku">HAR-001</div></div>
+          <div class="price">1 500.50</div>
+          <div class="stock low">3</div>
+          <div class="act"><button>Editar</button></div>
+        </div>
+        <div class="item">
+          <div><div class="name">Flete local <span class="svc">Servicio</span></div><div class="sku">sin SKU</div></div>
+          <div class="price">8 000.00</div>
+          <div class="stock muted">—</div>
+          <div class="act"><button>Editar</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="foot"><span>4 de 128</span><a href="#" style="color:var(--accent)">Cargar más</a></div>
+  </main>
+</div>
+</body>
+</html>

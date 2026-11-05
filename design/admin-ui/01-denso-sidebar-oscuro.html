@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>01 — Panel denso con sidebar oscuro</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --surface: #ffffff; --border: #e4e4e2; --text: #1a1a18;
+    --muted: #6b6b66; --accent: #2f6f4e; --accent-fg: #ffffff;
+    --danger: #a8321f; --warn: #a8761f; --radius: 8px; --sidebar-w: 232px;
+    --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 15px; line-height: 1.5; }
+
+  .shell { display: grid; grid-template-columns: var(--sidebar-w) 1fr; min-height: 100vh; }
+
+  aside { background: #14171a; color: #d8dcdf; padding: 1.25rem 0.85rem; display: flex; flex-direction: column; gap: 1.5rem; }
+  .brand { font-weight: 600; font-size: 1rem; letter-spacing: -0.01em; padding: 0 0.6rem; color: #fff; }
+  .brand small { display: block; font-weight: 400; font-size: 0.72rem; color: #8d959b; letter-spacing: 0.03em; text-transform: uppercase; margin-top: 0.15rem; }
+  nav { display: flex; flex-direction: column; gap: 0.15rem; }
+  nav a { padding: 0.5rem 0.6rem; border-radius: 6px; color: #c3c9ce; text-decoration: none; font-size: 0.93rem; display: flex; align-items: center; gap: 0.6rem; }
+  nav a:hover { background: rgba(255,255,255,0.06); color: #fff; }
+  nav a.active { background: rgba(87,166,124,0.16); color: #7fc79f; font-weight: 600; }
+  nav a svg { width: 16px; height: 16px; flex: none; opacity: 0.85; }
+  nav .group { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: #6f7880; padding: 0.75rem 0.6rem 0.3rem; }
+  .who { margin-top: auto; border-top: 1px solid rgba(255,255,255,0.08); padding: 0.75rem 0.6rem 0; }
+  .who .email { font-size: 0.82rem; color: #e4e8ea; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who .role { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: #7fc79f; margin-bottom: 0.6rem; }
+  .who button { width: 100%; font: inherit; font-size: 0.82rem; padding: 0.35rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.14); background: transparent; color: #c3c9ce; cursor: pointer; }
+  .who button:hover { background: rgba(255,255,255,0.06); color: #fff; }
+
+  main { padding: 1.5rem 2rem 2.5rem; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
+  h1 { font-size: 1.4rem; font-weight: 600; margin: 0; }
+  .topbar .actions { display: flex; gap: 0.5rem; }
+
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 1.25rem; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.8rem 0.9rem; }
+  .stat .k { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  .stat .v { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 0.15rem; }
+  .stat .v.neg { color: var(--danger); }
+  .stat .v.warn { color: var(--warn); }
+
+  .toolbar { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.9rem; }
+  input, select { font: inherit; padding: 0.5rem 0.65rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  input { flex: 1; max-width: 24rem; }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { font: inherit; cursor: pointer; border-radius: var(--radius); padding: 0.5rem 0.9rem; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+  .primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--surface); }
+  th, td { text-align: left; padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--border); }
+  th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+  tbody tr:last-child td { border-bottom: none; }
+  .table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); font-size: 0.82rem; }
+  .badge-low { display: inline-block; margin-left: 0.4rem; padding: 0 0.35rem; border-radius: 4px; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--warn); border: 1px solid currentColor; }
+  .tag { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 4px; font-size: 0.72rem; border: 1px solid var(--border); color: var(--muted); }
+  .tag.svc { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <div class="brand">Almacén<small>Administración</small></div>
+    <nav>
+      <div class="group">Catálogo</div>
+      <a class="active" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18M3 12h18M3 17h18"/></svg>Productos</a>
+      <a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Movimientos</a>
+      <div class="group">Sistema</div>
+      <a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Usuarios</a>
+    </nav>
+    <div class="who">
+      <div class="email">duenio@pyme.com</div>
+      <div class="role">owner</div>
+      <button type="button">Salir</button>
+    </div>
+  </aside>
+
+  <main>
+    <div class="topbar">
+      <h1>Productos</h1>
+      <div class="actions">
+        <button>Exportar</button>
+        <button class="primary">Nuevo producto</button>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="k">Ítems activos</div><div class="v">128</div></div>
+      <div class="stat"><div class="k">Bajo mínimo</div><div class="v warn">7</div></div>
+      <div class="stat"><div class="k">Sin stock</div><div class="v neg">3</div></div>
+      <div class="stat"><div class="k">Servicios</div><div class="v">12</div></div>
+    </div>
+
+    <div class="toolbar">
+      <input type="search" placeholder="Buscar por nombre, SKU…" value="" aria-label="Buscar" />
+      <select aria-label="Tipo"><option>Todos los tipos</option><option>Productos</option><option>Servicios</option></select>
+      <select aria-label="Stock"><option>Todo el stock</option><option>Solo bajo mínimo</option><option>Sin stock</option></select>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nombre</th><th>SKU</th><th>Tipo</th><th class="num">Precio</th><th class="num">Stock</th><th class="num">Mín.</th></tr></thead>
+        <tbody>
+          <tr><td>Yerba mate 1kg</td><td class="mono muted">YER-1</td><td><span class="tag">Producto</span></td><td class="num">2 800.00</td><td class="num">12.5</td><td class="num muted">5</td></tr>
+          <tr><td>Harina 000</td><td class="mono muted">HAR-001</td><td><span class="tag">Producto</span></td><td class="num">1 500.50</td><td class="num">3 <span class="badge-low">bajo</span></td><td class="num muted">10</td></tr>
+          <tr><td>Azúcar refinada</td><td class="mono muted">AZU-010</td><td><span class="tag">Producto</span></td><td class="num">1 200.00</td><td class="num">0 <span class="badge-low">bajo</span></td><td class="num muted">8</td></tr>
+          <tr><td>Aceite de girasol 1.5L</td><td class="mono muted">ACE-002</td><td><span class="tag">Producto</span></td><td class="num">3 450.00</td><td class="num">24</td><td class="num muted">6</td></tr>
+          <tr><td>Flete local</td><td class="mono muted">—</td><td><span class="tag svc">Servicio</span></td><td class="num">8 000.00</td><td class="num muted">—</td><td class="num muted">—</td></tr>
+          <tr><td>Molienda a pedido</td><td class="mono muted">—</td><td><span class="tag svc">Servicio</span></td><td class="num">—</td><td class="num muted">—</td><td class="num muted">—</td></tr>
+          <tr><td>Café molido 500g</td><td class="mono muted">CAF-003</td><td><span class="tag">Producto</span></td><td class="num">5 900.00</td><td class="num">18</td><td class="num muted">6</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" style="font-size:.85rem;margin-top:.6rem">7 productos · página 1 de 18</p>
+  </main>
+</div>
+</body>
+</html>

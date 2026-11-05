@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sistema de diseño — admin-app</title>
+<style>
+  /* Tokens copiados de frontend/src/app.css (:root y .dark).
+     Equivalente sRGB de los oklch() para poder leerlos de un vistazo. */
+  :root {
+    color-scheme: light;
+    --background: #ffffff;  --foreground: #0c0c09;
+    --card: #ffffff;        --card-foreground: #0c0c09;
+    --popover: #ffffff;     --popover-foreground: #0c0c09;
+    --primary: #1d1d16;     --primary-foreground: #fbfbf9;
+    --secondary: #f4f4f0;   --secondary-foreground: #1d1d16;
+    --muted: #f4f4f0;       --muted-foreground: #7c7c67;
+    --accent: #f4f4f0;      --accent-foreground: #1d1d16;
+    --destructive: #e7000b; --border: #e8e8e3; --input: #e8e8e3; --ring: #abab9c;
+    --chart-1: #dedede; --chart-2: #8e8e8e; --chart-3: #707070; --chart-4: #5e5e5e; --chart-5: #454545;
+    --warn: #d28500;
+    --sidebar: #fbfbf9; --sidebar-foreground: #0c0c09;
+    --sidebar-accent: #f4f4f0; --sidebar-accent-foreground: #1d1d16;
+    --sidebar-border: #e8e8e3;
+    --radius: 10px;
+    --font: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  }
+  html.dark {
+    color-scheme: dark;
+    --background: #0c0c09;  --foreground: #fbfbf9;
+    --card: #1d1d16;        --card-foreground: #fbfbf9;
+    --popover: #1d1d16;     --popover-foreground: #fbfbf9;
+    --primary: #e8e8e3;     --primary-foreground: #1d1d16;
+    --secondary: #2b2b22;   --secondary-foreground: #fbfbf9;
+    --muted: #2b2b22;       --muted-foreground: #abab9c;
+    --accent: #2b2b22;      --accent-foreground: #fbfbf9;
+    --destructive: #ff6467; --border: rgba(255,255,255,0.10); --input: rgba(255,255,255,0.15); --ring: #7c7c67;
+    --warn: #eba941;
+    --sidebar: #1d1d16; --sidebar-foreground: #fbfbf9;
+    --sidebar-accent: #2b2b22; --sidebar-accent-foreground: #fbfbf9;
+    --sidebar-border: rgba(255,255,255,0.10);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2.25rem 2.5rem 4rem; background: var(--background); color: var(--foreground);
+    font-family: var(--font); font-size: 15px; line-height: 1.5;
+  }
+  .page { max-width: 1180px; }
+  h1 { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 0.35rem; }
+  h2 { font-size: 1rem; font-weight: 600; margin: 2.5rem 0 0.35rem; }
+  h2 + .hint { margin-bottom: 1rem; }
+  h3 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); font-weight: 600; margin: 1.75rem 0 0.6rem; }
+  p { margin: 0 0 0.75rem; max-width: 68ch; }
+  .hint { color: var(--muted-foreground); font-size: 0.85rem; }
+  .sub { color: var(--muted-foreground); margin-bottom: 1.5rem; }
+  code { font-family: var(--mono); font-size: 0.85em; background: color-mix(in srgb, var(--muted-foreground) 14%, transparent); padding: 0.1em 0.35em; border-radius: 4px; }
+  a { color: var(--primary); }
+
+  .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; }
+  .theme-btn {
+    font: inherit; font-size: 0.85rem; cursor: pointer; padding: 0.45rem 0.8rem;
+    border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border);
+    background: var(--card); color: var(--foreground); white-space: nowrap;
+  }
+  .theme-btn:hover { background: var(--muted); }
+  .theme-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+  /* ---------- color ---------- */
+  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 0.7rem; }
+  .sw { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); }
+  .sw .chip { height: 52px; border-bottom: 1px solid var(--border); }
+  .sw .meta { padding: 0.5rem 0.65rem 0.6rem; font-size: 0.78rem; }
+  .sw .name { font-family: var(--mono); font-size: 0.74rem; }
+  .sw .val { color: var(--muted-foreground); font-size: 0.72rem; }
+  .sw .use { color: var(--muted-foreground); font-size: 0.72rem; margin-top: 0.2rem; }
+  .checker .chip { background-image: linear-gradient(45deg, rgba(0,0,0,.06) 25%, transparent 25%, transparent 75%, rgba(0,0,0,.06) 75%), linear-gradient(45deg, rgba(0,0,0,.06) 25%, transparent 25%, transparent 75%, rgba(0,0,0,.06) 75%); background-size: 10px 10px; background-position: 0 0, 5px 5px; }
+
+  .contrast { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .contrast th, .contrast td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); }
+  .contrast th { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted-foreground); }
+  .contrast td.ok { color: var(--sidebar-foreground); }
+  .contrast td.bad { color: var(--destructive); font-weight: 600; }
+
+  /* ---------- tipografía ---------- */
+  .scale { display: flex; flex-direction: column; gap: 0.55rem; }
+  .row { display: flex; align-items: baseline; gap: 1rem; }
+  .row .tag { font-family: var(--mono); font-size: 0.72rem; color: var(--muted-foreground); width: 8.5rem; flex: none; }
+
+  /* ---------- radio / elevación ---------- */
+  .radii { display: flex; gap: 0.7rem; flex-wrap: wrap; }
+  .rad { width: 96px; height: 58px; background: var(--card); border: 1px solid var(--border); display: grid; place-items: center; font-size: 0.7rem; color: var(--muted-foreground); text-align: center; }
+  .elev { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.9rem; }
+  .elev .box { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.9rem; font-size: 0.82rem; }
+  .elev .box.shadowy { box-shadow: 0 4px 6px -1px rgba(0,0,0,.10), 0 2px 4px -2px rgba(0,0,0,.10); }
+  .elev .box.ringy { box-shadow: 0 4px 6px -1px rgba(0,0,0,.10); outline: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent); }
+  .elev .box .k { font-family: var(--mono); font-size: 0.72rem; color: var(--muted-foreground); display: block; margin-bottom: 0.3rem; }
+
+  /* ---------- componentes ---------- */
+  .specimens { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+  .card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); padding: 1rem; }
+  .card .label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-foreground); margin-bottom: 0.7rem; }
+
+  .btn { font: inherit; font-size: 0.875rem; font-weight: 500; cursor: pointer; height: 36px; padding: 0 0.625rem;
+         border-radius: calc(var(--radius) - 2px); border: 1px solid transparent; display: inline-flex; align-items: center; gap: 0.375rem; }
+  .btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .btn.default { background: var(--primary); color: var(--primary-foreground); }
+  .btn.default:hover { background: color-mix(in srgb, var(--primary) 82%, transparent); }
+  .btn.outline { background: var(--background); border-color: var(--border); color: var(--foreground); box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .btn.outline:hover { background: var(--muted); }
+  .btn.secondary { background: var(--secondary); color: var(--secondary-foreground); }
+  .btn.ghost { background: transparent; color: var(--foreground); }
+  .btn.ghost:hover { background: var(--muted); }
+  .btn.destructive { background: color-mix(in srgb, var(--destructive) 10%, transparent); color: var(--destructive); }
+  .btn.destructive:hover { background: color-mix(in srgb, var(--destructive) 20%, transparent); }
+  .btn.sm { height: 32px; font-size: 0.8rem; }
+  .btn.xs { height: 24px; font-size: 0.75rem; padding: 0 0.5rem; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn svg { width: 16px; height: 16px; }
+
+  label { display: block; font-size: 0.85rem; color: var(--foreground); margin-bottom: 0.25rem; }
+  input[type="text"], input[type="search"], select {
+    font: inherit; font-size: 0.875rem; height: 36px; width: 100%; padding: 0 0.625rem;
+    border-radius: calc(var(--radius) - 2px); border: 1px solid var(--input); background: transparent; color: var(--foreground);
+  }
+  input::placeholder { color: var(--muted-foreground); }
+  input:focus-visible, select:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent); }
+
+  .table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); }
+  table.data { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+  table.data th, table.data td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
+  table.data th { font-size: 0.8rem; font-weight: 500; color: var(--foreground); }
+  table.data tbody tr:last-child td { border-bottom: none; }
+  table.data tbody tr:hover { background: color-mix(in srgb, var(--muted) 60%, transparent); }
+  table.data .num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.data .muted { color: var(--muted-foreground); }
+
+  .badge { display: inline-flex; align-items: center; height: 20px; padding: 0 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 500; border: 1px solid transparent; white-space: nowrap; }
+  .badge.outline { border-color: var(--border); }
+  .badge.low { border: 1px solid currentColor; border-radius: 4px; height: auto; padding: 0 0.35rem; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--warn); }
+  .badge.dot { background: var(--primary); color: var(--primary-foreground); font-weight: 700; }
+
+  .alert { border: 1px solid color-mix(in srgb, var(--destructive) 40%, transparent); background: color-mix(in srgb, var(--destructive) 10%, transparent); color: var(--destructive); padding: 0.5rem 0.75rem; border-radius: calc(var(--radius) - 2px); font-size: 0.875rem; }
+
+  /* menú desplegable, versión estática del componente real */
+  .menu { width: 232px; background: var(--popover); color: var(--popover-foreground); border-radius: calc(var(--radius) - 2px); padding: 0.25rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,.12); outline: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent); }
+  .menu .m-label { padding: 0.5rem; display: flex; flex-direction: column; gap: 0.1rem; }
+  .menu .m-email { font-size: 0.75rem; }
+  .menu .m-role { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted-foreground); }
+  .menu .m-sep { height: 1px; background: var(--border); margin: 0.25rem -0.25rem; }
+  .menu .m-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.5rem; border-radius: calc(var(--radius) - 4px); font-size: 0.875rem; }
+  .menu .m-item svg { width: 16px; height: 16px; flex: none; }
+  .menu .m-item.focus { background: var(--accent); color: var(--accent-foreground); }
+  .menu .m-item.danger { color: var(--destructive); }
+
+  /* rail real, en sus dos estados */
+  .rails { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
+  .rail { background: var(--sidebar); color: var(--sidebar-foreground); border: 1px solid var(--sidebar-border); border-radius: var(--radius); display: flex; flex-direction: column; gap: 0.3rem; padding: 0.85rem 0.6rem; }
+  .rail.compact { width: 64px; }
+  .rail.wide { width: 236px; }
+  .rail .r-head { display: flex; align-items: center; gap: 0.65rem; padding: 0 0.35rem 0.4rem; }
+  .rail .logo { width: 34px; height: 34px; border-radius: 9px; background: var(--primary); color: var(--primary-foreground); display: grid; place-items: center; font-weight: 700; flex: none; }
+  .rail .brand { display: flex; flex-direction: column; line-height: 1.2; }
+  .rail .brand b { font-size: 0.9rem; font-weight: 600; }
+  .rail .brand small { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted-foreground); }
+  .rail .toggle { display: flex; align-items: center; gap: 0.65rem; height: 32px; padding: 0 0.7rem; border-radius: 7px; color: var(--muted-foreground); font-size: 0.78rem; }
+  .rail .toggle svg { width: 16px; height: 16px; flex: none; }
+  .rail .toggle .rot { transform: rotate(180deg); }
+  .rail .g-label { padding: 0.65rem 0.6rem 0.25rem; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); }
+  .rail .sep { height: 1px; margin: 0.5rem 0.7rem; background: var(--sidebar-border); }
+  .rail .item { display: flex; align-items: center; gap: 0.7rem; height: 40px; padding: 0 0.7rem; border-radius: 9px; color: var(--muted-foreground); font-size: 0.92rem; }
+  .rail .item svg { width: 19px; height: 19px; flex: none; }
+  .rail .item.on { background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--primary); font-weight: 600; }
+  .rail.compact .item, .rail.compact .toggle { justify-content: center; padding: 0; }
+  .rail .user { display: flex; align-items: center; gap: 0.65rem; padding: 0.35rem; border-radius: 9px; border: 1px solid transparent; margin-top: auto; }
+  .rail.compact .user { justify-content: center; }
+  .rail .avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--sidebar-accent); color: var(--sidebar-accent-foreground); display: grid; place-items: center; font-size: 0.72rem; font-weight: 600; border: 1px solid var(--sidebar-border); flex: none; }
+  .rail .u-text { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+  .rail .u-email { font-size: 0.76rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rail .u-role { font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--primary); }
+  .rail .u-caret { width: 15px; height: 15px; margin-left: auto; color: var(--muted-foreground); }
+  .caption { font-size: 0.75rem; color: var(--muted-foreground); margin-top: 0.4rem; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="topbar">
+    <div>
+      <h1>Sistema de diseño — admin-app</h1>
+      <p class="sub">Tokens capturados de <code>frontend/src/app.css</code> y de los componentes de <code>frontend/src/lib/components/ui/</code>. Todo lo que sigue existe en el proyecto hoy.</p>
+    </div>
+    <button class="theme-btn" id="themeBtn" type="button" aria-pressed="false">Tema oscuro</button>
+  </div>
+
+  <p class="hint">Stack: Tailwind v4 + shadcn-svelte (preset <strong>vega</strong>, base <strong>olive</strong>). Los valores crudos son <code>oklch()</code>; acá se muestran convertidos a sRGB para leerlos.</p>
+
+  <h2>Color</h2>
+  <p class="hint">Los 33 tokens de <code>:root</code>; el tema oscuro redefine 32. La utilidad de Tailwind es el nombre con prefijo <code>--color-</code> (<code>bg-card</code>, <code>text-muted-foreground</code>…).</p>
+  <div class="swatches" id="swatches"></div>
+
+  <h3>Contraste verificado</h3>
+  <table class="contrast">
+    <thead><tr><th>Par</th><th>Claro</th><th>Oscuro</th><th>AA (4.5:1)</th></tr></thead>
+    <tbody>
+      <tr><td><code>foreground</code> / <code>background</code></td><td>19.6:1</td><td>18.9:1</td><td class="ok">cumple</td></tr>
+      <tr><td><code>muted-foreground</code> / <code>card</code></td><td>4.3:1</td><td>7.3:1</td><td class="bad">claro al límite</td></tr>
+      <tr><td><code>warn</code> / <code>sidebar</code></td><td>2.86:1</td><td>9.6:1</td><td class="bad">solo punto/borde</td></tr>
+      <tr><td><code>primary</code> / <code>background</code></td><td>16.9:1</td><td>15.9:1</td><td class="ok">cumple</td></tr>
+      <tr><td><code>primary-foreground</code> / <code>primary</code></td><td>16.4:1</td><td>13.8:1</td><td class="ok">cumple</td></tr>
+      <tr><td><code>destructive</code> / <code>background</code></td><td>4.8:1</td><td>6.8:1</td><td class="ok">cumple</td></tr>
+      <tr><td><code>warn</code> / <code>background</code></td><td>2.96:1</td><td>9.6:1</td><td class="bad">solo punto/borde</td></tr>
+    </tbody>
+  </table>
+  <p class="caption">⚠️ Dos hallazgos del sync, sin corregir en <code>app.css</code>: <strong>--warn</strong> en claro (2.96:1) no alcanza para texto normal — sirve como punto, borde o relleno; y <strong>--muted-foreground</strong> en claro (4.25:1) queda apenas debajo de AA, tal como viene en el preset vega. Un paso más oscuro lo resuelve sin cambiar la familia de color.</p>
+
+  <h2>Tipografía</h2>
+  <p class="hint">Inter Variable autohospedada (fallback: <code>system-ui</code>). Base 15 px / 1.5. No hay escala declarada: se usan utilidades de Tailwind.</p>
+  <div class="scale">
+    <div class="row"><span class="tag">h1 · text-xl · 600</span><span style="font-size:1.25rem;font-weight:600;letter-spacing:-0.01em">Productos</span></div>
+    <div class="row"><span class="tag">h1 login · text-lg</span><span style="font-size:1.125rem;font-weight:600;letter-spacing:-0.01em">Administración</span></div>
+    <div class="row"><span class="tag">body · 15px</span><span>Yerba mate 1kg — 9.5 unidades disponibles</span></div>
+    <div class="row"><span class="tag">tabla · text-sm</span><span style="font-size:0.875rem">Harina 000 · HAR-001 · 5.5 u.</span></div>
+    <div class="row"><span class="tag">ayuda · text-xs muted</span><span style="font-size:0.75rem;color:var(--muted-foreground)">El stock se descuenta al cobrar.</span></div>
+    <div class="row"><span class="tag">numérico · tabular</span><span style="font-variant-numeric:tabular-nums">2 800.00 · 20 630.50</span></div>
+    <div class="row"><span class="tag">SKU · font-mono</span><span style="font-family:var(--mono);font-size:0.82rem;color:var(--muted-foreground)">YER-1 · HAR-001 · ACE-002</span></div>
+    <div class="row"><span class="tag">label de grupo</span><span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted-foreground);font-weight:600">Catálogo · Sistema</span></div>
+  </div>
+
+  <h2>Radio</h2>
+  <div class="radii">
+    <div class="rad" style="border-radius:calc(var(--radius) - 4px)">sm · 6px</div>
+    <div class="rad" style="border-radius:calc(var(--radius) - 2px)">md · 8px</div>
+    <div class="rad" style="border-radius:var(--radius)">lg · 10px<br><code>--radius</code></div>
+    <div class="rad" style="border-radius:calc(var(--radius) + 4px)">xl · 14px</div>
+    <div class="rad" style="border-radius:999px">4xl · píldora</div>
+  </div>
+
+  <h2>Superficies y elevación</h2>
+  <p class="hint">La elevación se comunica con borde + fondo. Las sombras existen solo donde el componente es flotante.</p>
+  <div class="elev">
+    <div class="box"><span class="k">card sobre background</span>Tarjetas, tablas y el carrito usan <code>--card</code> con borde de 1 px.</div>
+    <div class="box shadowy"><span class="k">shadow-xs / sm</span>Botón <code>outline</code> e input: sombra mínima.</div>
+    <div class="box ringy"><span class="k">shadow-md + ring</span>Popovers y menús desplegables.</div>
+  </div>
+
+  <h2>Componentes</h2>
+
+  <h3>Botones</h3>
+  <div class="specimens">
+    <div class="card">
+      <div class="label">Variantes</div>
+      <p style="display:flex;gap:.5rem;flex-wrap:wrap;margin:0">
+        <button class="btn default" type="button">Nuevo producto</button>
+        <button class="btn outline" type="button">Exportar</button>
+        <button class="btn secondary" type="button">Secundario</button>
+        <button class="btn ghost" type="button">Ghost</button>
+        <button class="btn destructive" type="button">Eliminar</button>
+        <button class="btn outline" type="button" disabled>Deshabilitado</button>
+      </p>
+    </div>
+    <div class="card">
+      <div class="label">Tamaños</div>
+      <p style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin:0">
+        <button class="btn default xs" type="button">xs · h-6</button>
+        <button class="btn default sm" type="button">sm · h-8</button>
+        <button class="btn default" type="button">default · h-9</button>
+      </p>
+      <p class="caption" style="margin-top:.6rem">Con icono: <code>gap-1.5</code>, SVG 16 px.</p>
+      <p style="display:flex;gap:.5rem;margin:0">
+        <button class="btn outline sm" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Movimiento</button>
+        <button class="btn default" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18l-2 12H5L3 6z"/><path d="M8 6V4h8v2"/></svg>Cobrar</button>
+      </p>
+    </div>
+  </div>
+
+  <h3>Campos</h3>
+  <div class="specimens">
+    <div class="card">
+      <div class="label">Input y select</div>
+      <label for="demo-search">Buscar por nombre</label>
+      <input id="demo-search" type="search" placeholder="Yerba mate…" />
+      <p class="caption" style="margin:.75rem 0 .35rem">Select</p>
+      <select aria-label="Tipo de producto"><option>Todos los tipos</option><option>Productos</option><option>Servicios</option></select>
+    </div>
+    <div class="card">
+      <div class="label">Alerta de error</div>
+      <div class="alert" role="alert">Credenciales inválidas o sesión vencida.</div>
+      <p class="caption">Borde y texto <code>--destructive</code>, fondo al 10%.</p>
+    </div>
+  </div>
+
+  <h3>Tabla y badges</h3>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Nombre</th><th>SKU</th><th>Tipo</th><th class="num">Precio</th><th class="num">Stock</th></tr></thead>
+      <tbody>
+        <tr><td>Yerba mate 1kg</td><td class="muted" style="font-family:var(--mono);font-size:.78rem">YER-1</td><td><span class="badge outline">Producto</span></td><td class="num">2 800.00</td><td class="num">9.5</td></tr>
+        <tr><td>Harina 000</td><td class="muted" style="font-family:var(--mono);font-size:.78rem">HAR-001</td><td><span class="badge outline">Producto</span></td><td class="num">1 500.50</td><td class="num">5.5 <span class="badge low">bajo</span></td></tr>
+        <tr><td>Flete local</td><td class="muted" style="font-family:var(--mono);font-size:.78rem">—</td><td><span class="badge outline">Servicio</span></td><td class="num">8 000.00</td><td class="num muted">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="caption">Filas con borde inferior, hover con <code>--muted</code> al 60%, columnas numéricas a la derecha con <code>tabular-nums</code>.</p>
+
+  <h3>Menú de usuario</h3>
+  <div class="specimens">
+    <div class="card">
+      <div class="label">Abierto desde el pie del rail</div>
+      <div class="menu" role="menu" aria-label="Menú de usuario">
+        <div class="m-label"><span class="m-email">duenio@pyme.com</span><span class="m-role">owner</span></div>
+        <div class="m-sep"></div>
+        <div class="m-item" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>Oscuro</div>
+        <div class="m-sep"></div>
+        <div class="m-item danger" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>Salir</div>
+      </div>
+      <p class="caption">El tema y Salir viven acá, no sueltos en el rail.</p>
+    </div>
+    <div class="card">
+      <div class="label">Badges</div>
+      <p style="display:flex;gap:.5rem;flex-wrap:wrap;margin:0 0 .5rem">
+        <span class="badge outline">Producto</span>
+        <span class="badge outline">Servicio</span>
+        <span class="badge low">bajo</span>
+        <span class="badge dot">3</span>
+      </p>
+      <p class="caption" style="margin:0.75rem 0 0.35rem">Contador del carrito: <code>--primary</code> con píldora.</p>
+    </div>
+  </div>
+
+  <h3>Rail de navegación</h3>
+  <p class="hint">Un único rail para toda la app: compacto (solo iconos, 64 px) y expandido (icono + nombre, 236 px). Los grupos separan Operación / Catálogo / Sistema.</p>
+  <div class="rails">
+    <div>
+      <div class="rail compact" aria-label="Rail compacto">
+        <div class="r-head"><div class="logo" aria-hidden="true">A</div></div>
+        <div class="toggle" title="Expandir menú"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></div>
+        <div class="item on" title="Venta"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18l-2 12H5L3 6z"/><path d="M8 6V4h8v2"/></svg></div>
+        <div class="sep" role="presentation"></div>
+        <div class="item" title="Productos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7h18M3 12h18M3 17h18"/></svg></div>
+        <div class="item" title="Movimientos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 4v16M4 7l3-3 3 3M17 20V4M14 17l3 3 3-3"/></svg></div>
+        <div class="sep" role="presentation"></div>
+        <div class="item" title="Usuarios"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></div>
+        <div class="user"><span class="avatar" aria-hidden="true">DU</span></div>
+      </div>
+      <p class="caption">64 px · los grupos quedan como línea de 1 px</p>
+    </div>
+    <div>
+      <div class="rail wide" aria-label="Rail expandido">
+        <div class="r-head"><div class="logo" aria-hidden="true">A</div><div class="brand"><b>Almacén</b><small>Administración</small></div></div>
+        <div class="toggle"><svg class="rot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>Contraer</div>
+        <div class="g-label">Operación</div>
+        <div class="item on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18l-2 12H5L3 6z"/><path d="M8 6V4h8v2"/></svg>Venta</div>
+        <div class="g-label">Catálogo</div>
+        <div class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7h18M3 12h18M3 17h18"/></svg>Productos</div>
+        <div class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 4v16M4 7l3-3 3 3M17 20V4M14 17l3 3 3-3"/></svg>Movimientos</div>
+        <div class="g-label">Sistema</div>
+        <div class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Usuarios</div>
+        <div class="user" style="margin-top:1rem">
+          <span class="avatar" aria-hidden="true">DU</span>
+          <span class="u-text"><span class="u-email">duenio@pyme.com</span><span class="u-role">owner</span></span>
+          <svg class="u-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+        </div>
+      </div>
+      <p class="caption">236 px · icono + nombre, grupos con etiqueta</p>
+    </div>
+  </div>
+
+  <h2>Notas</h2>
+  <p class="hint">Nada de hex sueltos en pantallas: siempre utilidad de token. Los decimales se muestran como string tal como llegan de la API. El único token propio del proyecto es <code>--warn</code>, porque el preset vega no trae color de advertencia y los <code>--chart-*</code> son escala de grises.</p>
+</div>
+
+<script>
+  (function () {
+    // Swatches generados desde la misma lista documentada en system.md.
+    var TOKENS = [
+      ['background', 'Fondo de la app'],
+      ['foreground', 'Texto principal'],
+      ['card', 'Tarjetas, tablas, carrito, rail base'],
+      ['card-foreground', 'Texto sobre tarjeta'],
+      ['popover', 'Menús y diálogos'],
+      ['primary', 'Acción primaria, ítem activo, logo'],
+      ['primary-foreground', 'Texto sobre primario'],
+      ['secondary', 'Botón secundario'],
+      ['secondary-foreground', 'Texto sobre secundario'],
+      ['muted', 'Fondos suaves, hover'],
+      ['muted-foreground', 'Texto secundario, iconos inactivos'],
+      ['accent', 'Hover de ítems de menú'],
+      ['accent-foreground', 'Texto sobre accent'],
+      ['destructive', 'Error, salir, cantidad negativa'],
+      ['border', 'Bordes de 1px'],
+      ['input', 'Borde de campos'],
+      ['ring', 'Anillo de foco'],
+      ['warn', 'Stock bajo (token propio)'],
+      ['sidebar', 'Fondo del rail'],
+      ['sidebar-foreground', 'Texto del rail'],
+      ['sidebar-accent', 'Hover del rail'],
+      ['sidebar-accent-foreground', 'Texto del rail en hover'],
+      ['sidebar-border', 'Borde del rail'],
+      ['chart-1', 'Gráficos (gris)'],
+      ['chart-3', 'Gráficos (gris)'],
+      ['chart-5', 'Gráficos (gris)']
+    ];
+    var host = document.getElementById('swatches');
+    var shallow = ['border', 'input', 'sidebar-border'];
+
+    TOKENS.forEach(function (entry) {
+      var name = entry[0], use = entry[1];
+      var el = document.createElement('div');
+      el.className = 'sw' + (shallow.indexOf(name) !== -1 ? ' checker' : '');
+      el.innerHTML =
+        '<div class="chip" style="background: var(--' + name + ')"></div>' +
+        '<div class="meta"><div class="name">--' + name + '</div>' +
+        '<div class="val">bg-' + name + ' · text-' + name + '</div>' +
+        '<div class="use">' + use + '</div></div>';
+      host.appendChild(el);
+    });
+
+    // Tema: arranca siguiendo la preferencia del sistema y el botón fija una elección.
+    var root = document.documentElement;
+    var btn = document.getElementById('themeBtn');
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+
+    function apply(dark) {
+      root.classList.toggle('dark', dark);
+      btn.textContent = dark ? 'Tema claro' : 'Tema oscuro';
+      btn.setAttribute('aria-pressed', String(dark));
+    }
+
+    apply(mq.matches);
+    mq.addEventListener('change', function (event) { apply(event.matches); });
+    btn.addEventListener('click', function () { apply(!root.classList.contains('dark')); });
+  }());
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "comments": [
+    {
+      "id": "nb6k1r5m",
+      "file": "03-pos-rail-iconos.html",
+      "selector": "body > div > div:nth-of-type(1)",
+      "excerpt": "A du",
+      "comment": "hoy en dia existen dos sidebars, este y una que muestra productos y users nomas. Quiero que uses este como main y elimines el otro. Ademas agregale un boton para expandir donde muestre icono mas nombre (como en el ejemplo 1). Quita el boton de logout del sidebar y agregalo al hacer click en el boton del usuario",
+      "createdAt": "2026-11-04T22:18:08.562Z",
+      "status": "resolved",
+      "sentAt": "2026-11-04T22:19:00.224Z",
+      "resolvedAt": "2026-11-04T22:21:41.196Z"
+    },
+    {
+      "id": "e9ivxpep",
+      "file": "01-denso-sidebar-oscuro.html",
+      "selector": "body > div > aside",
+      "excerpt": "Almacén ADMINISTRACIÓN CATÁLOGO Productos Movimientos SISTEMA Usuarios duenio@pyme.com OWNER Salir",
+      "comment": "copia el separador por categorias de este diseño",
+      "createdAt": "2026-11-04T22:18:48.335Z",
+      "status": "resolved",
+      "sentAt": "2026-11-04T22:19:00.224Z",
+      "resolvedAt": "2026-11-04T22:21:41.196Z"
+    }
+  ]
+}
