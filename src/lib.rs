@@ -1,4 +1,4 @@
-//! Lógica de la aplicación. El binario (`main.rs`) solo arma y arranca.
+//! Application logic. The binary (`main.rs`) only assembles and starts it.
 
 pub mod auth;
 pub mod catalog;
@@ -16,21 +16,21 @@ use std::sync::Arc;
 
 use crate::ratelimit::AccountLimiter;
 
-/// Estado compartido por todos los handlers.
+/// State shared by all handlers.
 ///
-/// `Clone` barato: `PgPool` es internamente un `Arc`. A medida que aparezcan
-/// dependencias se suman acá.
+/// Cheap `Clone`: `PgPool` internally uses an `Arc`. Dependencies are added
+/// here as they arise.
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
-    /// Límite de intentos fallidos por cuenta. Vive en Postgres.
+    /// Per-account failed-attempt limit. Lives in Postgres.
     pub account_limiter: AccountLimiter,
-    /// Límite de requests por IP. Vive en memoria, compartido entre requests
-    /// por el `Arc`.
+    /// Per-IP request limit. Lives in memory, shared between requests through
+    /// the `Arc`.
     pub ip_limiter: Arc<crate::ratelimit::IpLimiter>,
-    /// Las cookies de sesión llevan `Secure` salvo en HTTP local. En producción
-    /// esto tiene que ser `true` siempre; el default de dev es `false` para que
-    /// `curl` sobre http://localhost funcione.
+    /// Session cookies use `Secure` except on local HTTP. In production this
+    /// must always be `true`; the dev default is `false` so `curl` against
+    /// http://localhost works.
     pub cookie_secure: bool,
 }
 

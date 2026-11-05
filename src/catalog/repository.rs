@@ -1,8 +1,8 @@
-//! Acceso a datos del catálogo.
+//! Catalog data access.
 //!
-//! La consulta importante de este módulo es `list_products`: el stock se calcula
-//! con una subconsulta agregada, no con una columna. El índice
-//! `stock_movements (product_id, created_at DESC)` es el que la hace barata.
+//! This module's important query is `list_products`: stock is calculated with
+//! an aggregate subquery, not a column. The index
+//! `stock_movements (product_id, created_at DESC)` makes it cheap.
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -14,23 +14,23 @@ use super::validation::ValidationError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
-    #[error("no se encontró el producto")]
+    #[error("product not found")]
     NotFound,
 
-    #[error("el email ya está registrado")]
+    #[error("the email is already registered")]
     SkuTaken,
 
-    #[error("el producto tiene movimientos: desactivalo en vez de borrarlo")]
+    #[error("the product has movements: deactivate it instead of deleting it")]
     HasMovements,
 
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
 
-/// Fila cruda de `products` que mapea 1:1 con la tabla.
+/// Raw `products` row mapping 1:1 to the table.
 ///
-/// Existe porque `sqlx::query!` necesita un tipo de destino explícito y
-/// `Product` (el del dominio) usa newtypes. La conversión vive en `From`.
+/// Exists because `sqlx::query!` needs an explicit destination type and the
+/// domain `Product` uses newtypes. The conversion lives in `From`.
 struct ProductRow {
     id: Uuid,
     kind: ProductKind,
@@ -103,15 +103,15 @@ fn is_sku_violation(err: &sqlx::Error) -> bool {
     matches!(err, sqlx::Error::Database(db_err) if db_err.constraint() == Some("products_sku_unique"))
 }
 
-/// Consulta de catálogo con stock calculado.
+/// Catalog query with calculated stock.
 ///
-/// El `LEFT JOIN LATERAL` con `SUM` corre una sola vez por producto y usa el
-/// índice. Evita el error común de hacer `N+1` consultas o de agregar una
-/// columna que después hay que reconciliar.
+/// The `LEFT JOIN LATERAL` with `SUM` runs once per product and uses the index.
+/// It avoids the common mistake of `N+1` queries or adding a column that must
+/// later be reconciled.
 ///
-/// El signo se aplica en SQL con `CASE`, replicando `MovementReason::sign`.
-/// Es la única duplicación deliberada de esa regla y está cubierta por tests de
-/// integración que comparan ambos caminos.
+/// The sign is applied in SQL with `CASE`, replicating `MovementReason::sign`.
+/// This is the only deliberate duplication of that rule and integration tests
+/// cover it by comparing both paths.
 pub async fn list_products(
     pool: &PgPool,
     kind: Option<ProductKind>,
@@ -180,8 +180,8 @@ pub async fn list_products(
             });
 
             ProductWithStock {
-                // Para un servicio el stock es `None`, no `Some(0)`: "no aplica"
-                // y "cero unidades" son cosas distintas.
+                // For a service stock is `None`, not `Some(0)`: "not applicable"
+                // and "zero units" are different things.
                 stock: kind
                     .tracks_stock()
                     .then_some(r.stock.unwrap_or(Decimal::ZERO)),
@@ -259,12 +259,11 @@ pub struct ProductUpdate<'a> {
     pub is_active: Option<bool>,
 }
 
-/// Actualiza solo los campos presentes.
+/// Update only fields that are present.
 ///
-/// `COALESCE($n, columna)` hace que `NULL` signifique "no tocar". No permite
-/// poner `price` en NULL a propósito (vaciar el precio de un producto); para eso
-/// hace falta un marcador explícito, que se agrega cuando haya un caso de uso
-/// real que lo pida.
+/// `COALESCE($n, column)` makes `NULL` mean "do not touch". It deliberately
+/// does not allow setting `price` to NULL (clearing a product's price); that
+/// requires an explicit marker, to be added when a real use case calls for it.
 pub async fn update_product(
     pool: &PgPool,
     id: Uuid,
@@ -305,10 +304,10 @@ pub async fn update_product(
     Ok(())
 }
 
-/// Desactiva un producto. Nunca se borra: tiene historial de movimientos y el
-/// libro no se puede tocar.
+/// Deactivate a product. Never delete it: it has movement history and the
+/// ledger cannot be modified.
 ///
-/// Devuelve 404 si no existe. Si ya estaba inactivo, es idempotente.
+/// Returns 404 if nonexistent. Idempotent if already inactive.
 pub async fn deactivate_product(pool: &PgPool, id: Uuid) -> Result<(), RepoError> {
     let result = sqlx::query!("UPDATE products SET is_active = false WHERE id = $1", id)
         .execute(pool)
@@ -329,8 +328,8 @@ pub struct NewMovement<'a> {
     pub created_by: Option<Uuid>,
 }
 
-/// Genérico sobre el executor para poder participar de la transacción del
-/// servicio: el `SELECT FOR UPDATE` y el `INSERT` tienen que ver la misma foto.
+/// Generic over the executor to participate in the service transaction: the
+/// `SELECT FOR UPDATE` and `INSERT` must see the same snapshot.
 pub async fn insert_movement<'e, E>(executor: E, new: NewMovement<'_>) -> Result<Uuid, RepoError>
 where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
@@ -353,8 +352,8 @@ where
     .execute(executor)
     .await
     .map_err(|err| {
-        // FK violada = el producto no existe. Se traduce para no filtrar
-        // nombres de constraints al cliente.
+        // FK violation = product does not exist. Translate it to avoid leaking
+        // constraint names to the client.
         if matches!(&err, sqlx::Error::Database(db) if db.constraint() == Some("stock_movements_product_id_fkey"))
         {
             RepoError::NotFound
@@ -377,7 +376,7 @@ pub struct MovementRow {
     pub created_at: DateTime<Utc>,
 }
 
-/// Historial de un producto, más nuevo primero.
+/// Product history, newest first.
 pub async fn list_movements(
     pool: &PgPool,
     product_id: Uuid,
@@ -425,7 +424,7 @@ pub async fn list_movements(
         .collect())
 }
 
-/// Stock actual de un producto, calculado.
+/// Calculated current stock of a product.
 pub async fn current_stock(pool: &PgPool, product_id: Uuid) -> Result<Decimal, RepoError> {
     let stock = sqlx::query_scalar!(
         r#"
@@ -448,8 +447,8 @@ pub async fn current_stock(pool: &PgPool, product_id: Uuid) -> Result<Decimal, R
     Ok(stock)
 }
 
-/// Verifica que un `ValidationError` llegue con su variante de dominio.
-/// Se usa en el mapeo de errores del servicio.
+/// Ensure a `ValidationError` arrives with its domain variant.
+/// Used in the service's error mapping.
 impl From<ValidationError> for RepoError {
     fn from(err: ValidationError) -> Self {
         match err {

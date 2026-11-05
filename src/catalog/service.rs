@@ -1,11 +1,10 @@
-//! Casos de uso del catálogo.
+//! Catalog use cases.
 //!
-//! Reglas de negocio que viven acá y en ningún otro lado:
-//!  * un servicio no lleva movimientos de stock;
-//!  * una salida no puede dejar stock negativo;
-//!  * un producto con movimientos no se borra, se desactiva;
-//!  * la verificación de stock y el alta del movimiento ocurren en la misma
-//!    transacción.
+//! Business rules that live here and nowhere else:
+//!  * a service has no stock movements;
+//!  * an outflow cannot leave stock negative;
+//!  * a product with movements is deactivated, not deleted;
+//!  * stock verification and movement creation happen in the same transaction.
 
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -20,19 +19,19 @@ pub enum CatalogError {
     #[error(transparent)]
     Validation(#[from] ValidationError),
 
-    #[error("el SKU ya está en uso")]
+    #[error("the SKU is already in use")]
     SkuTaken,
 
-    #[error("no se encontró el producto")]
+    #[error("product not found")]
     NotFound,
 
-    #[error("stock insuficiente: disponible {}, solicitado {}", normalize_quantity(*available), normalize_quantity(*requested))]
+    #[error("insufficient stock: available {}, requested {}", normalize_quantity(*available), normalize_quantity(*requested))]
     InsufficientStock {
         available: Decimal,
         requested: Decimal,
     },
 
-    #[error("error interno del catálogo")]
+    #[error("internal catalog error")]
     Internal(#[from] RepoError),
 }
 
@@ -54,9 +53,9 @@ pub async fn create_product(
     let price = validation::validate_price(input.price)?;
     let min_stock = validation::validate_min_stock(input.min_stock)?;
 
-    // Un servicio no puede tener stock mínimo: no tiene stock. La DB lo impone
-    // con un CHECK, así que rechazarlo acá es para dar un mensaje útil, no para
-    // que el motor sea la única defensa.
+    // A service cannot have minimum stock: it has no stock. The DB enforces
+    // this with a CHECK, so reject it here to give a useful message rather
+    // than leave the engine as the only defense.
     if input.kind == ProductKind::Service && min_stock.is_some() {
         return Err(ValidationError::ServiceHasNoStock.into());
     }
@@ -86,7 +85,7 @@ pub async fn list_products(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<ProductWithStock>, CatalogError> {
-    // Techo defensivo: un `limit` de 10 millones es un DoS por consulta.
+    // Defensive cap: a `limit` of 10 million is a per-query DoS.
     let limit = limit.clamp(1, 200);
     let offset = offset.max(0);
 
@@ -118,7 +117,7 @@ pub async fn update_product(
     id: Uuid,
     input: UpdateProductInput,
 ) -> Result<(), CatalogError> {
-    // El producto debe existir antes de validar contra su tipo.
+    // The product must exist before validating against its kind.
     let existing = get_product(pool, id).await?;
 
     let name = input
@@ -168,12 +167,12 @@ pub struct RecordMovementInput {
     pub actor_id: Uuid,
 }
 
-/// Registra un movimiento de stock.
+/// Record a stock movement.
 ///
-/// La verificación de stock disponible y el INSERT van en la **misma
-/// transacción** con `SELECT ... FOR UPDATE` sobre el producto. Sin eso, dos
-/// ventas simultáneas de la última unidad pueden pasar ambas: cada una lee el
-/// stock antes de que la otra confirme.
+/// Available stock verification and the INSERT run in the **same transaction**
+/// with `SELECT ... FOR UPDATE` on the product. Without this, two simultaneous
+/// sales of the last unit can both succeed: each reads stock before the other
+/// commits.
 pub async fn record_movement(
     pool: &PgPool,
     input: RecordMovementInput,
@@ -184,9 +183,9 @@ pub async fn record_movement(
 
     let mut tx = pool.begin().await.map_err(RepoError::Database)?;
 
-    // Bloquea la fila del producto hasta el commit: serializa las salidas
-    // concurrentes de este producto. El costo es contención por producto, no
-    // global; es el precio correcto a pagar por no vender stock inexistente.
+    // Lock the product row until commit: serialize concurrent outflows for
+    // this product. The cost is per-product contention, not global; the right
+    // price to pay for not selling nonexistent stock.
     let kind = sqlx::query_scalar!(
         r#"SELECT kind AS "kind: ProductKind" FROM products WHERE id = $1 FOR UPDATE"#,
         input.product_id
@@ -200,7 +199,7 @@ pub async fn record_movement(
         return Err(ValidationError::ServiceHasNoStock.into());
     }
 
-    // Si el movimiento resta, no puede dejar el stock negativo.
+    // If the movement subtracts, it cannot leave stock negative.
     if input.reason.sign() < 0 {
         let current: Decimal = sqlx::query_scalar!(
             r#"
@@ -259,8 +258,8 @@ pub async fn list_movements(
         .map_err(map_repo_error)
 }
 
-/// Quita los ceros que agrega `numeric(12,3)` al hacer `SUM`, para que los
-/// mensajes de error muestren `12.5` y no `12.500`, igual que la API.
+/// Remove zeros added by `numeric(12,3)` on `SUM`, so error messages show
+/// `12.5`, not `12.500`, just like the API.
 fn normalize_quantity(value: Decimal) -> String {
     value.normalize().to_string()
 }

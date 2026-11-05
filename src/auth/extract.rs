@@ -1,8 +1,8 @@
-//! Extractores de autenticación.
+//! Authentication extractors.
 //!
-//! `AuthUser` es la ÚNICA forma en que un handler conoce la identidad del
-//! actor. No existe otra vía: si un handler necesita saber quién es, pide este
-//! extractor por firma y el compilador exige que esté disponible.
+//! `AuthUser` is the ONLY way a handler knows the actor's identity. There is
+//! no other path: a handler that needs to know who the actor is requests this
+//! extractor in its signature, and the compiler requires it to be available.
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
@@ -14,13 +14,13 @@ use crate::auth::service::{self, AuthenticatedUser};
 use crate::auth::token::{SessionToken, TokenHash};
 use crate::error::AppError;
 
-/// Nombre de la cookie de sesión.
+/// Session cookie name.
 pub const SESSION_COOKIE: &str = "session";
 
-/// Usuario autenticado. Falla con 401 si no hay sesión válida.
+/// Authenticated user. Fails with 401 if there is no valid session.
 ///
-/// Como `FromRequestParts`, no consume el body: puede ir antes de
-/// `Json<T>` en la firma del handler.
+/// As `FromRequestParts`, it does not consume the body: it can precede
+/// `Json<T>` in the handler signature.
 pub struct AuthUser(pub AuthenticatedUser);
 
 impl AuthUser {
@@ -40,7 +40,7 @@ impl AuthUser {
         &self.0.token_hash
     }
 
-    /// Autorización: 403 si el rol no alcanza. La regla vive en `Role`, no acá.
+    /// Authorization: 403 if the role is insufficient. The rule lives in `Role`, not here.
     pub fn require_user_management(&self) -> Result<(), AppError> {
         if self.0.can_manage_users() {
             Ok(())
@@ -68,8 +68,8 @@ impl FromRequestParts<AppState> for AuthUser {
             .await?
             .ok_or(AppError::Unauthorized)?;
 
-        // La sesión se extiende en segundo plano: no queremos que esta request
-        // espere un UPDATE que no afecta su resultado.
+        // Extend the session in the background: this request should not wait
+        // for an UPDATE that does not affect its result.
         let pool = state.pool.clone();
         tokio::spawn(async move {
             service::touch(&pool, &token).await;

@@ -1,10 +1,10 @@
-//! Acceso a datos de autenticación.
+//! Authentication data access.
 //!
-//! Todo el SQL de auth vive acá. Las queries usan las macros de `sqlx` para que
-//! el compilador verifique tipos y nombres de columnas contra la DB real.
+//! All auth SQL lives here. Queries use `sqlx` macros so the compiler checks
+//! types and column names against the real DB.
 //!
-//! Consecuencia ineludible: para compilar hace falta una DB alcanzable con
-//! `DATABASE_URL`, o el cache de `cargo sqlx prepare` commiteado en `.sqlx/`.
+//! Inevitable consequence: compilation requires a reachable DB via
+//! `DATABASE_URL`, or the `cargo sqlx prepare` cache committed in `.sqlx/`.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -16,12 +16,12 @@ use super::validation::ValidatedEmail;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
-    #[error("el email ya está registrado")]
+    #[error("the email is already registered")]
     EmailTaken,
 
-    /// Fallo criptográfico (hasher no disponible, hash corrupto). Es un bug o
-    /// una dependencia rota, nunca una credencial inválida.
-    #[error("fallo criptográfico")]
+    /// Cryptographic failure (hasher unavailable, corrupt hash). This is a bug
+    /// or broken dependency, never an invalid credential.
+    #[error("cryptographic failure")]
     Crypto,
 
     #[error(transparent)]
@@ -50,7 +50,7 @@ pub struct FoundSession {
     pub role: Role,
 }
 
-/// El id es uuid v7 generado en la app: ordenable por tiempo y no predecible.
+/// The id is a UUID v7 generated in the app: time-sortable and unpredictable.
 pub async fn create_user(pool: &PgPool, new: NewUser<'_>) -> Result<Uuid, RepoError> {
     let id = Uuid::now_v7();
 
@@ -99,8 +99,8 @@ pub async fn find_user_by_email(
     }))
 }
 
-/// Emite una sesión. `expires_at` se calcula en la DB para no depender del reloj
-/// de la app (que puede estar desincronizado respecto del de Postgres).
+/// Issue a session. `expires_at` is calculated in the DB to avoid depending on
+/// the app clock (which may be out of sync with Postgres).
 pub async fn create_session(
     pool: &PgPool,
     token_hash: &TokenHash,
@@ -124,9 +124,8 @@ pub async fn create_session(
     Ok(row.expires_at)
 }
 
-/// Resuelve token → usuario en una consulta. `None` cubre los tres casos en que
-/// el cliente debe reautenticarse: token inexistente, sesión expirada, usuario
-/// borrado.
+/// Resolve token → user in one query. `None` covers the three cases where the
+/// client must reauthenticate: nonexistent token, expired session, deleted user.
 pub async fn find_session_user(
     pool: &PgPool,
     token_hash: &TokenHash,
@@ -151,10 +150,10 @@ pub async fn find_session_user(
     }))
 }
 
-/// Extiende la sesión usada, respetando el tope absoluto desde `created_at`:
-/// una cookie robada no vive para siempre por usarse seguido.
+/// Extend the session used, respecting the absolute cap from `created_at`:
+/// a stolen cookie does not live forever through frequent use.
 ///
-/// Best-effort: un fallo se loguea y no afecta la request.
+/// Best-effort: a failure is logged and does not affect the request.
 pub async fn touch_session(pool: &PgPool, token_hash: &TokenHash) {
     let result = sqlx::query!(
         r#"
@@ -175,7 +174,7 @@ pub async fn touch_session(pool: &PgPool, token_hash: &TokenHash) {
     .await;
 
     if let Err(err) = result {
-        tracing::warn!(error = %err, "no se pudo extender la sesión");
+        tracing::warn!(error = %err, "could not extend the session");
     }
 }
 
@@ -190,7 +189,7 @@ pub async fn delete_session(pool: &PgPool, token_hash: &TokenHash) -> Result<boo
     Ok(result.rows_affected() > 0)
 }
 
-/// Limpieza de sesiones vencidas. Devuelve cuántas borró.
+/// Clean up expired sessions. Returns the number deleted.
 pub async fn purge_expired_sessions(pool: &PgPool) -> Result<u64, RepoError> {
     let result = sqlx::query!("DELETE FROM sessions WHERE expires_at <= now()")
         .execute(pool)

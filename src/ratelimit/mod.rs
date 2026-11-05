@@ -1,28 +1,28 @@
-//! Protección contra fuerza bruta.
+//! Brute-force protection.
 //!
-//! # Qué es y qué no es
+//! # What it is and is not
 //!
-//! Rate limiting **no prohíbe** el abuso: lo **acota**. No impide que alguien
-//! intente adivinar una contraseña; hace que intentarlo sea lento, finito y
-//! observable. Cualquier diseño que prometa "prohibir" el abuso está mintiendo o
-//! va a negar servicio a usuarios legítimos.
+//! Rate limiting does **not prevent** abuse: it **bounds** it. It does not stop
+//! someone trying to guess a password; it makes the attempt slow, finite and
+//! observable. Any design promising to "prevent" abuse is lying or will deny
+//! service to legitimate users.
 //!
-//! # Dos capas, dos amenazas
+//! # Two layers, two threats
 //!
-//! | Capa | Ataca a | Dónde vive | Sobrevive reinicio |
+//! | Layer | Targets | Where | Survives restart |
 //! |---|---|---|---|
-//! | Por cuenta ([`account`]) | Ataque vertical: muchas IPs contra UN usuario | Postgres | Sí |
-//! | Por IP ([`ip`]) | Ataque horizontal: una IP contra muchos usuarios | Memoria | No |
+//! | Per account ([`account`]) | Vertical attack: many IPs against ONE user | Postgres | Yes |
+//! | Per IP ([`ip`]) | Horizontal attack: one IP against many users | Memory | No |
 //!
-//! Las dos son necesarias. Solo por IP: un botnet lo esquiva. Solo por cuenta:
-//! el atacante puede probar una contraseña por cuenta en 100 000 cuentas.
+//! Both are necessary. IP only: a botnet bypasses it. Account only: the
+//! attacker can try one password per account across 100,000 accounts.
 //!
-//! # Por qué el bloqueo es suave
+//! # Why the lock is soft
 //!
-//! Un bloqueo duro (hasta intervención manual) convierte el rate limiting en un
-//! **vector de denegación de servicio**: cualquiera que conozca el email del
-//! dueño lo deja fuera de su propio sistema escribiendo mal la contraseña cinco
-//! veces. Por eso el bloqueo dura minutos y expira solo.
+//! A hard lock (until manual intervention) turns rate limiting into a
+//! **denial-of-service vector**: anyone knowing the owner's email can lock them
+//! out of their own system by entering the wrong password five times. Therefore
+//! the lock lasts minutes and expires on its own.
 
 pub mod account;
 pub mod ip;
@@ -34,18 +34,18 @@ pub use ip::IpLimiter;
 use std::net::IpAddr;
 use std::time::Duration;
 
-/// Política del límite por cuenta.
+/// Per-account rate-limit policy.
 #[derive(Debug, Clone, Copy)]
 pub struct AccountPolicy {
-    /// Intentos fallidos permitidos dentro de la ventana.
+    /// Failed attempts allowed within the window.
     ///
-    /// Con `max_failures = 3`: los tres primeros fallos responden 401 y el
-    /// cuarto ya no se evalúa (429). El intento que dispara el bloqueo sigue
-    /// devolviendo 401, porque su contraseña era efectivamente incorrecta.
+    /// With `max_failures = 3`: the first three failures return 401 and the
+    /// fourth is not evaluated (429). The attempt triggering the lock still
+    /// returns 401 because its password was indeed incorrect.
     pub max_failures: i32,
-    /// Duración de la ventana de conteo.
+    /// Duration of the counting window.
     pub window: Duration,
-    /// Cuánto dura el bloqueo una vez alcanzado el máximo.
+    /// Lock duration once the maximum is reached.
     pub block_duration: Duration,
 }
 
@@ -54,32 +54,31 @@ impl Default for AccountPolicy {
         Self {
             max_failures: 5,
             window: Duration::from_secs(15 * 60),
-            // 5 minutos: suficiente para que un ataque por fuerza bruta sea
-            // inviable (5 intentos cada 5 min = 1440/día contra ~10^12
-            // combinaciones), y corto para que un usuario real que se equivocó
-            // no quede esperando media hora.
+            // 5 minutes: enough to make brute force infeasible (5 attempts
+            // every 5 min = 1440/day against ~10^12 combinations), and short
+            // enough that a real user who made a mistake does not wait half an hour.
             block_duration: Duration::from_secs(5 * 60),
         }
     }
 }
 
-/// Política del límite por IP.
+/// Per-IP rate-limit policy.
 #[derive(Debug, Clone, Copy)]
 pub struct IpPolicy {
-    /// Requests permitidos por ventana, por IP.
+    /// Requests allowed per window, per IP.
     pub max_requests: u32,
-    /// Ventana del limitador.
+    /// Limiter window.
     pub window: Duration,
-    /// Cuánto tolerar ráfagas por encima del ritmo sostenido.
+    /// Burst tolerance above the sustained rate.
     pub burst: u32,
 }
 
 impl Default for IpPolicy {
     fn default() -> Self {
         Self {
-            // 30 logins por minuto desde una IP: un humano hace 1 o 2. El
-            // margen cubre oficinas con NAT (varios empleados detrás de una
-            // sola IP pública) sin abrir la puerta a fuerza bruta.
+            // 30 logins per minute from one IP: a human makes 1 or 2. The
+            // margin covers offices with NAT (multiple employees behind one
+            // public IP) without opening the door to brute force.
             max_requests: 30,
             window: Duration::from_secs(60),
             burst: 10,
@@ -87,17 +86,17 @@ impl Default for IpPolicy {
     }
 }
 
-/// Extrae la IP del cliente.
+/// Extract the client's IP.
 ///
-/// `ConnectInfo` es la fuente confiable: es la IP de la conexión TCP.
+/// `ConnectInfo` is the trusted source: it is the TCP connection's IP.
 ///
-/// `X-Forwarded-For` se ignora **salvo** que haya un proxy confiable
-/// configurado, porque es un header que el cliente controla: honrarlo sin
-/// proxy permite a un atacante elegir su propia IP en cada request y anular el
-/// rate limiting por completo. Es la forma más común de romper esta defensa.
+/// `X-Forwarded-For` is ignored **unless** a trusted proxy is configured,
+/// because the client controls the header: honoring it without a proxy lets
+/// an attacker choose their own IP on each request and completely bypass rate
+/// limiting. This is the most common way to break this defense.
 pub fn client_ip(peer: Option<IpAddr>) -> IpAddr {
-    // Sin ConnectInfo (por ejemplo en tests sin `into_make_service_with_connect_info`),
-    // se agrupa todo bajo una IP de loopback: preferible a desactivar el límite.
+    // Without ConnectInfo (e.g. tests without `into_make_service_with_connect_info`),
+    // group everything under a loopback IP: preferable to disabling the limit.
     peer.unwrap_or(IpAddr::from([127, 0, 0, 1]))
 }
 

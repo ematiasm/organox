@@ -1,6 +1,6 @@
-//! Imprime el spec OpenAPI como JSON a stdout.
+//! Print the OpenAPI spec as JSON to stdout.
 //!
-//! Uso:
+//! Usage:
 //!   cargo run --bin openapi > openapi.json
 //!   npx openapi-typescript openapi.json -o frontend/src/lib/api/schema.d.ts
 
@@ -9,7 +9,7 @@ fn main() {
     match serde_json::to_string_pretty(&doc) {
         Ok(json) => println!("{json}"),
         Err(err) => {
-            eprintln!("error serializando el spec: {err}");
+            eprintln!("error serializing the spec: {err}");
             std::process::exit(1);
         }
     }

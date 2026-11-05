@@ -1,6 +1,6 @@
-//! Dominio de ventas: carrito persistido y cobro.
+//! Sales domain: persisted cart and checkout.
 //!
-//! Ver `docs/sales.md` para el razonamiento.
+//! See `docs/sales.md` for the reasoning.
 
 pub mod handlers;
 pub mod model;

@@ -1,8 +1,8 @@
-//! Dominio de ventas.
+//! Sales domain.
 //!
-//! Una venta es un **borrador persistido** hasta que se cobra. El carrito no
-//! vive en el navegador: vive en la base, así sobrevive un refresh, un corte de
-//! red y un cajero que se va a buscar el producto.
+//! A sale is a **persisted draft** until checkout. The cart lives in the
+//! database, not the browser, so it survives a refresh, network outage, and a
+//! cashier leaving to fetch the product.
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -31,9 +31,9 @@ impl SaleStatus {
         }
     }
 
-    /// Un borrador es lo único editable. Una venta cobrada es un hecho, y un
-    /// hecho no se corrige: se emite una nota de crédito (que todavía no
-    /// existe, y por eso `cancelled` solo aplica a borradores).
+    /// Only a draft is editable. A completed sale is a fact, and a fact is not
+    /// corrected: a credit note is issued (not yet implemented, which is why
+    /// `cancelled` applies only to drafts).
     pub fn is_editable(self) -> bool {
         matches!(self, SaleStatus::Draft)
     }
@@ -54,15 +54,14 @@ impl FromStr for SaleStatus {
             "completed" | "completada" => Ok(SaleStatus::Completed),
             "cancelled" | "cancelada" => Ok(SaleStatus::Cancelled),
             other => Err(format!(
-                "estado desconocido: {other:?} (válidos: draft, completed, cancelled)"
+                "unknown status: {other:?} (valid: draft, completed, cancelled)"
             )),
         }
     }
 }
 
-/// Ítem dentro de una venta. El precio viene del producto al agregarlo y queda
-/// congelado: si el producto cambia de precio mientras se cobra, el total no
-/// salta.
+/// Item in a sale. The price comes from the product when added and is frozen:
+/// if the product price changes during checkout, the total does not jump.
 #[derive(Debug, Clone)]
 pub struct SaleItem {
     pub id: Uuid,
@@ -89,8 +88,8 @@ pub struct Sale {
 }
 
 impl Sale {
-    /// Total calculado en el servidor. El cliente puede mostrar su propio total,
-    /// pero el que se cobra es este.
+    /// Server-calculated total. The client may show its own total, but this is
+    /// the one charged.
     pub fn total(&self) -> Decimal {
         self.items.iter().map(SaleItem::subtotal).sum()
     }
@@ -131,8 +130,8 @@ mod tests {
         };
 
         // 5600.00 + 1800.495 + 0.30 = 7400.795
-        // `numeric` en DB es (12,3) para cantidad y (12,2) para precio: el
-        // producto puede dar 3 decimales y se redondea a 2 al persistir el total.
+        // DB `numeric` is (12,3) for quantity and (12,2) for price: the
+        // product can have 3 decimals and is rounded to 2 when persisting total.
         assert_eq!(sale.total(), dec!(7400.795));
     }
 

@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO login_attempts (email, failed_count, window_start, blocked_until, updated_at)\n            VALUES ($1, 1, now(), NULL, now())\n            ON CONFLICT (email) DO UPDATE\n            SET failed_count = CASE\n                    -- Expired window: the count starts again.\n                    WHEN login_attempts.window_start + make_interval(secs => $2) < now()\n                        THEN 1\n                    ELSE login_attempts.failed_count + 1\n                END,\n                window_start = CASE\n                    WHEN login_attempts.window_start + make_interval(secs => $2) < now()\n                        THEN now()\n                    ELSE login_attempts.window_start\n                END,\n                -- Lock on reaching the maximum. The lock applies even if the\n                -- previous one expired: a new attempt renews it only after\n                -- failures accumulate again.\n                blocked_until = CASE\n                    WHEN (CASE\n                            WHEN login_attempts.window_start + make_interval(secs => $2) < now()\n                                THEN 1\n                            ELSE login_attempts.failed_count + 1\n                        END) >= $3\n                        THEN now() + make_interval(secs => $4)\n                    ELSE NULL\n                END,\n                updated_at = now()\n            RETURNING failed_count, blocked_until\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failed_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "blocked_until",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        },
+        "Float8",
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "c5f58778e690bf7be1a4c2532be99579efaad9e2078b98e02f12052dd12e190e"
+}

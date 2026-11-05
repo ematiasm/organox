@@ -1,10 +1,10 @@
-//! Casos de uso de ventas.
+//! Sales use cases.
 //!
-//! Reglas que viven acá y en ningún otro lado:
-//!  * un cajero tiene un solo borrador abierto;
-//!  * no se agrega un producto sin precio ni un servicio;
-//!  * una venta completada es inmutable;
-//!  * el total lo calcula el servidor.
+//! Rules that live here and nowhere else:
+//!  * a cashier has only one open draft;
+//!  * a product without a price or a service cannot be added;
+//!  * a completed sale is immutable;
+//!  * the server calculates the total.
 
 use rust_decimal::Decimal;
 use sqlx::PgPool;
@@ -15,32 +15,32 @@ use super::repository::{self, CompletedSale, RepoError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SalesError {
-    #[error("no se encontró la venta")]
+    #[error("sale not found")]
     NotFound,
 
-    #[error("no se encontró el producto")]
+    #[error("product not found")]
     ProductNotFound,
 
-    #[error("un servicio no lleva stock: no se puede vender como ítem de una venta")]
+    #[error("a service does not track stock: it cannot be sold as a sale item")]
     ServiceNotSellable,
 
-    #[error("stock insuficiente de {product_name}: disponible {available}, pedido {requested}")]
+    #[error("insufficient stock for {product_name}: available {available}, requested {requested}")]
     InsufficientStock {
         product_name: String,
         available: Decimal,
         requested: Decimal,
     },
 
-    #[error("la venta ya fue cerrada y no se puede modificar")]
+    #[error("the sale is already closed and cannot be modified")]
     NotEditable,
 
-    #[error("la venta está vacía: no se puede cobrar")]
+    #[error("the sale is empty and cannot be completed")]
     EmptySale,
 
-    #[error("la cantidad debe ser mayor que cero")]
+    #[error("the quantity must be greater than zero")]
     QuantityNotPositive,
 
-    #[error("error interno de ventas")]
+    #[error("internal sales error")]
     Internal(#[from] RepoError),
 }
 
@@ -63,11 +63,11 @@ fn map_repo_error(err: RepoError) -> SalesError {
     }
 }
 
-/// Abre un borrador, o devuelve el que el usuario ya tenía abierto.
+/// Open a draft, or return the one the user already had open.
 ///
-/// Devolver el existente es lo correcto y no un atajo: recargar la pantalla de
-/// venta no debe crear un borrador nuevo por cada F5, o el cajero termina con
-/// veinte carritos vacíos y la tabla crece sin sentido.
+/// Returning the existing draft is correct, not a shortcut: reloading the sale
+/// screen must not create a draft for every F5, or the cashier ends up with
+/// twenty empty carts and the table grows pointlessly.
 pub async fn open_draft(pool: &PgPool, user_id: Uuid) -> Result<Uuid, SalesError> {
     if let Some(existing) = repository::find_open_draft_for_user(pool, user_id)
         .await
@@ -141,10 +141,10 @@ pub async fn cancel(pool: &PgPool, sale_id: Uuid) -> Result<(), SalesError> {
         .map_err(map_repo_error)
 }
 
-/// Cobra la venta.
+/// Complete the sale.
 ///
-/// Rechaza un carrito vacío acá y no en SQL: cobrar cero no tiene sentido de
-/// negocio y el mensaje importa.
+/// Reject an empty cart here rather than in SQL: charging zero makes no
+/// business sense and the message matters.
 pub async fn complete(
     pool: &PgPool,
     sale_id: Uuid,

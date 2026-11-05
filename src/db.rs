@@ -1,15 +1,15 @@
-//! Conexión a Postgres y la única consulta de esta rebanada (liveness de la DB).
+//! Postgres connection and the only query in this slice (DB liveness).
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, postgres::PgConnectOptions};
 use std::time::Duration;
 
-/// Tamaño del pool. Arranca chico a propósito: los defaults de sqlx (10) se
-/// agotan rápido y el error aparece recién bajo carga. Ajustar por medición.
+/// Pool size. Deliberately starts small: sqlx's defaults (10) run out quickly
+/// and the error appears only under load. Adjust based on measurement.
 const POOL_MAX_CONNECTIONS: u32 = 5;
 
-/// Tiempo máximo para obtener una conexión del pool. Sin esto, un pool agotado
-/// cuelga la request para siempre en vez de fallar.
+/// Maximum time to obtain a connection from the pool. Without this, an
+/// exhausted pool hangs the request forever instead of failing.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
@@ -22,10 +22,10 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .await
 }
 
-/// Readiness: la DB responde. Se usa en `/readyz`.
+/// Readiness: the DB responds. Used by `/readyz`.
 ///
-/// `SELECT 1` no prueba que las migraciones estén aplicadas; prueba que el
-/// pool puede hablar con Postgres. Es lo que necesita un readiness probe.
+/// `SELECT 1` does not prove migrations have been applied; it proves the
+/// pool can talk to Postgres. That is what a readiness probe needs.
 pub async fn ping(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT 1").execute(pool).await?;
     Ok(())

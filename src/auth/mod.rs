@@ -1,14 +1,14 @@
-//! Autenticación y autorización.
+//! Authentication and authorization.
 //!
-//! Capas, de adentro hacia afuera:
-//!   model      tipos del dominio (User, Role, PasswordHash)
-//!   validation reglas de entrada (email, largo de contraseña)
-//!   password   hashing argon2id
-//!   token      tokens de sesión y su hash
-//!   repository SQL. Único lugar con consultas
-//!   service    casos de uso y política
-//!   extract    `AuthUser`: la única vía para conocer al actor
-//!   handlers   HTTP: DTOs y traducción de errores
+//! Layers, from the inside out:
+//!   model      domain types (User, Role, PasswordHash)
+//!   validation input rules (email, password length)
+//!   password   argon2id hashing
+//!   token      session tokens and their hashes
+//!   repository SQL. The only place with queries
+//!   service    use cases and policy
+//!   extract    `AuthUser`: the only way to identify the actor
+//!   handlers   HTTP: DTOs and error translation
 
 pub mod extract;
 pub mod handlers;
