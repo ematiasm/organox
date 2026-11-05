@@ -1,18 +1,18 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>03 — Punto de venta: rail de iconos + grilla</title>
+<title>03 — Point of sale: icon rail + grid</title>
 <style>
-  /* Tokens de design/system.md (frontend/src/app.css convertido a sRGB).
-     El punto de venta sigue el tema como el resto de la app, no es oscuro fijo. */
+  /* Tokens from design/system.md (frontend/src/app.css converted to sRGB).
+     The point of sale follows the theme like the rest of the app, not fixed dark. */
   :root {
     color-scheme: light;
     --bg: #ffffff; --surface: #ffffff; --border: #e8e8e3;
     --text: #0c0c09; --muted: #7c7c67;
     --accent: #1d1d16; --accent-fg: #fbfbf9; --danger: #e7000b; --warn: #d28500;
-    --surface2: #f4f4f0; /* --muted del sistema: hover de ítems y menús */
+    --surface2: #f4f4f0; /* system --muted: item and menu hover */
     --rail-bg: #fbfbf9; --rail-border: #e8e8e3;
   }
   @media (prefers-color-scheme: dark) {
@@ -35,7 +35,7 @@
 
   .shell { display: flex; align-items: stretch; min-height: 100vh; }
 
-  /* ---------- rail de navegación (único sidebar) ---------- */
+  /* ---------- navigation rail (single sidebar) ---------- */
   .rail {
     flex: none; width: var(--rail-collapsed); position: relative; z-index: 5;
     background: var(--rail-bg); border-right: 1px solid var(--rail-border);
@@ -60,7 +60,7 @@
   .rail.expanded .rail-toggle .t-closed { display: none; }
 
   .rail nav { display: flex; flex-direction: column; gap: 0.15rem; }
-  /* separador por categorías: misma receta que 01-denso-sidebar-oscuro.html */
+  /* category separators: same recipe as 01-denso-sidebar-oscuro.html */
   .rail .group { padding: 0.75rem 0.6rem 0.3rem; }
   .rail .group .glabel { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); white-space: nowrap; }
 
@@ -72,7 +72,7 @@
 
   .rail-toggle:focus-visible, .rail .nav-item:focus-visible, .rail .user:focus-visible, .um-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-  /* estado colapsado: sólo iconos, grupos como separador de línea */
+  /* collapsed state: icons only, groups as line separators */
   .rail:not(.expanded) .nav-item,
   .rail:not(.expanded) .rail-toggle { justify-content: center; padding: 0; }
   .rail:not(.expanded) .group { display: block; height: 1px; margin: 0.5rem 0.7rem; padding: 0; background: var(--rail-border); }
@@ -85,7 +85,7 @@
     position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
 
-  /* pie: usuario + menú con Salir */
+  /* footer: user + menu with Sign out */
   .rail-foot { margin-top: auto; padding-top: 0.6rem; position: relative; }
   .rail .user { display: flex; align-items: center; gap: 0.65rem; width: 100%; padding: 0.35rem 0.35rem; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
   .rail .user:hover { background: var(--surface2); border-color: var(--border); }
@@ -109,7 +109,7 @@
   .user-menu .um-item svg { width: 15px; height: 15px; vertical-align: -2px; margin-right: 0.4rem; }
   .user-menu .um-sep { height: 1px; margin: 0.3rem 0.2rem; background: var(--border); }
 
-  /* ---------- venta ---------- */
+  /* ---------- sale ---------- */
   .main { flex: 1 1 auto; min-width: 0; padding: 1.15rem 1.5rem 1.5rem; display: flex; flex-direction: column; min-height: 100vh; }
   .head { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.1rem; }
   .head h1 { font-size: 1.15rem; font-weight: 600; margin: 0; }
@@ -134,7 +134,7 @@
   .tile.out { opacity: 0.45; }
   .tile.low .m .s { color: var(--warn); }
 
-  /* ---------- carrito ---------- */
+  /* ---------- cart ---------- */
   .cart { flex: none; width: 380px; background: var(--surface); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
   .cart-head { padding: 1.1rem 1.25rem 0.9rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: baseline; }
   .cart-head .t { font-weight: 600; }
@@ -166,96 +166,96 @@
 </head>
 <body>
 <div class="shell">
-  <aside class="rail" aria-label="Navegación principal">
+  <aside class="rail" aria-label="Main navigation">
     <div class="rail-head">
       <div class="logo" aria-hidden="true">A</div>
-      <div class="brand-text"><span class="brand">Almacén</span><small>Administración</small></div>
+      <div class="brand-text"><span class="brand">Warehouse</span><small>Administration</small></div>
     </div>
 
-    <button class="rail-toggle" id="railToggle" type="button" aria-expanded="false" aria-controls="sidenav" aria-label="Expandir menú">
+    <button class="rail-toggle" id="railToggle" type="button" aria-expanded="false" aria-controls="sidenav" aria-label="Expand menu">
       <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
-      <span class="label t-closed">Expandir</span>
-      <span class="label t-open">Contraer</span>
+      <span class="label t-closed">Expand</span>
+      <span class="label t-open">Collapse</span>
     </button>
 
     <nav id="sidenav">
-      <div class="group"><span class="glabel">Operación</span></div>
-      <button class="nav-item active" type="button" title="Venta" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18l-2 12H5L3 6z"/><path d="M8 6V4h8v2"/></svg><span class="label">Venta</span></button>
-      <div class="group"><span class="glabel">Catálogo</span></div>
-      <button class="nav-item" type="button" title="Productos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7h18M3 12h18M3 17h18"/></svg><span class="label">Productos</span></button>
-      <button class="nav-item" type="button" title="Movimientos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 4v16M4 7l3-3 3 3M17 20V4M14 17l3 3 3-3"/></svg><span class="label">Movimientos</span></button>
-      <div class="group"><span class="glabel">Sistema</span></div>
-      <button class="nav-item" type="button" title="Usuarios"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="label">Usuarios</span></button>
+      <div class="group"><span class="glabel">Operations</span></div>
+      <button class="nav-item active" type="button" title="Sale" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18l-2 12H5L3 6z"/><path d="M8 6V4h8v2"/></svg><span class="label">Sale</span></button>
+      <div class="group"><span class="glabel">Catalog</span></div>
+      <button class="nav-item" type="button" title="Products"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 7h18M3 12h18M3 17h18"/></svg><span class="label">Products</span></button>
+      <button class="nav-item" type="button" title="Movements"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 4v16M4 7l3-3 3 3M17 20V4M14 17l3 3 3-3"/></svg><span class="label">Movements</span></button>
+      <div class="group"><span class="glabel">System</span></div>
+      <button class="nav-item" type="button" title="Users"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg><span class="label">Users</span></button>
     </nav>
 
     <div class="rail-foot">
-      <button class="user" id="userBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu" title="Cuenta">
+      <button class="user" id="userBtn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu" title="Account">
         <span class="avatar" aria-hidden="true">du</span>
         <span class="user-text"><span class="u-email">duenio@pyme.com</span><span class="u-role">owner</span></span>
         <svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
       </button>
       <div class="user-menu" id="userMenu" role="menu" aria-labelledby="userBtn" hidden>
         <div class="um-head"><span class="um-email">duenio@pyme.com</span><span class="um-role">owner</span></div>
-        <button class="um-item" type="button" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>Oscuro</button>
+        <button class="um-item" type="button" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>Dark</button>
         <div class="um-sep"></div>
-        <button class="um-item danger" type="button" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>Salir</button>
+        <button class="um-item danger" type="button" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>Sign out</button>
       </div>
     </div>
   </aside>
 
   <div class="main">
     <div class="head">
-      <h1>Nueva venta</h1>
-      <span class="pill">Caja 1 · turno mañana</span>
+      <h1>New sale</h1>
+      <span class="pill">Register 1 · morning shift</span>
     </div>
 
     <div class="scan">
-      <input type="text" placeholder="Escaneá un código o buscá por nombre…" aria-label="Escanear o buscar" autofocus />
-      <span class="hint"><kbd>F2</kbd> foco · <kbd>Enter</kbd> agrega</span>
+      <input type="text" placeholder="Scan a barcode or search by name…" aria-label="Scan or search" autofocus />
+      <span class="hint"><kbd>F2</kbd> focus · <kbd>Enter</kbd> add</span>
     </div>
 
     <div class="filters">
-      <button class="on">Todos</button><button>Almacén</button><button>Bebidas</button><button>Limpieza</button><button>Servicios</button>
+      <button class="on">All</button><button>Warehouse</button><button>Drinks</button><button>Cleaning</button><button>Services</button>
     </div>
 
     <div class="grid">
-      <button class="tile"><span class="n">Yerba mate 1kg</span><span class="p">2 800.00</span><span class="m"><span class="s">12.5 u.</span><span>YER-1</span></span></button>
-      <button class="tile low"><span class="n">Harina 000</span><span class="p">1 500.50</span><span class="m"><span class="s">3 u.</span><span>HAR-001</span></span></button>
-      <button class="tile"><span class="n">Aceite de girasol 1.5L</span><span class="p">3 450.00</span><span class="m"><span class="s">24 u.</span><span>ACE-002</span></span></button>
-      <button class="tile out"><span class="n">Azúcar refinada</span><span class="p">1 200.00</span><span class="m"><span class="s">sin stock</span><span>AZU-010</span></span></button>
-      <button class="tile"><span class="n">Café molido 500g</span><span class="p">5 900.00</span><span class="m"><span class="s">18 u.</span><span>CAF-003</span></span></button>
-      <button class="tile"><span class="n">Flete local</span><span class="p">8 000.00</span><span class="m"><span class="s">servicio</span><span>—</span></span></button>
-      <button class="tile"><span class="n">Molienda a pedido</span><span class="p">—</span><span class="m"><span class="s">servicio</span><span>—</span></span></button>
-      <button class="tile"><span class="n">Arroz largo fino 1kg</span><span class="p">1 950.00</span><span class="m"><span class="s">31 u.</span><span>ARR-004</span></span></button>
+      <button class="tile"><span class="n">Yerba mate 1kg</span><span class="p">2 800.00</span><span class="m"><span class="s">12.5 units</span><span>YER-1</span></span></button>
+      <button class="tile low"><span class="n">Flour 000</span><span class="p">1 500.50</span><span class="m"><span class="s">3 units</span><span>HAR-001</span></span></button>
+      <button class="tile"><span class="n">Sunflower oil 1.5L</span><span class="p">3 450.00</span><span class="m"><span class="s">24 units</span><span>ACE-002</span></span></button>
+      <button class="tile out"><span class="n">Refined sugar</span><span class="p">1 200.00</span><span class="m"><span class="s">out of stock</span><span>AZU-010</span></span></button>
+      <button class="tile"><span class="n">Ground coffee 500g</span><span class="p">5 900.00</span><span class="m"><span class="s">18 units</span><span>CAF-003</span></span></button>
+      <button class="tile"><span class="n">Local delivery</span><span class="p">8 000.00</span><span class="m"><span class="s">service</span><span>—</span></span></button>
+      <button class="tile"><span class="n">Custom milling</span><span class="p">—</span><span class="m"><span class="s">service</span><span>—</span></span></button>
+      <button class="tile"><span class="n">Long grain rice 1kg</span><span class="p">1 950.00</span><span class="m"><span class="s">31 units</span><span>ARR-004</span></span></button>
     </div>
   </div>
 
   <div class="cart">
-    <div class="cart-head"><span class="t">Carrito</span><span class="n">3 ítems</span></div>
+    <div class="cart-head"><span class="t">Cart</span><span class="n">3 items</span></div>
     <div class="lines">
       <div class="line">
         <div><div class="n">Yerba mate 1kg</div><div class="u">2 800.00 ×</div></div>
-        <div class="qty"><button aria-label="Menos">−</button><span class="v">2</span><button aria-label="Más">+</button></div>
+        <div class="qty"><button aria-label="Less">−</button><span class="v">2</span><button aria-label="More">+</button></div>
         <div class="sub">5 600.00</div>
       </div>
       <div class="line">
-        <div><div class="n">Aceite de girasol 1.5L</div><div class="u">3 450.00 ×</div></div>
-        <div class="qty"><button aria-label="Menos">−</button><span class="v">1</span><button aria-label="Más">+</button></div>
+        <div><div class="n">Sunflower oil 1.5L</div><div class="u">3 450.00 ×</div></div>
+        <div class="qty"><button aria-label="Less">−</button><span class="v">1</span><button aria-label="More">+</button></div>
         <div class="sub">3 450.00</div>
       </div>
       <div class="line">
-        <div><div class="n">Flete local</div><div class="u">8 000.00 ×</div></div>
-        <div class="qty"><button aria-label="Menos">−</button><span class="v">1</span><button aria-label="Más">+</button></div>
+        <div><div class="n">Local delivery</div><div class="u">8 000.00 ×</div></div>
+        <div class="qty"><button aria-label="Less">−</button><span class="v">1</span><button aria-label="More">+</button></div>
         <div class="sub">8 000.00</div>
       </div>
     </div>
     <div class="totals">
       <div class="trow"><span>Subtotal</span><span>17 050.00</span></div>
-      <div class="trow"><span>IVA 21%</span><span>3 580.50</span></div>
+      <div class="trow"><span>VAT 21%</span><span>3 580.50</span></div>
       <div class="trow big"><span>Total</span><span>20 630.50</span></div>
       <div class="pay">
-        <button>Cancelar <kbd>Esc</kbd></button>
-        <button class="primary">Cobrar <kbd>F9</kbd></button>
+        <button>Cancel <kbd>Esc</kbd></button>
+        <button class="primary">Charge <kbd>F9</kbd></button>
       </div>
     </div>
   </div>
@@ -271,7 +271,7 @@
     function setExpanded(open) {
       rail.classList.toggle('expanded', open);
       toggle.setAttribute('aria-expanded', String(open));
-      toggle.setAttribute('aria-label', open ? 'Contraer menú' : 'Expandir menú');
+      toggle.setAttribute('aria-label', open ? 'Collapse menu' : 'Expand menu');
     }
 
     function setMenu(open) {

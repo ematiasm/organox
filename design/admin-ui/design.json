@@ -1,26 +1,26 @@
 {
-  "title": "Administrador de PyME — direcciones de UI",
-  "brief": "Elegir la dirección visual del admin (stock e insumos, single-tenant, PyME) antes de implementar con Terminal + shadcn-svelte. Debe funcionar en una PC del local y en otra de la misma red; eventualmente una pantalla de venta con lector de código de barras.",
+  "title": "Small business administration — UI directions",
+  "brief": "Choose the visual direction for the admin (stock and supplies, single-tenant, small business) before implementing with Terminal + shadcn-svelte. It must work on a PC at the shop and another on the same network; eventually a sale screen with a barcode scanner.",
   "feature": "odd/tasks/ui-admin.md",
   "artboards": [
     {
       "file": "01-denso-sidebar-oscuro.html",
-      "title": "Denso con sidebar oscuro",
-      "tradeoff": "Máxima densidad de datos y navegación siempre visible; el sidebar oscuro choca con el tema claro del sistema y hay que mantener dos paletas.",
+      "title": "Dense with dark sidebar",
+      "tradeoff": "Maximum data density and always-visible navigation; the dark sidebar clashes with the system's light theme and requires maintaining two palettes.",
       "width": 1440,
       "height": 900
     },
     {
       "file": "02-aireado-tarjetas.html",
-      "title": "Aireado con tarjetas y acciones al hover",
-      "tradeoff": "Más legible y agradable para trabajo administrativo; menos filas por pantalla y las acciones ocultas hasta el hover dificultan el uso táctil.",
+      "title": "Airy with cards and hover actions",
+      "tradeoff": "More readable and pleasant for administrative work; fewer rows per screen and actions hidden until hover make touch use difficult.",
       "width": 1440,
       "height": 900
     },
     {
       "file": "03-pos-rail-iconos.html",
-      "title": "Punto de venta: rail de iconos, grilla y carrito fijo",
-      "tradeoff": "Optimizado para vender rápido con teclado y lector; rail expandible que es el sidebar único de toda la app (iconos + nombre) y ahora sigue el tema claro/oscuro como el resto. La estructura de grilla + carrito fijo no sirve para las pantallas de administración.",
+      "title": "Point of sale: icon rail, grid and fixed cart",
+      "tradeoff": "Optimized for fast sales with keyboard and scanner; an expandable rail is the app's single sidebar (icons + names) and now follows the light/dark theme like the rest. The grid + fixed cart structure does not suit administration screens.",
       "width": 1600,
       "height": 900
     }

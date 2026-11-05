@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>01 — Panel denso con sidebar oscuro</title>
+<title>01 — Dense dashboard with dark sidebar</title>
 <style>
   :root {
     --bg: #fbfbfa; --surface: #ffffff; --border: #e4e4e2; --text: #1a1a18;
@@ -69,58 +69,58 @@
 <body>
 <div class="shell">
   <aside>
-    <div class="brand">Almacén<small>Administración</small></div>
+    <div class="brand">Warehouse<small>Administration</small></div>
     <nav>
-      <div class="group">Catálogo</div>
-      <a class="active" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18M3 12h18M3 17h18"/></svg>Productos</a>
-      <a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Movimientos</a>
-      <div class="group">Sistema</div>
-      <a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Usuarios</a>
+      <div class="group">Catalog</div>
+      <a class="active" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18M3 12h18M3 17h18"/></svg>Products</a>
+      <a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Movements</a>
+      <div class="group">System</div>
+      <a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Users</a>
     </nav>
     <div class="who">
       <div class="email">duenio@pyme.com</div>
       <div class="role">owner</div>
-      <button type="button">Salir</button>
+      <button type="button">Sign out</button>
     </div>
   </aside>
 
   <main>
     <div class="topbar">
-      <h1>Productos</h1>
+      <h1>Products</h1>
       <div class="actions">
-        <button>Exportar</button>
-        <button class="primary">Nuevo producto</button>
+        <button>Export</button>
+        <button class="primary">New product</button>
       </div>
     </div>
 
     <div class="stats">
-      <div class="stat"><div class="k">Ítems activos</div><div class="v">128</div></div>
-      <div class="stat"><div class="k">Bajo mínimo</div><div class="v warn">7</div></div>
-      <div class="stat"><div class="k">Sin stock</div><div class="v neg">3</div></div>
-      <div class="stat"><div class="k">Servicios</div><div class="v">12</div></div>
+      <div class="stat"><div class="k">Active items</div><div class="v">128</div></div>
+      <div class="stat"><div class="k">Below minimum</div><div class="v warn">7</div></div>
+      <div class="stat"><div class="k">Out of stock</div><div class="v neg">3</div></div>
+      <div class="stat"><div class="k">Services</div><div class="v">12</div></div>
     </div>
 
     <div class="toolbar">
-      <input type="search" placeholder="Buscar por nombre, SKU…" value="" aria-label="Buscar" />
-      <select aria-label="Tipo"><option>Todos los tipos</option><option>Productos</option><option>Servicios</option></select>
-      <select aria-label="Stock"><option>Todo el stock</option><option>Solo bajo mínimo</option><option>Sin stock</option></select>
+      <input type="search" placeholder="Search by name, SKU…" value="" aria-label="Search" />
+      <select aria-label="Type"><option>All types</option><option>Products</option><option>Services</option></select>
+      <select aria-label="Stock"><option>All stock</option><option>Only below minimum</option><option>Out of stock</option></select>
     </div>
 
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Nombre</th><th>SKU</th><th>Tipo</th><th class="num">Precio</th><th class="num">Stock</th><th class="num">Mín.</th></tr></thead>
+        <thead><tr><th>Name</th><th>SKU</th><th>Type</th><th class="num">Price</th><th class="num">Stock</th><th class="num">Min.</th></tr></thead>
         <tbody>
-          <tr><td>Yerba mate 1kg</td><td class="mono muted">YER-1</td><td><span class="tag">Producto</span></td><td class="num">2 800.00</td><td class="num">12.5</td><td class="num muted">5</td></tr>
-          <tr><td>Harina 000</td><td class="mono muted">HAR-001</td><td><span class="tag">Producto</span></td><td class="num">1 500.50</td><td class="num">3 <span class="badge-low">bajo</span></td><td class="num muted">10</td></tr>
-          <tr><td>Azúcar refinada</td><td class="mono muted">AZU-010</td><td><span class="tag">Producto</span></td><td class="num">1 200.00</td><td class="num">0 <span class="badge-low">bajo</span></td><td class="num muted">8</td></tr>
-          <tr><td>Aceite de girasol 1.5L</td><td class="mono muted">ACE-002</td><td><span class="tag">Producto</span></td><td class="num">3 450.00</td><td class="num">24</td><td class="num muted">6</td></tr>
-          <tr><td>Flete local</td><td class="mono muted">—</td><td><span class="tag svc">Servicio</span></td><td class="num">8 000.00</td><td class="num muted">—</td><td class="num muted">—</td></tr>
-          <tr><td>Molienda a pedido</td><td class="mono muted">—</td><td><span class="tag svc">Servicio</span></td><td class="num">—</td><td class="num muted">—</td><td class="num muted">—</td></tr>
-          <tr><td>Café molido 500g</td><td class="mono muted">CAF-003</td><td><span class="tag">Producto</span></td><td class="num">5 900.00</td><td class="num">18</td><td class="num muted">6</td></tr>
+          <tr><td>Yerba mate 1kg</td><td class="mono muted">YER-1</td><td><span class="tag">Product</span></td><td class="num">2 800.00</td><td class="num">12.5</td><td class="num muted">5</td></tr>
+          <tr><td>Flour 000</td><td class="mono muted">HAR-001</td><td><span class="tag">Product</span></td><td class="num">1 500.50</td><td class="num">3 <span class="badge-low">low</span></td><td class="num muted">10</td></tr>
+          <tr><td>Refined sugar</td><td class="mono muted">AZU-010</td><td><span class="tag">Product</span></td><td class="num">1 200.00</td><td class="num">0 <span class="badge-low">low</span></td><td class="num muted">8</td></tr>
+          <tr><td>Sunflower oil 1.5L</td><td class="mono muted">ACE-002</td><td><span class="tag">Product</span></td><td class="num">3 450.00</td><td class="num">24</td><td class="num muted">6</td></tr>
+          <tr><td>Local delivery</td><td class="mono muted">—</td><td><span class="tag svc">Service</span></td><td class="num">8 000.00</td><td class="num muted">—</td><td class="num muted">—</td></tr>
+          <tr><td>Custom milling</td><td class="mono muted">—</td><td><span class="tag svc">Service</span></td><td class="num">—</td><td class="num muted">—</td><td class="num muted">—</td></tr>
+          <tr><td>Ground coffee 500g</td><td class="mono muted">CAF-003</td><td><span class="tag">Product</span></td><td class="num">5 900.00</td><td class="num">18</td><td class="num muted">6</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="muted" style="font-size:.85rem;margin-top:.6rem">7 productos · página 1 de 18</p>
+    <p class="muted" style="font-size:.85rem;margin-top:.6rem">7 products · page 1 of 18</p>
   </main>
 </div>
 </body>

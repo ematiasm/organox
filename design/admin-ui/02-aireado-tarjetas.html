@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>02 — Claro y aireado, sidebar en superficie</title>
+<title>02 — Light and airy, sidebar on surface</title>
 <style>
   :root {
     --bg: #f6f7f5; --surface: #ffffff; --border: #e2e5e0; --text: #1a1a18;
@@ -69,102 +69,102 @@
 <body>
 <div class="shell">
   <aside>
-    <div class="brand">Almacén<small>Administración</small></div>
+    <div class="brand">Warehouse<small>Administration</small></div>
     <nav>
-      <div class="group">Catálogo</div>
-      <a class="active" href="#">Productos</a>
-      <a href="#">Movimientos</a>
-      <div class="group">Sistema</div>
-      <a href="#">Usuarios</a>
+      <div class="group">Catalog</div>
+      <a class="active" href="#">Products</a>
+      <a href="#">Movements</a>
+      <div class="group">System</div>
+      <a href="#">Users</a>
     </nav>
     <div class="who">
       <div class="email">duenio@pyme.com</div>
       <div class="role">owner</div>
-      <button type="button">Salir</button>
+      <button type="button">Sign out</button>
     </div>
   </aside>
 
   <main>
     <div class="topbar">
       <div>
-        <div class="eyebrow">Catálogo</div>
-        <h1>Productos</h1>
+        <div class="eyebrow">Catalog</div>
+        <h1>Products</h1>
       </div>
       <div class="actions">
-        <button>Exportar</button>
-        <button class="primary">Nuevo producto</button>
+        <button>Export</button>
+        <button class="primary">New product</button>
       </div>
     </div>
 
     <div class="searchrow">
-      <input type="search" placeholder="Buscar por nombre o SKU…" aria-label="Buscar" />
-      <select aria-label="Tipo"><option>Todos</option><option>Productos</option><option>Servicios</option></select>
+      <input type="search" placeholder="Search by name or SKU…" aria-label="Search" />
+      <select aria-label="Type"><option>All</option><option>Products</option><option>Services</option></select>
     </div>
 
     <div class="grid">
       <div class="card">
         <div class="card-head">
           <div>
-            <div class="card-title">Bajo mínimo</div>
-            <div class="card-sub">3 ítems requieren reposición</div>
+            <div class="card-title">Below minimum</div>
+            <div class="card-sub">3 items need restocking</div>
           </div>
-          <a href="#" style="font-size:.85rem;color:var(--accent)">Ver todos</a>
+          <a href="#" style="font-size:.85rem;color:var(--accent)">View all</a>
         </div>
         <div class="item">
-          <div><div class="name">Harina 000</div><div class="sku">HAR-001</div></div>
+          <div><div class="name">Flour 000</div><div class="sku">HAR-001</div></div>
           <div class="price">1 500.50</div>
           <div class="stock low">3 <span class="muted" style="font-weight:400">/ 10</span></div>
-          <div class="act"><button>Reponer</button></div>
+          <div class="act"><button>Restock</button></div>
         </div>
         <div class="item">
-          <div><div class="name">Azúcar refinada</div><div class="sku">AZU-010</div></div>
+          <div><div class="name">Refined sugar</div><div class="sku">AZU-010</div></div>
           <div class="price">1 200.00</div>
           <div class="stock none">0 <span class="muted" style="font-weight:400">/ 8</span></div>
-          <div class="act"><button>Reponer</button></div>
+          <div class="act"><button>Restock</button></div>
         </div>
         <div class="item">
-          <div><div class="name">Café molido 500g</div><div class="sku">CAF-003</div></div>
+          <div><div class="name">Ground coffee 500g</div><div class="sku">CAF-003</div></div>
           <div class="price">5 900.00</div>
           <div class="stock low">4 <span class="muted" style="font-weight:400">/ 6</span></div>
-          <div class="act"><button>Reponer</button></div>
+          <div class="act"><button>Restock</button></div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-head">
           <div>
-            <div class="card-title">Todo el catálogo</div>
-            <div class="card-sub">128 ítems activos</div>
+            <div class="card-title">Entire catalog</div>
+            <div class="card-sub">128 active items</div>
           </div>
         </div>
         <div class="item">
           <div><div class="name">Yerba mate 1kg</div><div class="sku">YER-1</div></div>
           <div class="price">2 800.00</div>
           <div class="stock">12.5</div>
-          <div class="act"><button>Editar</button></div>
+          <div class="act"><button>Edit</button></div>
         </div>
         <div class="item">
-          <div><div class="name">Aceite de girasol 1.5L</div><div class="sku">ACE-002</div></div>
+          <div><div class="name">Sunflower oil 1.5L</div><div class="sku">ACE-002</div></div>
           <div class="price">3 450.00</div>
           <div class="stock">24</div>
-          <div class="act"><button>Editar</button></div>
+          <div class="act"><button>Edit</button></div>
         </div>
         <div class="item">
-          <div><div class="name">Harina 000</div><div class="sku">HAR-001</div></div>
+          <div><div class="name">Flour 000</div><div class="sku">HAR-001</div></div>
           <div class="price">1 500.50</div>
           <div class="stock low">3</div>
-          <div class="act"><button>Editar</button></div>
+          <div class="act"><button>Edit</button></div>
         </div>
         <div class="item">
-          <div><div class="name">Flete local <span class="svc">Servicio</span></div><div class="sku">sin SKU</div></div>
+          <div><div class="name">Local delivery <span class="svc">Service</span></div><div class="sku">no SKU</div></div>
           <div class="price">8 000.00</div>
           <div class="stock muted">—</div>
-          <div class="act"><button>Editar</button></div>
+          <div class="act"><button>Edit</button></div>
         </div>
       </div>
     </div>
 
-    <div class="foot"><span>4 de 128</span><a href="#" style="color:var(--accent)">Cargar más</a></div>
+    <div class="foot"><span>4 of 128</span><a href="#" style="color:var(--accent)">Load more</a></div>
   </main>
 </div>
 </body>
