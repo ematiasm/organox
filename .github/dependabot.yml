@@ -1,0 +1,78 @@
+version: 2
+
+# Dependabot had no configuration file: everything depended on repository
+# settings, so security updates ran but nobody could read, review or version
+# what they would do, and no version updates ran at all.
+#
+# Three deliberate choices:
+#
+#   1. Nothing is ignored. An ignore entry silences a real advisory; the four
+#      open alerts are all `low` and reachable only through dev-time
+#      dependencies, so the groups below keep them visible instead of hiding
+#      them. Suppressing an advisory is a decision for a human reviewing the
+#      alert, not for a config file.
+#   2. Version and security updates share `open-pull-requests-limit`, so the
+#      caps here keep version bumps from starving a security fix out of the
+#      queue.
+#   3. Every ecosystem that actually has a manifest here is declared, and only
+#      those: npm (frontend), cargo (the Rust workspace), github-actions (the
+#      workflows) and docker-compose (compose.yaml). An entry for an ecosystem
+#      with no manifest would fail on every run.
+
+updates:
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # Keep lockfile churn reviewable: a regenerated lock is what broke the
+    # offline build once, so one PR per change audits better than a batch.
+    # Security updates are never grouped.
+    groups:
+      dev-minor-and-patch:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+      prod-patch:
+        dependency-type: production
+        update-types:
+          - patch
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+
+  # Any bump here can invalidate the committed `.sqlx/` cache, because SQLx
+  # keys each entry by the exact query text and decodes column types against
+  # the driver. Not grouped, and the pull request body is the reminder to run
+  # `make prepare` when `sqlx` itself moves.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+
+  # compose.yaml. The ecosystem's file matcher accepts `compose*.yaml`, so the
+  # name this project uses is picked up. Bumping a database major is a
+  # migration question, not a version bump: 17 -> 18 needed a full suite run
+  # against a throwaway container before it was accepted.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: build
