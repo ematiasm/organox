@@ -9,7 +9,7 @@
       "startedAt": "2026-11-04T20:21:04.995Z",
       "implementedAt": "2026-11-04T20:30:00.871Z",
       "feature": "odd/tasks/ui-admin.md",
-      "note": "Punto de venta implementado en /pos: rail de iconos, grilla con productos reales del API y carrito persistido en el servidor. Cobro transaccional que descuenta stock; 113 tests Rust verdes, svelte-check 0, clippy y fmt limpios.",
+      "note": "Point of sale implemented at /pos: icon rail, grid with real API products and server-persisted cart. Transactional checkout deducts stock; 113 Rust tests passing, svelte-check 0, clippy and fmt clean.",
       "previewUrl": "http://localhost:3000/pos"
     }
   }
