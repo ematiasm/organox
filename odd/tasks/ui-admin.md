@@ -1,86 +1,86 @@
-# UI del administrador — SvelteKit static servido por Axum
+# Admin UI - SvelteKit static served by Axum
 
-Frontend de administración para una PyME (stock e insumos), servido por el mismo
-binario Rust en un solo contenedor de aplicación.
+Administration frontend for a small business (stock and supplies), served by the
+same Rust binary in a single application container.
 
 ## Specs
 
-S1. El frontend usa **SvelteKit con `adapter-static`** (SPA: `fallback: 'index.html'`, `ssr = false`, `prerender = false`). Las versiones son **Vite 8 + Svelte 5 + TypeScript 7**.
+S1. The frontend uses **SvelteKit with `adapter-static`** (SPA: `fallback: 'index.html'`, `ssr = false`, `prerender = false`). Versions are **Vite 8 + Svelte 5 + TypeScript 7**.
 
-S2. El deploy es **un contenedor con Postgres y otro con backend y frontend servidos juntos**. El `Dockerfile` **no corre tests**; los tests se corren en local.
+S2. Deployment uses **one container for Postgres and another serving backend and frontend together**. The `Dockerfile` **does not run tests**; tests run locally.
 
-S3. Axum sirve `frontend/build/` con **fallback a `index.html`** para toda ruta que no sea `/api/v1/*`, `/healthz` ni `/readyz`.
+S3. Axum serves `frontend/build/` with **fallback to `index.html`** for every route except `/api/v1/*`, `/healthz` and `/readyz`.
 
-S4. En desarrollo, `vite dev` usa **proxy** `'/api' → http://localhost:3000`. El navegador ve un solo origen, así la cookie `HttpOnly; SameSite=Strict` funciona sin cambios en el backend.
+S4. In development, `vite dev` uses the **proxy** `'/api' -> http://localhost:3000`. The browser sees one origin, so the `HttpOnly; SameSite=Strict` cookie works without backend changes.
 
-S5. Todos los `fetch` del frontend usan **rutas relativas** (`/api/v1/...`). Nunca una URL absoluta con host.
+S5. All frontend `fetch` calls use **relative paths** (`/api/v1/...`). Never an absolute URL with a host.
 
-S6. La **primera pantalla es el login**. Sin sesión válida, cualquier ruta redirige a `/login`.
+S6. The **first screen is login**. Without a valid session, every route redirects to `/login`.
 
-S7. Tras el login hay **una sola navegación lateral**, la misma en todas las pantallas: rail expandible que muestra icono + nombre, con grupos por categoría (**Operación**: Venta; **Catálogo**: Productos, Movimientos; **Sistema**: Usuarios). El botón de expandir/contraer recuerda su estado. **Salir** no vive suelto en el rail: está en el menú que abre el botón de usuario, junto al interruptor de tema. Abrir el punto de venta es un ítem del rail (`/operations/pos`), no un enlace dentro de la página, y la pantalla de venta no trae navegación propia.
+S7. After login there is **one sidebar navigation**, the same on every screen: an expandable rail showing icon + name, with groups by category (**Operations**: Sale; **Catalog**: Products, Movements; **System**: Users). The expand/collapse button remembers its state. **Sign out** is not a standalone rail item: it is in the menu opened by the user button, alongside the theme toggle. Opening the point of sale is a rail item (`/operations/pos`), not a link inside the page, and the sale screen has no navigation of its own.
 
-S8. **No hay pantalla de `/settings`** por ahora. Se agrega cuando haga falta.
+S8. There is **no `/settings` screen** yet. Add it when needed.
 
-S9. El listado de productos muestra nombre, SKU, tipo, precio y **stock**, con búsqueda y paginación.
+S9. The product list shows name, SKU, type, price and **stock**, with search and pagination.
 
-S10. Los **decimales llegan como string** desde la API (`"1500.50"`, `"12.5"`) y así se guardan en los tipos de TypeScript. Nunca se convierten a `number` para mostrarlos.
+S10. **Decimals arrive as strings** from the API (`"1500.50"`, `"12.5"`) and are stored that way in TypeScript types. Never convert them to `number` for display.
 
-S11. La UI **oculta** ítems según el rol, pero la autorización real la hace el backend. Ocultar un link no es autorizar.
+S11. The UI **hides** items according to role, but the backend handles actual authorization. Hiding a link is not authorization.
 
-S12. Un `401` en cualquier request lleva a `/login`. Un `429` muestra el tiempo de espera del header `Retry-After`.
+S12. A `401` on any request leads to `/login`. A `429` displays the wait time from the `Retry-After` header.
 
-S13. El cliente de API es **generado desde OpenAPI** (`utoipa` → `openapi.json` → tipos TS), no escrito a mano.
+S13. The API client is **generated from OpenAPI** (`utoipa` -> `openapi.json` -> TS types), not handwritten.
 
 ## Tasks
 
-| ID | Tarea | Specs | Route | Commit |
+| ID | Task | Specs | Route | Commit |
 |---|---|---|---|---|
-| T1 | OpenAPI con `utoipa` y generación de tipos TS | S13 | inline | — |
-| T2 | Scaffold SvelteKit + adapter-static + proxy de dev | S1, S4 | inline | — |
-| T3 | Axum sirve `build/` con fallback (orden API primero) | S2, S3 | inline | — |
-| T4 | Cliente de API: rutas relativas, 401→login, `Retry-After` | S5, S12, S13 | inline | — |
-| T5 | Pantalla de login | S6, S12 | inline | — |
-| T6 | Layout con sidebar + guard de sesión | S7, S11 | inline | — |
-| T7 | Listado de productos con búsqueda y stock | S9, S10 | inline | — |
+| T1 | OpenAPI with `utoipa` and TS type generation | S13 | inline | - |
+| T2 | Scaffold SvelteKit + adapter-static + dev proxy | S1, S4 | inline | - |
+| T3 | Axum serves `build/` with fallback (API first) | S2, S3 | inline | - |
+| T4 | API client: relative paths, 401->login, `Retry-After` | S5, S12, S13 | inline | - |
+| T5 | Login screen | S6, S12 | inline | - |
+| T6 | Layout with sidebar + session guard | S7, S11 | inline | - |
+| T7 | Product list with search and stock | S9, S10 | inline | - |
 
 ## Log
 
-L1. Pedido original del usuario:
+L1. Original user request:
 
 > "1 la idea es usarla en el local para todo el trabajo administrativo, pero tambien (si llegamos) poder vender desde otra PC en la misma red, o como mucho por tailscale en caso de querer acceder por fuera de la red local. Respondiendote la primera mi duda es si seguis sugeriendo htmx por el hecho de poder cubrir todo lo que necesite con htmx. [...] y pr la pregunta 3 si, pantalla de login primero, pero con un sidebar con productos y users y settings. Mas adelante vamos a ir agregando cosas"
 
-L2. Corrección del usuario:
+L2. User correction:
 
 > "explicame antes que significa adapter-static. Te respondo solamente la 2: vamos sin /settings por ahora, lo agregamos cuando haga falta"
 
-L3. Decisión del usuario:
+L3. User decision:
 
 > "me inclino por Svelte, pero conviene usar SvelteKit no? La idea del deploy va a ser lanzar un contenedor con postgres y otro con todo el backend y frontend juntos. Dejar test en local"
 
-L4. Decisión del usuario:
+L4. User decision:
 
 > "Si, vamos con lo último: Vite 8 + Svelte 5 + TS 7"
 
-L5. Alcance de esta rebanada: login + sidebar + listado de productos. Alta/edición de productos, usuarios y ventas quedan para rebanadas siguientes.
+L5. Scope of this slice: login + sidebar + product list. Creating/editing products, users and sales are left for later slices.
 
-L6. Rebanada entregada: login, sidebar (Productos, Usuarios), listado de productos con búsqueda y stock. Alta/edición de productos y listado de usuarios quedan pendientes de backend.
+L6. Slice delivered: login, sidebar (Products, Users), product list with search and stock. Creating/editing products and the user list are pending backend work.
 
-L7. Hallazgo durante la implementación: SvelteKit 3 eliminó `svelte.config.js` (configuración va en el plugin de Vite) y eliminó `$lib` como módulo integrado. Se usa `paths` en tsconfig.json + `resolve.alias` en vite.config.ts. El `imports` de package.json con `#lib/*` no lo resuelve TypeScript 6 con `moduleResolution: bundler` para destinos sin extensión.
+L7. Implementation finding: SvelteKit 3 removed `svelte.config.js` (configuration goes in the Vite plugin) and removed `$lib` as a built-in module. Use `paths` in tsconfig.json + `resolve.alias` in vite.config.ts. TypeScript 6 with `moduleResolution: bundler` does not resolve package.json `imports` with `#lib/*` for extensionless targets.
 
-L8. Hallazgo: `fallback_service` sobre todo el router hacía que `/api/v1/no-existe` devolviera `index.html` con 200. El test `unknown_api_route_returns_404` lo detectó. Ahora el fallback distingue `/api/*` (404 problem+json) del resto (SPA).
+L8. Finding: `fallback_service` on the entire router caused `/api/v1/no-existe` to return `index.html` with 200. The `unknown_api_route_returns_404` test caught it. The fallback now distinguishes `/api/*` (404 problem+json) from the rest (SPA).
 
-L9. Dirección visual a definir en `design/admin-ui/`: tres artboards (denso con sidebar oscuro, aireado con tarjetas, y punto de venta con rail de iconos). El sistema de diseño se capturó en `design/system.md` desde `frontend/src/app.css`. Se adopta Tailwind v4 + shadcn-svelte (preset a elegir) y toggle manual de tema; las tres pantallas actuales se migran.
+L9. Visual direction to define in `design/admin-ui/`: three artboards (dense with dark sidebar, airy with cards, and point of sale with icon rail). The design system was captured in `design/system.md` from `frontend/src/app.css`. Adopt Tailwind v4 + shadcn-svelte (preset to be chosen) and a manual theme toggle; migrate the three current screens.
 
-L10. Handoff implementado: artboard `03-pos-rail-iconos.html` (elegido). Se implementó el punto de venta en `/pos` con rail de iconos, grilla de productos reales del API y carrito persistido. Para sostenerlo se agregó el dominio de ventas completo (migración 0005, modelo, repositorio, servicio, handlers, 16 tests de integración) porque el carrito en el navegador habría contradicho la decisión de que el total y el stock se validan en el servidor. Tokens tomados de `design/system.md`; el estilo se mantiene en CSS nativo con variables, no se copió el HTML del artboard. Los artboards 01 y 02 quedan como alternativas para las pantallas de administración.
+L10. Handoff implemented: artboard `03-pos-rail-iconos.html` (chosen). The point of sale was implemented at `/pos` with an icon rail, grid of real API products and persisted cart. The complete sales domain was added to support it (migration 0005, model, repository, service, handlers, 16 integration tests) because a browser-side cart would have contradicted the decision that total and stock are validated on the server. Tokens taken from `design/system.md`; styling remains native CSS with variables, the artboard HTML was not copied. Artboards 01 and 02 remain alternatives for administration screens.
 
-L11. Pendiente derivado del handoff: los artboards 01/02 no se implementaron, y la migración a Tailwind v4 + shadcn-svelte sigue pendiente (el CLI pidió un preset: nova, vega, maia, lyra, mira, luma, sera, rhea).
+L11. Pending from the handoff: artboards 01/02 were not implemented, and migration to Tailwind v4 + shadcn-svelte remains pending (the CLI requested a preset: nova, vega, maia, lyra, mira, luma, sera, rhea).
 
-L12. Corregido el doble sidebar en `/pos`: el punto de venta estaba dentro del grupo `(app)` y heredaba el layout con sidebar de administración, así que se veían dos navegaciones laterales. Se movió a un grupo propio `(pos)` con su `+layout.ts` (guard de sesión, sin `+layout.svelte`, así no agrega cáscara visual). El enlace "Ir a venta →" quedó en el encabezado del listado de productos.
+L12. Fixed the double sidebar at `/pos`: the point of sale was inside the `(app)` group and inherited the administration sidebar layout, so two sidebar navigations appeared. It was moved to its own `(pos)` group with its `+layout.ts` (session guard, no `+layout.svelte`, so it adds no visual shell). The "Go to sale ->" link remained in the product list header.
 
-L13. Stack de estilos migrado: Tailwind v4 (`@tailwindcss/vite` en `vite.config.ts`) + shadcn-svelte preset **vega** con base color **olive**. El tema se escribió a mano en `src/app.css` porque el `init` interactivo del CLI no permite completar la última pregunta (`Continue?`) de forma no interactiva; los valores de `cssVars` se tomaron del registry oficial (`shadcn-svelte.com/init?preset=bK1Hro8`). Se agregó Inter autohospedada (`@fontsource-variable/inter`). Migradas login y listado de productos; el POS conserva CSS propio pendiente de migrar. El primer build tras la migración rompió el layout (los @theme no estaban disponibles) y se detectó con captura de Playwright, no por HTTP.
+L13. Styling stack migrated: Tailwind v4 (`@tailwindcss/vite` in `vite.config.ts`) + shadcn-svelte **vega** preset with **olive** base color. The theme was written by hand in `src/app.css` because the interactive CLI `init` does not allow the final question (`Continue?`) to be completed non-interactively; `cssVars` values came from the official registry (`shadcn-svelte.com/init?preset=bK1Hro8`). Self-hosted Inter (`@fontsource-variable/inter`) was added. Login and product list migrated; POS retains its own CSS pending migration. The first build after migration broke the layout (@theme was unavailable), detected with a Playwright screenshot rather than HTTP.
 
-L14. Modo oscuro implementado: `<ModeWatcher defaultMode="system" />` en el layout raíz, botón de alternancia claro/oscuro (`$lib/components/theme-toggle.svelte`) en el sidebar de admin y en el rail del POS. Verificado con Playwright en tres escenarios (`colorScheme: light`, `colorScheme: dark`, y toggle manual sobre sistema claro): `html.class` pasa a `dark` y `body` cambia a `oklch(0.153 0.006 107.1)`.
+L14. Dark mode implemented: `<ModeWatcher defaultMode="system" />` in the root layout, light/dark toggle (`$lib/components/theme-toggle.svelte`) in the admin sidebar and POS rail. Verified with Playwright in three scenarios (`colorScheme: light`, `colorScheme: dark`, and manual toggle over a light system): `html.class` changes to `dark` and `body` changes to `oklch(0.153 0.006 107.1)`.
 
-L15. Bug encontrado y corregido: el POS seguía usando las variables del CSS artesanal (`--bg`, `--surface`, `--accent`, `--text`, `--muted`…) que se borraron al migrar a Tailwind. En tema claro quedaba texto casi invisible sobre fondo casi blanco. Se mapearon a los tokens de shadcn (`--color-card`, `--color-foreground`, `--color-primary`, etc.). Además se agregó un token propio `--warn` porque el preset vega no trae color de advertencia y sus `--chart-*` son escala de grises.
+L15. Bug found and fixed: POS still used the handcrafted CSS variables (`--bg`, `--surface`, `--accent`, `--text`, `--muted`...) deleted during the Tailwind migration. In light mode text was nearly invisible on a nearly white background. They were mapped to shadcn tokens (`--color-card`, `--color-foreground`, `--color-primary`, etc.). A custom `--warn` token was also added because the vega preset has no warning color and its `--chart-*` values are grayscale.
 
-L16. Pedido del usuario en el canvas del diseño: "hoy en dia existen dos sidebars, este y una que muestra productos y users nomas. Quiero que uses este como main y elimines el otro. Ademas agregale un boton para expandir donde muestre icono mas nombre (como en el ejemplo 1). Quita el boton de logout del sidebar y agregalo al hacer click en el boton del usuario" y "copia el separador por categorias de este diseño". El doble sidebar que quedaba no era el del POS: era una navegación por pantalla (`(app)` con Productos/Usuarios, `(pos)` con su rail). Se adoptó el rail del artboard 03 como navegación única de toda la app, con grupos Copiados del artboard 01 (Operación / Catálogo / Sistema), botón de expandir (64 px iconos ↔ 236 px icono+nombre, preferencia en `localStorage`) y menú de usuario con el tema y "Salir". La venta se movió a `/operations/pos` (con `/pos` como redirección 307) para que el ítem Venta comparta rail con Productos/Movimientos/Usuarios sin navegar fuera de la cáscara; se agregó `/operations/movements` para que el ítem Movimientos del artboard tenga destino real. Verificado con `frontend/e2e/nav-shell.cjs` (19 checks: una sola navegación lateral en las cuatro pantallas, navegación canónica, acción de venta en el rail, expandir/persistir, menú de usuario y logout real) más `svelte-check` y `npm run build`.
+L16. User request on the design canvas: "hoy en dia existen dos sidebars, este y una que muestra productos y users nomas. Quiero que uses este como main y elimines el otro. Ademas agregale un boton para expandir donde muestre icono mas nombre (como en el ejemplo 1). Quita el boton de logout del sidebar y agregalo al hacer click en el boton del usuario" and "copia el separador por categorias de este diseño". The remaining double sidebar was not the POS one: it was navigation per screen (`(app)` with Products/Users, `(pos)` with its rail). The artboard 03 rail was adopted as the entire app's single navigation, with groups copied from artboard 01 (Operations / Catalog / System), an expand button (64 px icons <-> 236 px icon+name, preference in `localStorage`) and a user menu with theme and "Sign out". Sale moved to `/operations/pos` (with `/pos` as a 307 redirect) so the Sale item shares the rail with Products/Movements/Users without leaving the shell; `/operations/movements` was added so the artboard's Movements item has a real destination. Verified with `frontend/e2e/nav-shell.cjs` (19 checks: one sidebar navigation on all four screens, canonical navigation, sale action in the rail, expand/persist, user menu and real logout) plus `svelte-check` and `npm run build`.
