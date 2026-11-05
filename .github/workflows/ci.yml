@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Every `sqlx::query!` is verified against the committed `.sqlx/` cache, so
+  # no job needs a database to compile. This is also why `clippy` fails when a
+  # query changed without regenerating the cache.
+  SQLX_OFFLINE: "true"
+
+jobs:
+  lint:
+    name: Format and lints
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # `rust-toolchain.toml` pins the channel and the components; invoking
+      # rustup inside the checkout resolves both, so there is nothing to hardcode.
+      - name: Install the pinned toolchain
+        run: rustup component add clippy rustfmt
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-lint-
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: organox
+          POSTGRES_PASSWORD: organox
+          POSTGRES_DB: organox
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U organox -d organox"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Test-only credentials for a throwaway container, never a real secret.
+      # `#[sqlx::test]` creates and drops one database per test, so this user
+      # must be able to create databases — the postgres image makes
+      # POSTGRES_USER a superuser, which is exactly what that needs.
+      DATABASE_URL: postgres://organox:organox@localhost:5432/organox
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: rustup component add clippy rustfmt
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-test-
+
+      # No migrate step and no sqlx-cli: `#[sqlx::test]` applies ./migrations
+      # to each ephemeral database it creates, and SQLX_OFFLINE means the
+      # compile does not read the schema from the live server.
+      - name: cargo test
+        run: cargo test
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+  generated:
+    name: Generated files are current
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: rustup component add clippy rustfmt
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-gen-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-gen-
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Regenerates openapi.json from the Rust doc comments, then the TypeScript
+      # types from that spec.
+      - name: Regenerate
+        run: make fe-schema
+
+      - name: Fail when a generated file is stale
+        run: |
+          if [ -n "$(git status --porcelain -- openapi.json frontend/src/lib/api/schema.d.ts)" ]; then
+            echo "::error::openapi.json or schema.d.ts is stale. Run 'make fe-schema' and commit the result."
+            git --no-pager diff --stat -- openapi.json frontend/src/lib/api/schema.d.ts
+            exit 1
+          fi
+          echo "Generated files are up to date."
