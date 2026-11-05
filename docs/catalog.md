@@ -1,8 +1,8 @@
-# Catálogo y stock
+# Catalog and stock
 
-## La decisión central: el stock no se guarda, se calcula
+## The central decision: stock is not stored, it is calculated
 
-`products` **no tiene** columna de stock. El stock es la suma firmada de
+`products` **has no** stock column. Stock is the signed sum of
 `stock_movements`.
 
 ```sql
@@ -15,164 +15,165 @@ END)
 FROM stock_movements WHERE product_id = $1;
 ```
 
-Guardar `products.stock_actual` como número editable garantiza que en algún
-momento la DB y el depósito real no coincidan, y que nadie pueda explicar por
-qué. Con un libro append-only, el stock se reconstruye y se audita siempre, y
-cada unidad tiene un motivo y un autor.
+Storing `products.stock_actual` as an editable number guarantees that the DB and
+the physical warehouse will eventually disagree, and nobody will be able to
+explain why. With an append-only ledger, stock can always be reconstructed and
+audited, and each unit has a reason and an author.
 
-El costo asumido: "stock actual" cuesta un `GROUP BY` en vez de un `SELECT`. Con
-el índice `stock_movements (product_id, created_at DESC)` y decenas de miles de
-filas, es despreciable.
+The accepted cost: "current stock" takes a `GROUP BY` instead of a `SELECT`.
+With the `stock_movements (product_id, created_at DESC)` index and tens of
+thousands of rows, it is negligible.
 
-## El libro es inmutable, y lo impone la DB
+## The ledger is immutable, enforced by the DB
 
-`stock_movements` rechaza `UPDATE` y `DELETE` con un trigger:
+`stock_movements` rejects `UPDATE` and `DELETE` with a trigger:
 
 ```
-ERROR: stock_movements es append-only: registrá un ajuste en vez de modificar el historial
+ERROR:  stock_movements is append-only: record an adjustment instead of rewriting history
 ```
 
-Un error de carga se corrige con un movimiento de `adjustment`, que es
-exactamente lo que hace un depósito real: deja rastro de la corrección.
+An entry error is corrected with an `adjustment` movement, exactly as in a real
+warehouse: it leaves a trace of the correction.
 
-Corolario no obvio: `created_by` **no tiene foreign key**. El libro es inmutable,
-así que un `ON DELETE SET NULL` tendría que tocar filas históricas cuando se
-borra un usuario, y el trigger lo rechazaría. Además, la autoría de un
-movimiento no debe cambiar porque después se borre la cuenta. Es una referencia
-blanda, y por eso es correcta.
+A non-obvious corollary: `created_by` **has no foreign key**. The ledger is
+immutable, so `ON DELETE SET NULL` would have to touch historical rows when a
+user is deleted, and the trigger would reject it. Moreover, a movement's
+attribution should not change because the account is later deleted. It is a
+soft reference, and that is why it is correct.
 
-## Signo: la cantidad siempre es positiva
+## Sign: quantity is always positive
 
-`quantity` tiene `CHECK (quantity > 0)`. El signo lo decide el motivo, en un solo
-lugar (`MovementReason::sign`):
+`quantity` has `CHECK (quantity > 0)`. The reason determines the sign, in one
+place (`MovementReason::sign`):
 
-| Motivo | Efecto | Para qué |
+| Reason | Effect | Purpose |
 |---|---|---|
-| `purchase` | `+` | Compra a proveedor |
-| `adjustment` | `+` | Corrección de inventario |
-| `sale` | `−` | Venta a cliente |
-| `loss` | `−` | Rotura, vencimiento, robo |
+| `purchase` | `+` | Purchase from a supplier |
+| `adjustment` | `+` | Inventory correction |
+| `sale` | `−` | Sale to a customer |
+| `loss` | `−` | Breakage, expiry, theft |
 
-Guardar cantidades negativas permite "una venta de -5" que suma stock: un error
-de signo esperando a ocurrir. Con la cantidad positiva y el signo derivado, ese
-bug es representable solo si alguien cambia el motivo.
+Storing negative quantities allows "a sale of -5" that adds stock: a sign error
+waiting to happen. With positive quantity and a derived sign, that bug is only
+representable if someone changes the reason.
 
-## No se puede vender lo que no hay
+## You cannot sell what is not available
 
-Antes de insertar una salida, el servicio lee el stock en la misma transacción y
-rechaza si no alcanza. El mensaje de error lleva el disponible y el solicitado.
+Before inserting an outgoing movement, the service reads stock in the same
+transaction and rejects it if there is not enough. The error message includes
+the available and requested quantities.
 
 ```json
 {"title":"Conflict","status":409,
- "detail":"stock insuficiente: disponible 2.000, solicitado 3.000"}
+ "detail":"insufficient stock: available 2.000, requested 3.000"}
 ```
 
-Para evitar dos ventas simultáneas de la última unidad, la fila del producto se
-bloquea con `SELECT ... FOR UPDATE` antes de leer el stock.
+To prevent two simultaneous sales of the last unit, the product row is locked
+with `SELECT ... FOR UPDATE` before reading stock.
 
-**Limitación conocida y documentada:** el test `record_movement_waits_for_product_lock`
-prueba que la operación se serializa por producto, pero **no aísla** el
-`FOR UPDATE` del servicio. El `INSERT` en `stock_movements` hace que la foreign
-key adquiera `FOR KEY SHARE` sobre la fila de `products`, y ese lock también
-choca con el `FOR UPDATE` del bloqueador del test. Se comprobó quitando el
-`FOR UPDATE`: el test seguía pasando. La corrección del lock propio no está
-cubierta por un test automático; lo que sí está cubierto es la regla de negocio
-(`sale_cannot_make_stock_negative`) y el `CHECK` de la DB.
+**Known and documented limitation:** the `record_movement_waits_for_product_lock`
+test proves that the operation is serialized per product, but it **does not
+isolate** the service's `FOR UPDATE`. The `INSERT` into `stock_movements` causes
+the foreign key to acquire `FOR KEY SHARE` on the `products` row, and that lock
+also conflicts with the test blocker's `FOR UPDATE`. This was verified by
+removing `FOR UPDATE`: the test still passed. The correctness of the service's
+own lock is not covered by an automated test; the business rule
+(`sale_cannot_make_stock_negative`) and the DB `CHECK` are covered.
 
-## Productos vs servicios
+## Products vs services
 
-Un solo catálogo, dos tipos:
+One catalog, two types:
 
 | | `product` | `service` |
 |---|---|---|
-| Stock | calculado | `null` (**no** `0`) |
-| `min_stock` | permitido | prohibido (`CHECK` en DB) |
-| Movimientos | permitidos | rechazados por el servicio |
+| Stock | calculated | `null` (**not** `0`) |
+| `min_stock` | allowed | forbidden (DB `CHECK`) |
+| Movements | allowed | rejected by the service |
 
-`stock: null` vs `stock: "0"` no es un detalle de estilo: "no aplica" y "cero
-unidades" son cosas distintas, y el cliente necesita distinguirlas para no
-mostrar "sin stock" en un flete.
+`stock: null` vs `stock: "0"` is not a stylistic detail: "not applicable" and
+"zero units" are different, and the client needs to distinguish them to avoid
+showing "out of stock" for a delivery service.
 
-Un servicio tampoco puede recibir movimientos: lo verifica el servicio y lo
-respalda el hecho de que `kind` se lee dentro de la transacción.
+A service cannot receive movements either: the service layer checks this, backed
+by the fact that `kind` is read inside the transaction.
 
-## Desactivar, nunca borrar
+## Deactivate, never delete
 
-Un producto con movimientos no se borra (`ON DELETE RESTRICT`). Se desactiva:
-`is_active = false`, desaparece de los listados por defecto, y su historial
-queda intacto. Un producto sin historial sí podría borrarse, pero la operación
-expuesta es solo `deactivate` — menos superficie, y un borrado accidental de
-catálogo no se puede deshacer por definición.
+A product with movements is not deleted (`ON DELETE RESTRICT`). It is
+deactivated: `is_active = false`, it disappears from default listings, and its
+history remains intact. A product without history could be deleted, but the
+only exposed operation is `deactivate`—less surface area, and an accidental
+catalog deletion cannot be undone by definition.
 
-## Dinero y cantidades en JSON: strings, no números
+## Money and quantities in JSON: strings, not numbers
 
-Todo decimal viaja como **string**:
+Every decimal travels as a **string**:
 
 ```json
 {"price": "1500.50", "stock": "12.5", "quantity": "12.5"}
 ```
 
-Un `f64` en JSON pierde precisión en dinero y en cantidades fraccionarias. El
-cliente parsea a decimal (`decimal.js`, `Decimal` en Go, `BigDecimal` en Java).
+An `f64` in JSON loses precision for money and fractional quantities. The client
+parses to decimal (`decimal.js`, `Decimal` in Go, `BigDecimal` in Java).
 
-Formato por tipo:
-- **dinero** (`price`, `unit_cost`): siempre 2 decimales → `"1500.50"`
-- **cantidades** (`stock`, `quantity`, `min_stock`): sin ceros sobrantes → `"12.5"`
+Format by type:
+- **money** (`price`, `unit_cost`): always 2 decimal places → `"1500.50"`
+- **quantities** (`stock`, `quantity`, `min_stock`): no trailing zeros → `"12.5"`
 
-La columna es `numeric(12,3)`, así que el `SUM` devuelve `"12.500"` sin
-normalizar; aplicarlo en el borde evita filtrar un detalle de almacenamiento al
-contrato HTTP.
+The column is `numeric(12,3)`, so `SUM` returns `"12.500"` without normalization;
+applying it at the boundary avoids leaking a storage detail into the HTTP
+contract.
 
 ## API
 
-Todas las rutas requieren sesión (401 sin cookie). Escribir catálogo es trabajo
-operativo: `owner` y `encargado` pueden.
+All routes require a session (401 without a cookie). Writing the catalog is
+operational work: `owner` and `manager` can do it.
 
-| Método | Ruta | Descripción |
+| Method | Route | Description |
 |---|---|---|
-| GET | `/api/v1/products` | Lista con stock calculado. Filtros: `kind`, `search`, `include_inactive`, `limit`, `offset` |
-| POST | `/api/v1/products` | Alta |
-| GET | `/api/v1/products/{id}` | Detalle con stock |
-| PATCH | `/api/v1/products/{id}` | Actualiza solo los campos enviados |
-| POST | `/api/v1/products/{id}/deactivate` | Baja lógica, idempotente |
-| GET | `/api/v1/products/{id}/movements` | Historial, más nuevo primero |
-| POST | `/api/v1/products/{id}/movements` | Registra movimiento |
+| GET | `/api/v1/products` | List with calculated stock. Filters: `kind`, `search`, `include_inactive`, `limit`, `offset` |
+| POST | `/api/v1/products` | Create |
+| GET | `/api/v1/products/{id}` | Details with stock |
+| PATCH | `/api/v1/products/{id}` | Updates only the fields supplied |
+| POST | `/api/v1/products/{id}/deactivate` | Soft-deactivate, idempotent |
+| GET | `/api/v1/products/{id}/movements` | History, newest first |
+| POST | `/api/v1/products/{id}/movements` | Records a movement |
 
-`limit` se acota a 200: un `limit` de 10 millones es un DoS por consulta.
+`limit` is capped at 200: a `limit` of 10 million is a DoS by query.
 
-Ejemplo de alta y carga de stock:
+Example of creation and stock entry:
 
 ```bash
 curl -b jar.txt -X POST localhost:3000/api/v1/products \
   -H 'content-type: application/json' \
-  -d '{"kind":"product","name":"Harina 000","sku":"HAR-001","price":"1500.50","min_stock":"10"}'
+  -d '{"kind":"product","name":"Flour 000","sku":"HAR-001","price":"1500.50","min_stock":"10"}'
 
 curl -b jar.txt -X POST localhost:3000/api/v1/products/<id>/movements \
   -H 'content-type: application/json' \
   -d '{"reason":"purchase","quantity":"50","unit_cost":"1200"}'
 ```
 
-## Reglas de validación
+## Validation rules
 
-| Campo | Regla | Dónde |
+| Field | Rule | Where |
 |---|---|---|
-| `name` | no vacío, ≤ 200 chars, se recorta | servicio |
-| `sku` | ≤ 64 chars, único cuando existe, `""` → `NULL` | servicio + índice parcial |
-| `price` | ≥ 0, ≤ 2 decimales | servicio |
-| `quantity` | > 0, ≤ 3 decimales | servicio + `CHECK` |
-| `note` | truncada a 500 chars (no se rechaza) | servicio |
+| `name` | nonempty, ≤ 200 chars, trimmed | service |
+| `sku` | ≤ 64 chars, unique when present, `""` → `NULL` | service + partial index |
+| `price` | ≥ 0, ≤ 2 decimal places | service |
+| `quantity` | > 0, ≤ 3 decimal places | service + `CHECK` |
+| `note` | truncated to 500 chars (not rejected) | service |
 
-El SKU vacío se normaliza a `NULL` para que `""` y `NULL` no sean dos formas de
-decir "sin SKU": el índice único es parcial (`WHERE sku IS NOT NULL`), y ambos
-valores se comportarían distinto.
+An empty SKU is normalized to `NULL` so `""` and `NULL` are not two ways to say
+"no SKU": the unique index is partial (`WHERE sku IS NOT NULL`), and the two
+values would behave differently.
 
-## Lo que falta
+## What is missing
 
-- **Edición del motivo de un movimiento**: no existe, por diseño. Se corrige con
-  un ajuste.
-- **Reporte de valorización de inventario**: hay `unit_cost` por movimiento, así
-  que el dato está; falta la consulta y la decisión de qué costo usar (último,
-  promedio ponderado, FIFO).
-- **Alertas de stock bajo**: `low_stock` se calcula y se expone, pero no hay
-  notificación.
-- **Importación masiva** de catálogo.
+- **Editing a movement's reason**: unavailable by design. Correct it with an
+  adjustment.
+- **Inventory valuation report**: `unit_cost` exists per movement, so the data is
+  there; the query and the decision on which cost to use (last, weighted average,
+  FIFO) are missing.
+- **Low stock alerts**: `low_stock` is calculated and exposed, but there is no
+  notification.
+- **Bulk catalog import**.

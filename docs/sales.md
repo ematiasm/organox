@@ -1,94 +1,96 @@
-# Ventas
+# Sales
 
-## La decisión central: el carrito vive en el servidor
+## The central decision: the cart lives on the server
 
-El carrito **no** vive en el navegador. Es una fila en `sales` con estado
-`draft`, y sus ítems están en `sale_items`.
+The cart does **not** live in the browser. It is a row in `sales` with status
+`draft`, and its items are in `sale_items`.
 
-Por qué:
+Why:
 
-1. **Sobrevive un F5.** Recargar la pantalla de venta no vacía el carrito.
-   `POST /sales/draft` devuelve el borrador abierto en vez de crear uno nuevo.
-2. **Sobrevive un corte de red.** El cajero cobra cuando vuelve la conexión.
-3. **El total lo calcula el servidor.** Un total que el navegador cree puede no
-   ser el que se cobra; el que vale es el que devuelve la API.
-4. **El stock se puede validar en cada acción**, no recién al confirmar.
+1. **It survives a reload.** Refreshing the sale screen does not empty the cart.
+   `POST /sales/draft` returns the open draft instead of creating a new one.
+2. **It survives a network drop.** The cashier charges when the connection comes
+   back.
+3. **The total is computed by the server.** A total the browser believes can
+   differ from the one charged; the one that counts is the one the API returns.
+4. **Stock can be validated on every action**, not only at confirmation.
 
-Cada mutación devuelve la **venta completa recalculada**. El cliente no suma, no
-valida y no decide: solo dibuja.
+Every mutation returns the **full recalculated sale**. The client does not sum,
+does not validate and does not decide: it only renders.
 
-## Un borrador no toca el libro de stock
+## A draft never touches the stock ledger
 
-La venta solo escribe `stock_movements` **al cobrar**. Un borrador abandonado o
-cancelado no deja rastro en el libro.
+A sale writes `stock_movements` **only at checkout**. An abandoned or cancelled
+draft leaves no trace in the ledger.
 
-Esto es lo que hace que la tabla `sales` no necesite columna de stock, y por qué
-`cancelled` solo aplica a borradores: no hay nada que revertir.
+That is why the `sales` table needs no stock column, and why `cancelled` only
+applies to drafts: there is nothing to revert.
 
-## El precio se congela al agregar el ítem
+## The price is frozen when the item is added
 
-`sale_items.unit_price` copia el precio del producto en el momento de agregarlo.
+`sale_items.unit_price` copies the product's price at the moment it is added.
 
-Si el producto sube de precio mientras el cajero cobra, el total del carrito **no
-se mueve**. En una venta completada, ese número es el precio cobrado, y así queda
-auditado.
+If the product goes up in price while the cashier is charging, the cart total
+**does not move**. On a completed sale that number is the price charged, and that
+is how it stays audited.
 
-## Cobrar: una transacción, con el producto bloqueado
+## Checkout: one transaction, with the product locked
 
 ```
 BEGIN
-  SELECT status FROM sales WHERE id = ? FOR UPDATE   -- la venta
-  por cada ítem:
-    SELECT id FROM products WHERE id = ? FOR UPDATE  -- el producto
-    SUM(movimientos) → stock disponible
-    si no alcanza → ROLLBACK, 409
+  SELECT status FROM sales WHERE id = ? FOR UPDATE   -- the sale
+  for each item:
+    SELECT id FROM products WHERE id = ? FOR UPDATE  -- the product
+    SUM(movements) → available stock
+    if not enough → ROLLBACK, 409
     INSERT stock_movements (reason='sale')
   UPDATE sales SET status='completed', total=?, completed_at=now()
 COMMIT
 ```
 
-Misma disciplina que `record_movement`. Con dos cajas vendiendo la última unidad,
-una gana y la otra recibe `409` con el disponible exacto. Cubierto por
+Same discipline as `record_movement`. With two registers selling the last unit,
+one wins and the other gets `409` with the exact available quantity. Covered by
 `two_drafts_competing_for_the_last_units`.
 
-Si falta stock **no se escribe nada**: ni movimientos, ni estado, ni carrito
-modificado. Cubierto por `insufficient_stock_leaves_no_state_change`.
+If stock is missing **nothing is written**: no movements, no status, no modified
+cart. Covered by `insufficient_stock_leaves_no_state_change`.
 
-## Un servicio no se vende como ítem
+## A service is not sold as an item
 
-`service_cannot_be_sold_as_item`. Un servicio no tiene stock, así que no puede
-generar un movimiento de salida. Si en el futuro un servicio debe facturarse, el
-modelo cambia: sería un ítem que no descuenta stock, y eso necesita su propio
-razonamiento sobre el libro.
+`service_cannot_be_sold_as_item`. A service has no stock, so it cannot produce an
+outbound movement. If a service ever has to be invoiced, the model changes: it
+becomes an item that does not deduct stock, and that needs its own reasoning
+about the ledger.
 
 ## API
 
-| Método | Ruta | Qué hace |
+| Method | Route | What it does |
 |---|---|---|
-| POST | `/api/v1/sales/draft` | Abre borrador o devuelve el abierto (`reused: true`) |
-| GET | `/api/v1/sales/{id}` | Venta con ítems y total |
-| POST | `/api/v1/sales/{id}/items` | Agrega; si ya estaba, suma la cantidad |
-| PUT | `/api/v1/sales/{id}/items/{product_id}` | Fija cantidad; `0` lo quita |
-| DELETE | `/api/v1/sales/{id}/items/{product_id}` | Quita el ítem |
-| POST | `/api/v1/sales/{id}/complete` | Cobra |
-| POST | `/api/v1/sales/{id}/cancel` | Cancela el borrador |
-| GET | `/api/v1/sales` | Últimas ventas cobradas |
+| POST | `/api/v1/sales/draft` | Opens a draft or returns the open one (`reused: true`) |
+| GET | `/api/v1/sales/{id}` | Sale with items and total |
+| POST | `/api/v1/sales/{id}/items` | Adds; if it was already there, adds the quantity |
+| PUT | `/api/v1/sales/{id}/items/{product_id}` | Sets the quantity; `0` removes it |
+| DELETE | `/api/v1/sales/{id}/items/{product_id}` | Removes the item |
+| POST | `/api/v1/sales/{id}/complete` | Charges |
+| POST | `/api/v1/sales/{id}/cancel` | Cancels the draft |
+| GET | `/api/v1/sales` | Most recent charged sales |
 
-## Por qué una venta cobrada no se puede corregir
+## Why a charged sale cannot be corrected
 
-`completed` no se edita ni se cancela. Corregir una venta cobrada es una **nota
-de crédito**: una venta nueva en sentido inverso, con su propio movimiento de
-stock. Permitir un `UPDATE` sobre una venta cerrada haría que el libro de stock y
-la contabilidad dejen de coincidir sin rastro.
+`completed` is neither edited nor cancelled. Correcting a charged sale is a
+**credit note**: a new sale in the opposite direction, with its own stock
+movement. Allowing an `UPDATE` on a closed sale would make the stock ledger and
+the accounting stop matching, with no trace.
 
-La nota de crédito no está implementada. Es lo próximo si hace falta devolver.
+The credit note is not implemented. It is the next step if returns become
+necessary.
 
-## Lo que falta
+## What is missing
 
-- **Nota de crédito / devolución**: no existe.
-- **Medios de pago**: hoy la venta no registra cómo se pagó (efectivo, tarjeta,
-  cuenta corriente). Es la falta más grande para operar de verdad.
-- **Turno de caja / arqueo**: no hay apertura ni cierre de caja.
-- **IVA**: la venta guarda el total; el impuesto no está desagregado.
-- **Cliente asociado** a la venta.
-- **Borradores huérfanos**: no hay limpieza de borradores viejos.
+- **Credit note / return**: does not exist.
+- **Payment methods**: today a sale does not record how it was paid (cash, card,
+  store credit). It is the biggest gap for operating for real.
+- **Cash shift / register close**: there is no shift opening or closing.
+- **VAT**: the sale stores the total; the tax is not broken out.
+- **Customer attached** to the sale.
+- **Orphan drafts**: there is no cleanup of old drafts.
