@@ -14,11 +14,11 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Inicia sesión.
-         * @description Devuelve la cookie `session` (HttpOnly, SameSite=Strict) y el usuario.
+         * Log in.
+         * @description Returns the `session` cookie (HttpOnly, SameSite=Strict) and the user.
          *
-         *     `429` significa cuenta bloqueada por intentos fallidos; incluye
-         *     `Retry-After` con los segundos que faltan.
+         *     `429` means the account is locked after failed attempts; includes
+         *     `Retry-After` with the remaining seconds.
          */
         post: operations["login_doc"];
         delete?: never;
@@ -36,7 +36,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cierra la sesión en el servidor, no solo en el cliente. */
+        /** End the session on the server, not just the client. */
         post: operations["logout_doc"];
         delete?: never;
         options?: never;
@@ -51,7 +51,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Usuario autenticado en la request actual. */
+        /** Authenticated user in the current request. */
         get: operations["me_doc"];
         put?: never;
         post?: never;
@@ -68,12 +68,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Lista el catálogo con el stock calculado. */
+        /** List the catalog with calculated stock. */
         get: operations["list_products_doc"];
         put?: never;
         /**
-         * Crea un producto o un servicio.
-         * @description Un servicio no lleva stock: `min_stock` se rechaza con 422.
+         * Create a product or service.
+         * @description A service does not track stock: `min_stock` is rejected with 422.
          */
         post: operations["create_product_doc"];
         delete?: never;
@@ -90,8 +90,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Detalle de un producto, con su stock actual calculado.
-         * @description `stock` es `null` para servicios: no aplica, no es cero.
+         * Product details, including calculated current stock.
+         * @description `stock` is `null` for services: not applicable, not zero.
          */
         get: operations["get_product_doc"];
         put?: never;
@@ -99,7 +99,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Actualiza solo los campos enviados. */
+        /** Update only the fields sent. */
         patch: operations["update_product_doc"];
         trace?: never;
     };
@@ -113,8 +113,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Baja lógica. Idempotente. Nunca borra: un producto con movimientos conserva
-         *     su historial.
+         * Soft deletion. Idempotent. Never deletes: a product with movements retains
+         *     its history.
          */
         post: operations["deactivate_product_doc"];
         delete?: never;
@@ -130,13 +130,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Historial de movimientos, más nuevo primero. */
+        /** Movement history, newest first. */
         get: operations["list_movements_doc"];
         put?: never;
         /**
-         * Registra un movimiento de stock.
-         * @description `quantity` es siempre positiva; el signo lo determina `reason`. Una salida
-         *     que dejaría el stock negativo se rechaza con 409.
+         * Record a stock movement.
+         * @description `quantity` is always positive; `reason` determines the sign. An outflow
+         *     that would leave stock negative is rejected with 409.
          */
         post: operations["record_movement_doc"];
         delete?: never;
@@ -152,7 +152,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Últimas ventas cobradas. */
+        /** Latest completed sales. */
         get: operations["list_sales_doc"];
         put?: never;
         post?: never;
@@ -172,9 +172,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Abre un borrador de venta, o devuelve el que ya estaba abierto.
-         * @description Un usuario tiene **un** borrador a la vez: recargar la pantalla de venta no
-         *     crea carritos nuevos.
+         * Open a sale draft, or return the one already open.
+         * @description A user has **one** draft at a time: reloading the sale screen does not
+         *     create new carts.
          */
         post: operations["open_draft_doc"];
         delete?: never;
@@ -190,7 +190,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Venta con sus ítems y el total calculado por el servidor. */
+        /** Sale with its items and server-calculated total. */
         get: operations["get_sale_doc"];
         put?: never;
         post?: never;
@@ -209,7 +209,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cancela un borrador. No toca el libro de stock, porque nunca lo tocó. */
+        /** Cancel a draft. Does not touch the stock ledger, because it never did. */
         post: operations["cancel_sale_doc"];
         delete?: never;
         options?: never;
@@ -227,10 +227,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Cobra la venta.
-         * @description En una sola transacción: valida stock con la fila del producto bloqueada,
-         *     escribe un movimiento de salida por ítem y cierra la venta. Si falta stock,
-         *     rechaza con 409 y **no** deja movimientos ni cambia el estado.
+         * Complete the sale.
+         * @description In one transaction: validate stock with the product row locked, write an
+         *     outflow movement per item and close the sale. If stock is insufficient,
+         *     reject with 409 and leave **no** movements or status change.
          */
         post: operations["complete_sale_doc"];
         delete?: never;
@@ -249,8 +249,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Agrega un producto al borrador. Si ya estaba, suma la cantidad.
-         * @description Devuelve la venta recalculada: el cliente no suma nada.
+         * Add a product to the draft. If already present, add the quantity.
+         * @description Returns the recalculated sale: the client does not add anything.
          */
         post: operations["add_item_doc"];
         delete?: never;
@@ -267,10 +267,10 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Fija la cantidad de un ítem. Cantidad 0 lo quita. */
+        /** Set an item's quantity. Quantity 0 removes it. */
         put: operations["set_quantity_doc"];
         post?: never;
-        /** Quita un ítem del borrador. */
+        /** Remove an item from the draft. */
         delete: operations["remove_item_doc"];
         options?: never;
         head?: never;
@@ -286,7 +286,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Crea un usuario. Solo `owner`. */
+        /** Create a user. Only `owner`. */
         post: operations["create_user_doc"];
         delete?: never;
         options?: never;
@@ -319,10 +319,9 @@ export interface components {
             min_stock?: string | null;
             name: string;
             /**
-             * @description Se documenta como `string` aunque el servidor también acepte números:
-             *     `rust_decimal` deserializa ambos, pero el contrato que el frontend debe
-             *     usar —y el único que preserva precisión— es el string. Ver
-             *     `docs/api-contract.md`.
+             * @description Documented as `string` although the server also accepts numbers:
+             *     `rust_decimal` deserializes both, but the frontend contract—and the only
+             *     one preserving precision—is the string. See `docs/api-contract.md`.
              * @example 1500.50
              */
             price?: string | null;
@@ -340,7 +339,7 @@ export interface components {
         DraftResponse: {
             /** Format: uuid */
             id: string;
-            /** @description `true` si se reutilizó el borrador que ya estaba abierto. */
+            /** @description `true` if the existing open draft was reused. */
             reused: boolean;
         };
         IdResponse: {
@@ -357,7 +356,7 @@ export interface components {
             user: components["schemas"]["UserResponse"];
         };
         /**
-         * @description Por qué se movió el stock.
+         * @description Why stock was moved.
          * @enum {string}
          */
         MovementReason: "purchase" | "sale" | "adjustment" | "loss";
@@ -372,38 +371,38 @@ export interface components {
             quantity: string;
             reason: components["schemas"]["MovementReason"];
             /**
-             * @description La cantidad con signo: es lo que el cliente necesita para mostrar el
-             *     efecto en el stock sin replicar la regla de signos.
+             * @description Signed quantity: what the client needs to show the stock effect without
+             *     replicating the sign rule.
              */
             signed_quantity: string;
             unit_cost?: string | null;
         };
-        /** @description Cuerpo de error RFC 7807. Mismo shape para todos los códigos. */
+        /** @description RFC 7807 error body. Same shape for every status code. */
         Problem: {
             /**
-             * @description Explicación accionable para el usuario.
-             * @example Credenciales inválidas o sesión vencida.
+             * @description Actionable explanation for the user.
+             * @example Invalid credentials or expired session.
              */
             detail: string;
             /**
              * Format: int32
-             * @description Código HTTP, repetido en el cuerpo para clientes que no leen headers.
+             * @description HTTP status, repeated in the body for clients that do not read headers.
              * @example 401
              */
             status: number;
             /**
-             * @description Resumen legible y estable del problema.
+             * @description Human-readable, stable summary of the problem.
              * @example Unauthorized
              */
             title: string;
             /**
-             * @description URI que identifica el tipo de problema. Siempre `about:blank` hoy.
+             * @description URI identifying the problem type. Currently always `about:blank`.
              * @example about:blank
              */
             type: string;
         };
         /**
-         * @description Un ítem del catálogo puede llevar stock o no.
+         * @description A catalog item may or may not track stock.
          * @enum {string}
          */
         ProductKind: "product" | "service";
@@ -422,17 +421,17 @@ export interface components {
             id: string;
             is_active: boolean;
             kind: components["schemas"]["ProductKind"];
-            /** @description `null` cuando no aplica (servicio) o no hay umbral configurado. */
+            /** @description `null` when not applicable (service) or no threshold is configured. */
             low_stock?: boolean | null;
             min_stock?: string | null;
             name: string;
             /**
-             * @description String, no número: un `float` en JSON pierde precisión en dinero y en
-             *     cantidades fraccionarias. El cliente lo parsea como decimal.
+             * @description String, not number: a JSON `float` loses precision for money and
+             *     fractional quantities. The client parses it as a decimal.
              */
             price?: string | null;
             sku?: string | null;
-            /** @description `null` para servicios: no es cero, es "no aplica". */
+            /** @description `null` for services: not zero, but "not applicable". */
             stock?: string | null;
             /** Format: date-time */
             updated_at: string;
@@ -446,14 +445,14 @@ export interface components {
             unit_cost?: string | null;
         };
         /** @enum {string} */
-        Role: "owner" | "encargado";
+        Role: "owner" | "manager";
         SaleItemResponse: {
             /** Format: uuid */
             product_id: string;
             product_name: string;
             /**
-             * @description Cantidad como string: `numeric(12,3)` no cabe en un float sin perder
-             *     precisión en cantidades fraccionarias.
+             * @description Quantity as a string: `numeric(12,3)` does not fit in a float without
+             *     losing precision for fractional quantities.
              */
             quantity: string;
             subtotal: string;
@@ -469,7 +468,7 @@ export interface components {
             item_count: number;
             items: components["schemas"]["SaleItemResponse"][];
             status: components["schemas"]["SaleStatus"];
-            /** @description Calculado en el servidor. El cliente lo muestra, no lo decide. */
+            /** @description Calculated on the server. The client displays it, not decides it. */
             total: string;
         };
         /** @enum {string} */
@@ -516,7 +515,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Sesión iniciada */
+            /** @description Session started */
             200: {
                 headers: {
                     /** @description session=<token>; HttpOnly; SameSite=Strict */
@@ -527,7 +526,7 @@ export interface operations {
                     "application/json": components["schemas"]["LoginResponse"];
                 };
             };
-            /** @description Credenciales inválidas */
+            /** @description Invalid credentials */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -536,10 +535,10 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Cuenta bloqueada por intentos fallidos */
+            /** @description Account locked after failed attempts */
             429: {
                 headers: {
-                    /** @description Segundos hasta poder reintentar */
+                    /** @description Seconds until retry */
                     "Retry-After"?: string;
                     [name: string]: unknown;
                 };
@@ -558,14 +557,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Sesión borrada */
+            /** @description Session deleted */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -585,7 +584,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Usuario actual */
+            /** @description Current user */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -594,7 +593,7 @@ export interface operations {
                     "application/json": components["schemas"]["UserResponse"];
                 };
             };
-            /** @description Sin sesión o sesión vencida */
+            /** @description No session or expired session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -620,7 +619,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Página de productos */
+            /** @description Product page */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -629,7 +628,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProductListResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -653,7 +652,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Producto creado */
+            /** @description Product created */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -662,7 +661,7 @@ export interface operations {
                     "application/json": components["schemas"]["IdResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -671,7 +670,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description El SKU ya está en uso */
+            /** @description SKU is already in use */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -680,7 +679,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Entrada inválida */
+            /** @description Invalid input */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -696,14 +695,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id del producto */
+                /** @description Product ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Producto */
+            /** @description Product */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -712,7 +711,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProductResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -721,7 +720,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No existe */
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -737,7 +736,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id del producto */
+                /** @description Product ID */
                 id: string;
             };
             cookie?: never;
@@ -748,14 +747,14 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Actualizado */
+            /** @description Updated */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -764,7 +763,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No existe */
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -773,7 +772,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Entrada inválida */
+            /** @description Invalid input */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -789,21 +788,21 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id del producto */
+                /** @description Product ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Desactivado */
+            /** @description Deactivated */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -812,7 +811,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No existe */
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -828,7 +827,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id del producto */
+                /** @description Product ID */
                 id: string;
                 limit: number | null;
             };
@@ -836,7 +835,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Movimientos */
+            /** @description Movements */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -845,7 +844,7 @@ export interface operations {
                     "application/json": components["schemas"]["MovementResponse"][];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -861,7 +860,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id del producto */
+                /** @description Product ID */
                 id: string;
             };
             cookie?: never;
@@ -872,7 +871,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Movimiento registrado */
+            /** @description Movement recorded */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -881,7 +880,7 @@ export interface operations {
                     "application/json": components["schemas"]["IdResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -890,7 +889,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description El producto no existe */
+            /** @description Product not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -899,7 +898,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Stock insuficiente */
+            /** @description Insufficient stock */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -908,7 +907,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Entrada inválida o servicio sin stock */
+            /** @description Invalid input or service without stock */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -928,7 +927,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Ventas completadas */
+            /** @description Completed sales */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -937,7 +936,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaleResponse"][];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -957,7 +956,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Se reutilizó el borrador abierto */
+            /** @description Open draft reused */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -966,7 +965,7 @@ export interface operations {
                     "application/json": components["schemas"]["DraftResponse"];
                 };
             };
-            /** @description Borrador nuevo */
+            /** @description New draft */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -975,7 +974,7 @@ export interface operations {
                     "application/json": components["schemas"]["DraftResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -991,14 +990,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id de la venta */
+                /** @description Sale ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Venta */
+            /** @description Sale */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1007,7 +1006,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaleResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -1016,7 +1015,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No existe */
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1032,21 +1031,21 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id de la venta */
+                /** @description Sale ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Borrador cancelado */
+            /** @description Draft cancelled */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -1055,7 +1054,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No existe */
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1064,7 +1063,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description La venta ya no es editable */
+            /** @description Sale is no longer editable */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1080,14 +1079,14 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id de la venta */
+                /** @description Sale ID */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Venta cobrada */
+            /** @description Sale completed */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1096,7 +1095,7 @@ export interface operations {
                     "application/json": components["schemas"]["CompletedSaleResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -1105,7 +1104,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No existe */
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1114,7 +1113,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Stock insuficiente o venta ya cerrada */
+            /** @description Insufficient stock or sale already closed */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1123,7 +1122,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description La venta está vacía */
+            /** @description Sale is empty */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -1139,7 +1138,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id de la venta */
+                /** @description Sale ID */
                 id: string;
             };
             cookie?: never;
@@ -1150,7 +1149,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Venta actualizada */
+            /** @description Sale updated */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1159,7 +1158,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaleResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -1168,7 +1167,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Venta o producto inexistente */
+            /** @description Sale or product not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1177,7 +1176,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description La venta ya está cerrada */
+            /** @description Sale is already closed */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1186,7 +1185,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Cantidad inválida o el ítem es un servicio */
+            /** @description Invalid quantity or item is a service */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -1202,9 +1201,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id de la venta */
+                /** @description Sale ID */
                 id: string;
-                /** @description Id del producto */
+                /** @description Product ID */
                 product_id: string;
             };
             cookie?: never;
@@ -1215,7 +1214,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Venta actualizada */
+            /** @description Sale updated */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1224,7 +1223,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaleResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -1233,7 +1232,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Venta o producto inexistente */
+            /** @description Sale or product not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1242,7 +1241,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description La venta ya está cerrada */
+            /** @description Sale is already closed */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1258,16 +1257,16 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Id de la venta */
+                /** @description Sale ID */
                 id: string;
-                /** @description Id del producto */
+                /** @description Product ID */
                 product_id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Venta actualizada */
+            /** @description Sale updated */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1276,7 +1275,7 @@ export interface operations {
                     "application/json": components["schemas"]["SaleResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -1285,7 +1284,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Venta o producto inexistente */
+            /** @description Sale or product not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1309,7 +1308,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Usuario creado */
+            /** @description User created */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -1318,7 +1317,7 @@ export interface operations {
                     "application/json": components["schemas"]["CreateUserResponse"];
                 };
             };
-            /** @description Sin sesión */
+            /** @description No session */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -1327,7 +1326,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description El rol no permite gestionar usuarios */
+            /** @description Role does not permit managing users */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -1336,7 +1335,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description El email ya está registrado */
+            /** @description Email is already registered */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1345,7 +1344,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Entrada inválida (email o contraseña) */
+            /** @description Invalid input (email or password) */
             422: {
                 headers: {
                     [name: string]: unknown;

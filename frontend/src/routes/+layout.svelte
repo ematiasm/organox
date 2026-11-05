@@ -7,10 +7,9 @@
 </script>
 
 <!--
-  `ModeWatcher` aplica la clase `.dark` al `<html>` leyendo la preferencia de
-  `localStorage` (clave `mode-watcher-mode`) y, en modo `system`, sigue a
-  `prefers-color-scheme`. Sin este componente la clase nunca se aplica y las
-  variables del bloque `.dark` de app.css quedan inalcanzables.
+  `ModeWatcher` applies `.dark` to `<html>` from `localStorage` (key
+  `mode-watcher-mode`), following `prefers-color-scheme` in `system` mode.
+  Without it, the `.dark` variables in app.css are unreachable.
 -->
 <ModeWatcher defaultMode="system" />
 

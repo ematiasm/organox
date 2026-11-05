@@ -7,17 +7,13 @@
 	import { cn } from '$lib/utils';
 
 	/**
-	 * Un solo botón que alterna claro ↔ oscuro.
-	 *
-	 * Arranca en `system` (sigue a `prefers-color-scheme`), y el primer clic fija
-	 * una preferencia explícita. No se ofrece un ciclo de tres estados porque en
-	 * un admin de tres personas el modo "sistema" es el default razonable y dos
-	 * estados alcanzan: el usuario que toca el botón quiere lo contrario de lo
-	 * que ve.
+	 * Toggle light and dark. It starts in `system` mode and the first click sets
+	 * an explicit preference. Two states suffice: clicking requests the opposite
+	 * of the current appearance.
 	 */
 	const isDark = $derived(mode.current === 'dark');
 
-	// El lugar donde se monta decide el ancho; acá solo se fija el contenido.
+	// The mounting location controls width; only content is set here.
 	let { class: className = '' } = $props();
 </script>
 
@@ -25,15 +21,15 @@
 	variant="ghost"
 	size="sm"
 	onclick={toggleMode}
-	title={isDark ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro'}
-	aria-label={isDark ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro'}
+	title={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+	aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
 	class={cn('justify-start gap-2 font-normal', className)}
 >
 	{#if isDark}
 		<SunIcon class="size-4" />
-		Claro
+		Light
 	{:else}
 		<MoonIcon class="size-4" />
-		Oscuro
+		Dark
 	{/if}
 </Button>

@@ -2,15 +2,15 @@
 	let { data } = $props();
 </script>
 
-<h1>Usuarios</h1>
+<h1>Users</h1>
 
 {#if !data.canManage}
 	<p class="error" role="alert">
-		Solo el rol <strong>owner</strong> puede gestionar usuarios.
+		Only the <strong>owner</strong> role can manage users.
 	</p>
 {:else}
 	<div class="table-wrap empty">
-		El listado de usuarios todavía no está disponible: el backend solo expone el alta
+		The user list is not available yet: the backend only exposes user creation
 		(<code>POST /api/v1/users</code>).
 	</div>
 {/if}

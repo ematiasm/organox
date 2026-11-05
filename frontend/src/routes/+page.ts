@@ -1,6 +1,6 @@
 import { redirect } from '@sveltejs/kit';
 
-// La raíz no tiene contenido propio: el login decide el destino.
+// The root has no content of its own; login determines the destination.
 export function load() {
 	redirect(307, '/products');
 }

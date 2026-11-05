@@ -28,22 +28,22 @@
 				return;
 			}
 
-			// 429: cuenta bloqueada. El header dice cuánto falta.
+			// 429: account locked. The header indicates the remaining wait.
 			if (response.status === 429) {
 				const seconds = Number(response.headers.get('retry-after'));
 				retryAfter = Number.isFinite(seconds) && seconds > 0 ? seconds : null;
 				error =
 					retryAfter !== null
-						? `Demasiados intentos. Probá de nuevo en ${retryAfter} segundos.`
-						: 'Demasiados intentos. Esperá unos minutos.';
+						? `Too many attempts. Try again in ${retryAfter} ${retryAfter === 1 ? 'second' : 'seconds'}.`
+						: 'Too many attempts. Wait a few minutes.';
 				return;
 			}
 
-			// El backend responde RFC 7807; se muestra su `detail` si está.
+			// The backend returns RFC 7807; show its `detail` if present.
 			const problem = await response.json().catch(() => null);
-			error = problem?.detail ?? 'No se pudo iniciar sesión.';
+			error = problem?.detail ?? 'Could not sign in.';
 		} catch {
-			error = 'No se pudo conectar con el servidor.';
+			error = 'Could not connect to the server.';
 		} finally {
 			loading = false;
 		}
@@ -52,8 +52,8 @@
 
 <main class="flex min-h-screen items-center justify-center p-4">
 	<div class="w-full max-w-sm rounded-lg border border-border bg-card p-8">
-		<h1 class="text-lg font-semibold tracking-tight">Administración</h1>
-		<p class="mb-6 text-sm text-muted-foreground">Ingresá con tu cuenta.</p>
+		<h1 class="text-lg font-semibold tracking-tight">Administration</h1>
+		<p class="mb-6 text-sm text-muted-foreground">Sign in with your account.</p>
 
 		{#if error}
 			<p
@@ -71,7 +71,7 @@
 			</div>
 
 			<div class="flex flex-col gap-1.5">
-				<Label for="password">Contraseña</Label>
+				<Label for="password">Password</Label>
 				<Input
 					id="password"
 					type="password"
@@ -82,7 +82,7 @@
 			</div>
 
 			<Button type="submit" disabled={loading} class="mt-2">
-				{loading ? 'Ingresando…' : 'Ingresar'}
+				{loading ? 'Signing in…' : 'Sign in'}
 			</Button>
 		</form>
 	</div>

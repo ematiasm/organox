@@ -1,11 +1,9 @@
 import { api, type Product, type Sale } from '$lib/api/client';
 
 /**
- * Carga de la pantalla de venta.
- *
- * El borrador se abre en el servidor: si el cajero recarga, `openDraft`
- * devuelve el mismo carrito en vez de crear uno vacío. Por eso el carrito
- * sobrevive un F5 y un corte de red.
+ * Load the sale screen. The draft is opened on the server: on reload,
+ * `openDraft` returns the same cart instead of creating an empty one, so the
+ * cart survives a refresh or network interruption.
  */
 export async function load() {
 	const [list, draft] = await Promise.all([api.listProducts({}), api.openDraft()]);

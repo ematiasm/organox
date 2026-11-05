@@ -1,6 +1,6 @@
 import { api, type Product } from '$lib/api/client';
 
-// `ssr = false` viene heredado del +layout.ts del área privada.
+// `ssr = false` is inherited from the private layout's +layout.ts.
 export async function load({ url }: { url: URL }) {
 	const search = url.searchParams.get('search') ?? '';
 

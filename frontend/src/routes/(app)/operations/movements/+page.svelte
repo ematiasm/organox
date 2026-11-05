@@ -14,18 +14,15 @@
 
 	let { data } = $props();
 
-	/** La API manda el motivo como enum en inglés; la pantalla habla español. */
+	/** Map API reason values to display labels. */
 	const REASONS: Record<MovementReason, string> = {
-		purchase: 'Compra',
-		sale: 'Venta',
-		adjustment: 'Ajuste',
-		loss: 'Pérdida'
+		purchase: 'Purchase',
+		sale: 'Sale',
+		adjustment: 'Adjustment',
+		loss: 'Loss'
 	};
 
-	/**
-	 * El signo lo calcula el servidor (`signed_quantity`): replicar acá la regla
-	 * de signos por motivo es justo lo que ese campo evita.
-	 */
+	/** The server calculates `signed_quantity`, avoiding duplicated sign rules. */
 	function isOut(movement: MovementRow): boolean {
 		return movement.signed_quantity.trim().startsWith('-');
 	}
@@ -34,35 +31,34 @@
 		const date = new Date(iso);
 		return Number.isNaN(date.getTime())
 			? iso
-			: date.toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
+			: date.toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' });
 	}
 
 	const shown = $derived(data.movements.length);
 </script>
 
 <div class="mb-4">
-	<h1 class="text-xl font-semibold tracking-tight">Movimientos</h1>
+	<h1 class="text-xl font-semibold tracking-tight">Movements</h1>
 	<p class="mt-1 text-sm text-muted-foreground">
-		Los {data.productCount} productos con actividad más reciente, de {data.totalProducts} en el
-		catálogo.
+		The {data.productCount} {data.productCount === 1 ? 'product' : 'products'} with the most recent activity, out of {data.totalProducts} in the catalog.
 	</p>
 </div>
 
 {#if shown === 0}
 	<div class="rounded-lg border border-border p-10 text-center text-sm text-muted-foreground">
-		Todavía no hay movimientos registrados. Se generan al cargar stock y al cobrar una venta.
+		No movements recorded yet. They are created when adding stock and charging a sale.
 	</div>
 {:else}
 	<div class="overflow-hidden rounded-lg border border-border">
 		<Table>
 			<TableHeader>
 				<TableRow>
-					<TableHead>Fecha</TableHead>
-					<TableHead>Producto</TableHead>
+					<TableHead>Date</TableHead>
+					<TableHead>Product</TableHead>
 					<TableHead>SKU</TableHead>
-					<TableHead>Motivo</TableHead>
-					<TableHead class="text-right">Cantidad</TableHead>
-					<TableHead>Nota</TableHead>
+					<TableHead>Reason</TableHead>
+					<TableHead class="text-right">Quantity</TableHead>
+					<TableHead>Note</TableHead>
 				</TableRow>
 			</TableHeader>
 			<TableBody>
@@ -86,7 +82,7 @@
 		</Table>
 	</div>
 	<p class="mt-3 text-sm text-muted-foreground">
-		Mostrando {shown}
-		{shown === 1 ? 'movimiento' : 'movimientos'} · página 1
+		Showing {shown}
+		{shown === 1 ? 'movement' : 'movements'} · page 1
 	</p>
 {/if}
