@@ -1,7 +1,7 @@
 # Development Postgres. A single service: enough until there is a domain.
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     container_name: organox_db
     restart: unless-stopped
     environment:
