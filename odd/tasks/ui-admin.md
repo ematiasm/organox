@@ -52,7 +52,7 @@ S18. The first `owner` is created by a **`bootstrap` service under the `init` pr
 | T6 | Layout with sidebar + session guard | S7, S11 | inline | - |
 | T7 | Product list with search and stock | S9, S10 | inline | - |
 | T8 | Deploy artifacts: `Dockerfile`, `.dockerignore`, `compose.prod.yaml`, `src/bin/migrate.rs`, `.env.prod.example`, `tests/deploy.rs`, README "Deploy" | S2, S14-S17 | inline | 6779565 |
-| T9 | `bootstrap` service under the `init` profile, interactive password | S18 | inline | - |
+| T9 | `bootstrap` service under the `init` profile, interactive password | S18 | inline | b9f104e |
 
 ## Log
 
@@ -152,5 +152,7 @@ L30. Independent verification of T9: `gentle-ai-verify` was launched but **stall
 - **V3 (interactive path)**: `src/bin/create-user.rs:110-117` refuses when stdin is not a terminal and otherwise prompts twice through `rpassword` without echo.
 - **V4 (the test is not vacuous)**: verified by mutation. Renaming the service to `bootstrapX` fails with "compose.prod.yaml must define a bootstrap service"; deleting the `profiles:` line fails with "bootstrap must sit under a profile". Both mutations were reverted and the full file re-tested (5/5 green). The block extraction is not order-dependent in the way that matters: it slices from `bootstrap:` to the next service header, and renaming or removing the key fails loudly instead of passing silently.
 - **V6 (README matches the compose file)**: the documented command is the one that was executed.
+
+L31. Third native review (lineage `review-a31a71a6f3eebc4c`, target 4 files / 131 lines, medium tier, correction budget 66 unused) closed `approved`, and its acknowledgement burned the authority. Five advisory findings, all non-blocking. Three share one root cause worth recording: `tests/deploy.rs` greps the `bootstrap` block for text instead of parsing it, so an **alias** (a YAML anchor that injects `--password-stdin` or a password key) would slip past it (`tests/deploy.rs:236-244`, `:238-239`). The test holds for the file as written and fails loudly when the service is renamed or the profile is removed (verified by mutation, L30), but it is a grep, not a contract. Parsing the rendered YAML would close that gap if this file becomes more dynamic. Also flagged: the README's non-interactive fallback (`README.md:320-321`) still mentions `--password-stdin`, which is the form that can leak into history; it is labeled as the no-terminal fallback and is kept for that reason.
 
 L17. Spec correction: S1 said TypeScript 7, which is not installable today. `@sveltejs/kit` 3.1.1 — the latest published version — declares `peerDependencies: { "typescript": "^6.0.0" }`, and installing TypeScript 7.0.2 breaks `npm run check` with `Cannot read properties of undefined (reading 'readFile')` inside `svelte-kit sync`. The spec now says TypeScript 6, matching `frontend/package.json` (`^6.0.0`) and what is actually installed (6.0.3). Moving to 7 is a follow-up gated on Kit supporting it, not a decision this project can take alone.
