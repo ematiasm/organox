@@ -1,0 +1,83 @@
+# Production. Two containers: Postgres and one app container that serves both
+# the API and the SPA (one origin, so the SameSite=Strict cookie works without
+# CORS).
+#
+# Values come from the `.env` next to this file; see README "Deploy". The
+# project name is set explicitly so this never shares containers or volumes with
+# the development stack in `compose.yaml`.
+name: organox-prod
+
+x-app-env: &app-env
+  # One variable, not a copy: `POSTGRES_PASSWORD` is the single source of the
+  # database password. It must be URL-safe (letters, digits, `-`, `_`), because
+  # it is interpolated into a connection URL.
+  DATABASE_URL: postgres://organox:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/organox
+  APP_LOG_FORMAT: ${APP_LOG_FORMAT:-json}
+  # Plain HTTP over the LAN and the tailnet. The default is `true`, and a
+  # `Secure` cookie is dropped by the browser over `http://`: login would
+  # succeed and every later request would return 401. Set this to `true` only
+  # together with TLS in front of the app.
+  APP_COOKIE_SECURE: ${APP_COOKIE_SECURE:-false}
+  # Login rate limiting. Optional: the app has defaults for all three, but a
+  # documented knob that compose does not forward would be silently ignored,
+  # so the template's keys are wired here and `tests/deploy.rs` holds the line.
+  APP_LOGIN_MAX_FAILURES: ${APP_LOGIN_MAX_FAILURES:-5}
+  APP_LOGIN_BLOCK_MINUTES: ${APP_LOGIN_BLOCK_MINUTES:-5}
+  APP_LOGIN_IP_MAX_PER_MINUTE: ${APP_LOGIN_IP_MAX_PER_MINUTE:-30}
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: organox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: organox
+    volumes:
+      # Postgres 18 stores PGDATA in /var/lib/postgresql/18/docker and declares
+      # /var/lib/postgresql as its VOLUME. Mounting the pre-18 path makes the
+      # container refuse to start.
+      - db_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U organox -d organox"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # No `ports`: the database is reachable only from the compose network, never
+    # from the LAN.
+
+  migrate:
+    image: organox:local
+    build:
+      context: .
+    # Its own binary instead of `organox migrate`: the server takes no arguments.
+    entrypoint: ["migrate"]
+    environment: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    image: organox:local
+    build:
+      context: .
+    environment: *app-env
+    ports:
+      # LAN access. The host firewall decides who may reach this port.
+      - "${APP_PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  db_data:
