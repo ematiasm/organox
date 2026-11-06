@@ -41,6 +41,10 @@ S17. **Plain HTTP over both LAN and tailnet, with `APP_COOKIE_SECURE=false`.** A
 
 S18. The first `owner` is created by a **`bootstrap` service under the `init` profile**, run explicitly with `docker compose run --rm bootstrap`. It never starts with `up -d`, so a restart cannot recreate a deleted user, and the password is **typed at the terminal, never piped**: a herestring stays in the shell history and an environment variable stays in `docker inspect`.
 
+S19. Backups run **on the host**, not in the application: `scripts/backup.sh` dumps the database from *inside* its container over the unix socket, so no password is passed on a command line or held in a container environment. The archive is `pg_dump -Fc` (compressed, verifiable with `pg_restore --list`), written as `.partial` and renamed only after the integrity check passes. **Rotation runs last**, so a failed dump can never delete the previous good backup.
+
+S20. **A backup is proven by a restore, not by a dump.** `scripts/restore-check.sh` restores into a throwaway database, compares row counts table by table against the live database, checks the stock invariant on the restored copy, and drops the throwaway database whether the checks pass or fail. Backup **configuration** (`BACKUP_DIR`, retention, schedule) lives in the deployment `.env`, never in the database it protects: `down -v` would delete the record of how the data was being saved.
+
 ## Tasks
 | ID | Task | Specs | Route | Commit |
 |---|---|---|---|---|
@@ -53,6 +57,7 @@ S18. The first `owner` is created by a **`bootstrap` service under the `init` pr
 | T7 | Product list with search and stock | S9, S10 | inline | - |
 | T8 | Deploy artifacts: `Dockerfile`, `.dockerignore`, `compose.prod.yaml`, `src/bin/migrate.rs`, `.env.prod.example`, `tests/deploy.rs`, README "Deploy" | S2, S14-S17 | inline | 6779565 |
 | T9 | `bootstrap` service under the `init` profile, interactive password | S18 | inline | b9f104e |
+| T10 | Local backup + verified restore: scripts, systemd timer, `docs/backup.md` | S19, S20 | inline | - |
 
 ## Log
 
@@ -156,5 +161,18 @@ L30. Independent verification of T9: `gentle-ai-verify` was launched but **stall
 L31. Third native review (lineage `review-a31a71a6f3eebc4c`, target 4 files / 131 lines, medium tier, correction budget 66 unused) closed `approved`, and its acknowledgement burned the authority. Five advisory findings, all non-blocking. Three share one root cause worth recording: `tests/deploy.rs` greps the `bootstrap` block for text instead of parsing it, so an **alias** (a YAML anchor that injects `--password-stdin` or a password key) would slip past it (`tests/deploy.rs:236-244`, `:238-239`). The test holds for the file as written and fails loudly when the service is renamed or the profile is removed (verified by mutation, L30), but it is a grep, not a contract. Parsing the rendered YAML would close that gap if this file becomes more dynamic. Also flagged: the README's non-interactive fallback (`README.md:320-321`) still mentions `--password-stdin`, which is the form that can leak into history; it is labeled as the no-terminal fallback and is kept for that reason.
 
 L32. Closed the gap recorded in L31: `bootstrap_is_profiled_and_carries_no_password` no longer greps the compose text. It renders with `--profile init` — compose omits profiled services from the default render entirely, so without the flag there is nothing to assert on — and reads `services.bootstrap` from the JSON. The bypass was reproduced before fixing: with `environment: <<: [*app-env, *inject]` and an `x-inject` anchor defining `USER_PASSWORD`, the rendered service carried the key while the old grep reported an empty hit list, and the new test fails naming it. A first mutation attempt (aliasing `--password-stdin` into the entrypoint) proved nothing, because that string does land inside the block; the useful mutation had to inject through a key the block never spells out. Three advisory findings were left unfixed on purpose (joined-entrypoint grep, `contains("PASSWORD")` vs an allowlist, the `require_docker` early return reading as a guard): all stylistic, and touching the file would invalidate the approved candidate.
+
+L33. T10 implemented after the planning round. Decisions taken with the user, one at a time:
+
+- **Storage**: `~/organox-backups/` (the user's choice). `/var/backups` was rejected *after* checking permissions: it is root-owned, and the user-level timer cannot write there. The home has 187 GB free; the consequence (same disk as the data, so no disaster protection) is stated in `docs/backup.md` rather than glossed over.
+- **Scheduler**: Linux only, systemd **user** timer with `loginctl enable-linger`. A system unit would run as root and need `docker` group membership to reach the socket, which is unrestricted root on the host.
+- **Offsite (rclone)**: deferred to its own slice. No `BACKUP_REMOTE` placeholder was added: a variable that does nothing is documentation that lies.
+- **`/settings`**: out of scope. Backup configuration cannot live in the database it protects, so `/settings` will *show* status, never configure it.
+
+Three bugs were found by running the scripts, not by reading them: `pg_dump -f -` writes a file named `-` *inside the container* and leaves the redirect empty (the dump silently captured 0 bytes); `psql -c` built from one expanded string passes `-c <sql>` as a single argument and psql reads it as a database name; and under systemd the environment is empty, so `docker compose` cannot interpolate `POSTGRES_PASSWORD` unless the env file is passed explicitly (`COMPOSE_ENV_FILE`). Also corrected in the restore check: the stock invariant used a `kind` column that does not exist; the real expression is a `CASE` on `reason`, mirrored from `src/catalog/repository.rs`.
+
+Verified by execution: real dump of a live deployment stack (24 KB, `-Fc`), restore check comparing five tables plus the stock invariant, rotation pruning 7 of 20 planted daily files and keeping 14 daily + 2 monthly, a corrupt archive rejected by `pg_restore --list` and by the restore, an unwritable `BACKUP_DIR` and a non-numeric retention rejected with clear messages, a stopped database rejected without touching existing files, and the systemd unit run for real (`journalctl --user` shows the run and the failure). Stack torn down with `down -v`; the test timer was removed afterwards.
+
+`every_documented_env_key_is_forwarded` was renamed to `every_documented_env_key_is_consumed` and widened: the backup keys are read by host scripts, not by compose, and the contract that matters is "something reads it", not "compose forwards it". Verified that it still catches a planted dead key.
 
 L17. Spec correction: S1 said TypeScript 7, which is not installable today. `@sveltejs/kit` 3.1.1 — the latest published version — declares `peerDependencies: { "typescript": "^6.0.0" }`, and installing TypeScript 7.0.2 breaks `npm run check` with `Cannot read properties of undefined (reading 'readFile')` inside `svelte-kit sync`. The spec now says TypeScript 6, matching `frontend/package.json` (`^6.0.0`) and what is actually installed (6.0.3). Moving to 7 is a follow-up gated on Kit supporting it, not a decision this project can take alone.

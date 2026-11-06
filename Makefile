@@ -4,7 +4,7 @@
 -include .env
 export
 
-.PHONY: help db-up db-down db-reset migrate new-migration run create-user prepare test fmt lint check fe-install fe-dev fe-build fe-check fe-schema dev
+.PHONY: help db-up db-down db-reset migrate new-migration run create-user prepare test fmt lint check fe-install fe-dev fe-build fe-check fe-schema dev backup backup-check backup-install
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -72,3 +72,18 @@ lint: ## Clippy with warnings as errors
 	cargo clippy --all-targets -- -D warnings
 
 check: fmt lint test fe-check ## What has to pass before committing
+
+# --- Deployment operations -------------------------------------------------
+#
+# These talk to the deployment stack (`compose.prod.yaml`), not the development
+# database. `backup` and `backup-check` work from any machine with Docker and the
+# compose file; `backup-install` is Linux-only and registers the systemd timer.
+
+backup: ## Back up the deployment database (see docs/backup.md)
+	BACKUP_DIR=$(or $(BACKUP_DIR),$(HOME)/organox-backups) scripts/backup.sh
+
+backup-check: ## Restore the last backup into a throwaway database and verify it
+	BACKUP_DIR=$(or $(BACKUP_DIR),$(HOME)/organox-backups) scripts/restore-check.sh
+
+backup-install: ## Install the daily systemd timer (Linux only)
+	BACKUP_DIR=$(or $(BACKUP_DIR),$(HOME)/organox-backups) scripts/install-timer.sh

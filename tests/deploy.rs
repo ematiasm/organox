@@ -197,14 +197,29 @@ fn only_the_migrate_binary_embeds_migrations() {
     );
 }
 
-/// `S16` — every key the template documents must actually reach a container.
+/// `S16` — every key the template documents must actually be **read** by
+/// something.
 ///
-/// This is the failure that motivated the test: a documented knob that compose
-/// never forwards is silently ignored, and the operator believes it took effect.
+/// This started as "forwarded by compose", and the backup keys exposed the gap:
+/// a knob documented in the template but consumed by nobody is a lie either way.
+/// The contract is now "compose forwards it, or a host script reads it", which
+/// covers the host-side settings the deployment needs (backup directory,
+/// retention) without letting a dead key through.
 #[test]
-fn every_documented_env_key_is_forwarded() {
+fn every_documented_env_key_is_consumed() {
     let template = fs::read_to_string(root().join(".env.prod.example")).unwrap();
     let compose = fs::read_to_string(root().join("compose.prod.yaml")).unwrap();
+
+    // The host-side scripts, concatenated: a key is live if any of them reads it.
+    let scripts: String = fs::read_dir(root().join("scripts"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| fs::read_to_string(entry.path()).unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
 
     let mut missing = Vec::new();
     for raw in template.lines() {
@@ -222,14 +237,14 @@ fn every_documented_env_key_is_forwarded() {
         if !is_key || key == "POSTGRES_PASSWORD" {
             continue; // wired explicitly and covered by the rendering test
         }
-        if !compose.contains(key) {
+        if !compose.contains(key) && !scripts.contains(key) {
             missing.push(key.to_string());
         }
     }
 
     assert!(
         missing.is_empty(),
-        "documented in .env.prod.example but never forwarded by compose.prod.yaml: {missing:?}"
+        "documented in .env.prod.example but read by neither compose.prod.yaml nor any script: {missing:?}"
     );
 }
 

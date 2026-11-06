@@ -366,12 +366,23 @@ and asserts the contract: `DATABASE_URL` derived from `POSTGRES_PASSWORD`, the
 `migrate` gate, `APP_COOKIE_SECURE=false`, the database port unpublished, and
 every key documented in `.env.prod.example` actually forwarded. A documented
 knob that compose never forwards is silently ignored, so the two files are
-checked against each other rather than against intent. The file skips itself
-when Docker is unavailable.
+checked against each other rather than against intent. Docker is a requirement,
+not an optional extra: without it the file fails with instructions instead of
+reporting a green suite that asserted nothing.
 
-### Not implemented yet
+### Backups
 
-**Backup and restore.** The deployment will hold stock, sales and cash records
-that cannot be rebuilt. A scheduled `pg_dump` with retention and one tested
-restore is required before real use; it is tracked as pending, outside the
-current slice.
+```bash
+make backup-install    # Linux: daily systemd user timer at 03:00
+make backup           # one now
+make backup-check     # restore the last dump into a throwaway DB and verify it
+```
+
+`scripts/backup.sh` dumps the database from inside its container (no password on
+a command line), verifies the archive, and only then rotates. `make backup-check`
+is the part that matters: an archive nobody restored is not a backup. Full
+reasoning, what it does **not** cover, and how to restore in a real emergency:
+`docs/backup.md`.
+
+**Not covered yet:** an offsite copy. A dead disk loses the backups with the
+data. `docs/backup.md` says so explicitly.
