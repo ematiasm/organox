@@ -16,6 +16,12 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "products",
+            "name": "kind"
+          }
         }
       }
     ],

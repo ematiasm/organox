@@ -6,7 +6,13 @@
       {
         "ordinal": 0,
         "name": "completed_at!",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "completed_at"
+          }
+        }
       }
     ],
     "parameters": {
