@@ -46,18 +46,23 @@ S19. Backups run **on the host**, not in the application: `scripts/backup.sh` du
 S20. **A backup is proven by a restore, not by a dump.** `scripts/restore-check.sh` restores into a throwaway database, compares row counts table by table against the live database, checks the stock invariant on the restored copy, and drops the throwaway database whether the checks pass or fail. Backup **configuration** (`BACKUP_DIR`, retention, schedule) lives in the deployment `.env`, never in the database it protects: `down -v` would delete the record of how the data was being saved.
 
 ## Tasks
-| ID | Task | Specs | Route | Commit |
-|---|---|---|---|---|
-| T1 | OpenAPI with `utoipa` and TS type generation | S13 | inline | - |
-| T2 | Scaffold SvelteKit + adapter-static + dev proxy | S1, S4 | inline | - |
-| T3 | Axum serves `build/` with fallback (API first) | S2, S3 | inline | - |
-| T4 | API client: relative paths, 401->login, `Retry-After` | S5, S12, S13 | inline | - |
-| T5 | Login screen | S6, S12 | inline | - |
-| T6 | Layout with sidebar + session guard | S7, S11 | inline | - |
-| T7 | Product list with search and stock | S9, S10 | inline | - |
-| T8 | Deploy artifacts: `Dockerfile`, `.dockerignore`, `compose.prod.yaml`, `src/bin/migrate.rs`, `.env.prod.example`, `tests/deploy.rs`, README "Deploy" | S2, S14-S17 | inline | 6779565 |
-| T9 | `bootstrap` service under the `init` profile, interactive password | S18 | inline | b9f104e |
-| T10 | Local backup + verified restore: scripts, systemd timer, `docs/backup.md` | S19, S20 | inline | - |
+| ID | Task | Specs | Route | Status | Commit |
+|---|---|---|---|---|---|
+| T1 | OpenAPI with `utoipa` and TS type generation | S13 | inline | done | ae30bc2, 98f7240 |
+| T2 | Scaffold SvelteKit + adapter-static + dev proxy | S1, S4 | inline | done | 98f7240 |
+| T3 | Axum serves `build/` with fallback (API first) | S2, S3 | inline | done | ae30bc2 |
+| T4 | API client: relative paths, 401->login, `Retry-After` | S5, S12, S13 | inline | done | 98f7240 |
+| T5 | Login screen | S6, S12 | inline | done | 98f7240 |
+| T6 | Layout with sidebar + session guard | S7, S11 | inline | done | 98f7240 |
+| T7 | Product list with search and stock | S9, S10 | inline | done (search only, see T11) | 98f7240 |
+| T8 | Deploy artifacts: `Dockerfile`, `.dockerignore`, `compose.prod.yaml`, `src/bin/migrate.rs`, `.env.prod.example`, `tests/deploy.rs`, README "Deploy" | S2, S14-S17 | inline | done | 6779565 |
+| T9 | `bootstrap` service under the `init` profile, interactive password | S18 | inline | done | b9f104e |
+| T10 | Local backup + verified restore: scripts, systemd timer, `docs/backup.md` | S19, S20 | inline | done | fbe2b6e, 5cf2155 |
+| T11 | Pagination controls on the product list | S9 | inline | pending | - |
+
+Nothing in this table is a promise about the backend. A route that the UI needs
+and the API does not expose is backend work, and it is recorded as a gap in the
+document of its domain (`docs/auth.md`, `docs/catalog.md`, `docs/sales.md`).
 
 ## Log
 
@@ -100,6 +105,8 @@ L14. Dark mode implemented: `<ModeWatcher defaultMode="system" />` in the root l
 L15. Bug found and fixed: POS still used the handcrafted CSS variables (`--bg`, `--surface`, `--accent`, `--text`, `--muted`...) deleted during the Tailwind migration. In light mode text was nearly invisible on a nearly white background. They were mapped to shadcn tokens (`--color-card`, `--color-foreground`, `--color-primary`, etc.). A custom `--warn` token was also added because the vega preset has no warning color and its `--chart-*` values are grayscale.
 
 L16. User request on the design canvas: "hoy en dia existen dos sidebars, este y una que muestra productos y users nomas. Quiero que uses este como main y elimines el otro. Ademas agregale un boton para expandir donde muestre icono mas nombre (como en el ejemplo 1). Quita el boton de logout del sidebar y agregalo al hacer click en el boton del usuario" and "copia el separador por categorias de este diseño". The remaining double sidebar was not the POS one: it was navigation per screen (`(app)` with Products/Users, `(pos)` with its rail). The artboard 03 rail was adopted as the entire app's single navigation, with groups copied from artboard 01 (Operations / Catalog / System), an expand button (64 px icons <-> 236 px icon+name, preference in `localStorage`) and a user menu with theme and "Sign out". Sale moved to `/operations/pos` (with `/pos` as a 307 redirect) so the Sale item shares the rail with Products/Movements/Users without leaving the shell; `/operations/movements` was added so the artboard's Movements item has a real destination. Verified with `frontend/e2e/nav-shell.cjs` (19 checks: one sidebar navigation on all four screens, canonical navigation, sale action in the rail, expand/persist, user menu and real logout) plus `svelte-check` and `npm run build`.
+
+L17. Spec correction: S1 said TypeScript 7, which is not installable today. `@sveltejs/kit` 3.1.1 — the latest published version — declares `peerDependencies: { "typescript": "^6.0.0" }`, and installing TypeScript 7.0.2 breaks `npm run check` with `Cannot read properties of undefined (reading 'readFile')` inside `svelte-kit sync`. The spec now says TypeScript 6, matching `frontend/package.json` (`^6.0.0`) and what is actually installed (6.0.3). Moving to 7 is a follow-up gated on Kit supporting it, not a decision this project can take alone.
 
 L18. S2 correction (user request, 2025-11-05): the spec merged development and deployment into one sentence and promised a `Dockerfile` that does not exist. Original wording:
 
@@ -175,4 +182,4 @@ Verified by execution: real dump of a live deployment stack (24 KB, `-Fc`), rest
 
 `every_documented_env_key_is_forwarded` was renamed to `every_documented_env_key_is_consumed` and widened: the backup keys are read by host scripts, not by compose, and the contract that matters is "something reads it", not "compose forwards it". Verified that it still catches a planted dead key.
 
-L17. Spec correction: S1 said TypeScript 7, which is not installable today. `@sveltejs/kit` 3.1.1 — the latest published version — declares `peerDependencies: { "typescript": "^6.0.0" }`, and installing TypeScript 7.0.2 breaks `npm run check` with `Cannot read properties of undefined (reading 'readFile')` inside `svelte-kit sync`. The spec now says TypeScript 6, matching `frontend/package.json` (`^6.0.0`) and what is actually installed (6.0.3). Moving to 7 is a follow-up gated on Kit supporting it, not a decision this project can take alone.
+L34. Audit of this document against the tree. Three defects were found and fixed here, all of them in the document rather than in the code: (1) **L17 had been moved to the end of the Log**, behind L33, by `e448d5b`. It arrived between L16 and L18 in `fcf7ba8` and belongs there; the Log is chronological, so an entry out of order reads as a later decision than the ones above it. Moved back. (2) **The task table carried no state and a `-` commit column for T1-T7 and T10**, which made ten finished tasks indistinguishable from ten unstarted ones. The commits were recovered from history: T1 `ae30bc2` (`src/openapi.rs`, `src/bin/openapi.rs`, `openapi.json`) plus `98f7240` (`schema.d.ts`), T2-T7 `98f7240` (the SvelteKit commit that also added `vite.config.ts`, `client.ts`, the login screen, the rail and the product list), T10 `fbe2b6e` (scripts and `docs/backup.md`) plus `5cf2155` (timer and `Makefile`). (3) **S9 claims pagination the product list does not have.** `+page.ts` passes `limit` and `offset` from the API response into the page data (`frontend/src/routes/(app)/products/+page.ts:12-13`) and no component reads them; the table renders every item and a count (`(app)/products/+page.svelte:93`). The API does paginate: `limit` defaults to 50 in `src/catalog/handlers.rs:145`, so a catalog over 50 items is silently cut at 50 with nothing on screen saying so. That is a defect against S9, not a deferred decision: no earlier Log entry declines it. Recorded as **T11, pending**, and opened as issue #22. The audit was reviewed natively (lineage `review-93ac6990547c93ed`, high tier, 2 files / 91 lines, readability lens) and closed `approved`; its two advisory findings were the framing of this entry and the missing citation of the 50-item default, both fixed above. Not changed, because it is not a defect: L11 says the Tailwind migration is pending and L13 records it as done. A Log is a record of what was true when it was written; the later entry supersedes the earlier one and the pair is the history. Rewriting L11 would destroy the evidence that the migration was ever outstanding.
