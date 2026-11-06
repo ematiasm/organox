@@ -254,3 +254,4 @@ generated; never edit it by hand.
 
 Next slice: product creation and editing in the UI, user listing, or the first
 business report.
+
