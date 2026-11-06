@@ -1,0 +1,28 @@
+# Only what the Dockerfile copies is needed. Everything here either bloats the
+# build context or would ship the host's state into the image.
+
+# Rust build state: the image compiles from source, never reuses the host target.
+target
+
+# Frontend build state: the image runs `npm ci` and `npm run build` itself, so a
+# stale local build must never reach the SPA COPY.
+frontend/node_modules
+frontend/build
+frontend/.svelte-kit
+
+# Secrets and local configuration. `.env.example` is documentation, not a secret,
+# but it is not needed inside the image either.
+.env
+.env.*
+
+# Repository metadata and material the runtime does not read.
+.git
+.github
+.worktrees
+.atl
+.codegraph
+design
+docs
+odd
+README.md
+openapi.json

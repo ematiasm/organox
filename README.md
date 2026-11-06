@@ -80,7 +80,7 @@ src/
     ip.rs         requests per IP (memory)
     middleware.rs applies the IP limit only to /auth/login
 migrations/      versioned SQL migrations
-src/bin/         CLI binaries (create-user, openapi)
+src/bin/         CLI binaries (create-user, openapi, migrate)
 src/openapi.rs   OpenAPI 3.1 spec generated from code
 tests/           integration tests (in-memory Router + real DB)
 docs/            design decisions
@@ -254,3 +254,106 @@ generated; never edit it by hand.
 
 Next slice: product creation and editing in the UI, user listing, or the first
 business report.
+
+## Deploy
+
+Two containers: Postgres and one app container that serves both the API and the
+SPA. One origin, so the `SameSite=Strict` cookie works without CORS.
+
+**Development and deployment do not share a compose file.** `compose.yaml` runs
+only Postgres so the backend and the frontend run natively on the host, where
+the feedback loop is seconds instead of minutes. `compose.prod.yaml` builds the
+image and runs the deployment. Separating them is not cosmetic: the production
+file must not publish the database port, must restart services, must gate on
+health, and must run migrations before the server starts.
+
+**One `.env` per machine, two templates.** `.env.example` documents the
+development values and `.env.prod.example` the deployment ones; each machine
+copies the template that applies to it to a single `.env`. There is no
+`.env` + `.env.prod` pair living side by side, because two files with a
+database password is two places for it to disagree with itself.
+
+A machine that both develops and deploys has one `.env` and both blocks
+compiled into it: the development keys are simply unused by the deployment,
+because `compose.prod.yaml` overrides `DATABASE_URL` for its containers.
+Copying `.env.prod.example` over an existing development `.env` replaces it —
+merge the two blocks instead.
+
+### First deployment
+
+```bash
+cp .env.prod.example .env
+# Fill in POSTGRES_PASSWORD. Generate it with:
+#   openssl rand -base64 24 | tr -d '/+=' | head -c 32
+# It must be URL-safe: it is interpolated into DATABASE_URL.
+# Keep APP_COOKIE_SECURE=false while the app is served over plain HTTP.
+#
+# If this host also develops, merge the block into the existing `.env`
+# instead of overwriting it: `make` targets read the same file.
+
+docker compose -f compose.prod.yaml build
+docker compose -f compose.prod.yaml up -d
+```
+
+The `migrate` service applies the embedded migrations and exits; the `app`
+service waits for it to complete successfully before starting. The server itself
+never migrates on startup: a restarting process would migrate against itself.
+
+Create the first owner once. There is no seeding, and the password is never a
+container environment variable — it would stay there forever:
+
+```bash
+docker compose -f compose.prod.yaml exec -T app \
+  create-user --email owner@pyme.com --role owner --password-stdin <<< 'the-password'
+```
+
+Check it is up:
+
+```bash
+docker compose -f compose.prod.yaml ps -a           # db healthy, migrate exited 0, app healthy
+curl -i http://localhost:3000/healthz             # 204
+curl -i http://localhost:3000/readyz              # 204
+curl -i http://localhost:3000/api/v1/does-not-exist # 404 problem+json, not index.html
+```
+
+Then open `http://<host-lan-ip>:3000` from another machine on the LAN.
+
+### Access from the LAN and the tailnet
+
+Plain HTTP on both. **`APP_COOKIE_SECURE` must stay `false`**: a cookie marked
+`Secure` is silently dropped by the browser over `http://`, so login would appear
+to succeed and every later request would return `401`. Tailscale encrypts
+tailnet traffic end to end, so HTTP inside the tailnet is not readable on the
+wire; only the LAN hop is plain.
+
+Reaching the app by its tailnet IP needs nothing else. `tailscale serve` would
+add HTTPS, but then a TLS proxy sits in front of the app and the per-IP login
+limit would see one client, not many — the app deliberately ignores
+`X-Forwarded-For`. That is a decision for later, together with `APP_COOKIE_SECURE=true`.
+
+### Updating a running deployment
+
+```bash
+docker compose -f compose.prod.yaml build
+docker compose -f compose.prod.yaml up -d
+```
+
+`up -d` recreates only what changed, and the `migrate` service runs again before
+the server starts.
+
+### Tests
+
+`tests/deploy.rs` renders `compose.prod.yaml` through `docker compose config`
+and asserts the contract: `DATABASE_URL` derived from `POSTGRES_PASSWORD`, the
+`migrate` gate, `APP_COOKIE_SECURE=false`, the database port unpublished, and
+every key documented in `.env.prod.example` actually forwarded. A documented
+knob that compose never forwards is silently ignored, so the two files are
+checked against each other rather than against intent. The file skips itself
+when Docker is unavailable.
+
+### Not implemented yet
+
+**Backup and restore.** The deployment will hold stock, sales and cash records
+that cannot be rebuilt. A scheduled `pg_dump` with retention and one tested
+restore is required before real use; it is tracked as pending, outside the
+current slice.

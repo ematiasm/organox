@@ -7,7 +7,7 @@ same Rust binary in a single application container.
 
 S1. The frontend uses **SvelteKit with `adapter-static`** (SPA: `fallback: 'index.html'`, `ssr = false`, `prerender = false`). Versions are **Vite 8 + Svelte 5 + TypeScript 6**.
 
-S2. Deployment uses **one container for Postgres and another serving backend and frontend together**. The `Dockerfile` **does not run tests**; tests run locally.
+S2. **Development and deployment are separate concerns.** In development only Postgres runs in Docker (`make db-up`); the backend (`cargo run`) and the frontend (`npm run dev`) run on the host, so the toolchain stays native and the feedback loop stays fast. Deployment runs **two containers**: one for Postgres and another serving backend and frontend together from the same Axum process, so there is one origin and no CORS. The `Dockerfile` **does not run tests**; tests run locally and in CI.
 
 S3. Axum serves `frontend/build/` with **fallback to `index.html`** for every route except `/api/v1/*`, `/healthz` and `/readyz`.
 
@@ -31,6 +31,14 @@ S12. A `401` on any request leads to `/login`. A `429` displays the wait time fr
 
 S13. The API client is **generated from OpenAPI** (`utoipa` -> `openapi.json` -> TS types), not handwritten.
 
+S14. **Migrations are a separate step, never part of server startup.** The image ships a `migrate` binary with the migrations embedded (`sqlx::migrate!`), and `compose.prod.yaml` runs it as a one-shot service that the server waits for (`condition: service_completed_successfully`). A restarting process that migrates would race itself, and two instances would migrate concurrently.
+
+S15. The image ships **`organox` and `create-user`**; `migrate` is the third binary. There is no seeding: the first `owner` is created once with `docker compose exec -T app create-user --password-stdin`. A password in a container environment variable would live there forever.
+
+S16. The deployment reads **one `.env` per machine**, from `.env.prod.example`, and `POSTGRES_PASSWORD` is the **single source** of the database password: the compose file builds `DATABASE_URL` from it, so the two cannot disagree.
+
+S17. **Plain HTTP over both LAN and tailnet, with `APP_COOKIE_SECURE=false`.** A `Secure` cookie is silently dropped over `http://`: the login appears to succeed and every later request returns 401. Tailscale encrypts tailnet traffic end to end, so only the LAN hop is in clear text. `tailscale serve`/TLS is a later decision that also changes the per-IP login limit (the app deliberately ignores `X-Forwarded-For`).
+
 ## Tasks
 
 | ID | Task | Specs | Route | Commit |
@@ -42,6 +50,7 @@ S13. The API client is **generated from OpenAPI** (`utoipa` -> `openapi.json` ->
 | T5 | Login screen | S6, S12 | inline | - |
 | T6 | Layout with sidebar + session guard | S7, S11 | inline | - |
 | T7 | Product list with search and stock | S9, S10 | inline | - |
+| T8 | Deploy artifacts: `Dockerfile`, `.dockerignore`, `compose.prod.yaml`, `src/bin/migrate.rs`, `.env.prod.example`, `tests/deploy.rs`, README "Deploy" | S2, S14-S17 | inline | uncommitted |
 
 ## Log
 
@@ -84,5 +93,45 @@ L14. Dark mode implemented: `<ModeWatcher defaultMode="system" />` in the root l
 L15. Bug found and fixed: POS still used the handcrafted CSS variables (`--bg`, `--surface`, `--accent`, `--text`, `--muted`...) deleted during the Tailwind migration. In light mode text was nearly invisible on a nearly white background. They were mapped to shadcn tokens (`--color-card`, `--color-foreground`, `--color-primary`, etc.). A custom `--warn` token was also added because the vega preset has no warning color and its `--chart-*` values are grayscale.
 
 L16. User request on the design canvas: "hoy en dia existen dos sidebars, este y una que muestra productos y users nomas. Quiero que uses este como main y elimines el otro. Ademas agregale un boton para expandir donde muestre icono mas nombre (como en el ejemplo 1). Quita el boton de logout del sidebar y agregalo al hacer click en el boton del usuario" and "copia el separador por categorias de este diseño". The remaining double sidebar was not the POS one: it was navigation per screen (`(app)` with Products/Users, `(pos)` with its rail). The artboard 03 rail was adopted as the entire app's single navigation, with groups copied from artboard 01 (Operations / Catalog / System), an expand button (64 px icons <-> 236 px icon+name, preference in `localStorage`) and a user menu with theme and "Sign out". Sale moved to `/operations/pos` (with `/pos` as a 307 redirect) so the Sale item shares the rail with Products/Movements/Users without leaving the shell; `/operations/movements` was added so the artboard's Movements item has a real destination. Verified with `frontend/e2e/nav-shell.cjs` (19 checks: one sidebar navigation on all four screens, canonical navigation, sale action in the rail, expand/persist, user menu and real logout) plus `svelte-check` and `npm run build`.
+
+L18. S2 correction (user request, 2025-11-05): the spec merged development and deployment into one sentence and promised a `Dockerfile` that does not exist. Original wording:
+
+> "S2. Deployment uses **one container for Postgres and another serving backend and frontend together**. The `Dockerfile` **does not run tests**; tests run locally."
+
+User statement:
+
+> "sigue abierto lo de odd/tasks/ui-admin.md S2, que promete un Dockerfile que no existe. [...] Mi idea original es hacer los test automaticos y manual (yo levantarlo para ver como esta todo) en local usando solo postgres en docker y dejar el backend y frontend juntos en otro docker para deploy."
+
+S2 now separates the two concerns and T8 tracks the missing artifacts. Still open and **not** decided by this correction: how the deploy exposes the app (see L19) and the shape of the first-user bootstrap in production.
+
+L19. Transport decision (resolved in S17). The app defaults to `Secure` cookies (`src/config.rs:70`), which the browser discards over `http://`: login would succeed and every later request would return 401. User decision:
+
+> "Mi decision: vamos con A HTTP plano."
+
+That is `APP_COOKIE_SECURE=false` with LAN and tailnet both over plain HTTP, recorded as S17. The question that prompted it:
+
+> "si elijo HTTP plano puedo seguir accediendo mediante tailscale?"
+
+Yes: a cookie without the `Secure` flag travels over both HTTP and HTTPS, so `false` is the permissive setting and `true` is the restrictive one. Tailscale encrypts the tailnet hop with WireGuard, so only the LAN segment is in clear text.
+
+L20. Out of this slice, tracked as pending: **backup and restore of the production database**. The deployment will hold stock, sales and cash records that cannot be rebuilt, so a scheduled `pg_dump` with retention and one tested restore is required before real use. User decision:
+
+> "Para c anotalo como pendiente, queda fuera de este slice."
+
+Postgres 18 is the target for a clean start; the wiped development volume was confirmed:
+
+> "Para a ya hice el down -v, podemos arrancar de cero con postgres 18."
+
+L21. **`compose.yaml` was broken for Postgres 18, and `down -v` alone did not fix it.** Postgres 18 moved `PGDATA` to `/var/lib/postgresql/18/docker` and its declared `VOLUME` to `/var/lib/postgresql`; the compose file still mounted the pre-18 path. The container restart-looped with "there appears to be PostgreSQL data in /var/lib/postgresql/data (unused mount/volume)", and it did so even on a fresh volume, because Docker creates the mount point. Fix: `db_data:/var/lib/postgresql`. Verified afterwards: `PGDATA=/var/lib/postgresql/18/docker`, `sqlx migrate run` applied 7/7, container healthy.
+
+L22. T8 implemented. Three-stage `Dockerfile` (`node:26-alpine` builds the SPA, `rust:1-bookworm` builds `organox`/`create-user`/`migrate` with `SQLX_OFFLINE=true` against the committed `.sqlx/`, `debian:bookworm-slim` runs unprivileged as uid 10001 with `WORKDIR /app` because `FRONTEND_DIR` in `src/routes.rs:16` is relative and has no env override). `.dockerignore` keeps `target/`, `frontend/node_modules`, `frontend/build` and `.env*` out of the build context so a stale local SPA build cannot reach the image. `compose.prod.yaml` sets `name: organox-prod` so it never shares containers or volumes with the development stack, publishes no database port, gates `app` on `db` healthy and `migrate` completed, and adds a `curl /readyz` healthcheck (hence `curl` in the runtime image).
+
+L23. Decision on configuration templates, answering "entonces el .env es innecesario?": there is **one `.env` per machine**, not one per environment. Dev and deploy each get a template (`.env.example`, `.env.prod.example`) and a machine copies the one that applies. Two coexisting files were rejected because the database password would then exist in two places that can disagree. Bootstrap is not configuration: `create-user` never reads a password from the environment.
+
+L24. Verification of T8 (evidence, not intent): built `organox:local` (174 MB), brought up `compose.prod.yaml` against a throwaway env file and a fresh volume. Observed: `migrate` exited 0 and re-ran idempotently ("migrations applied"), `app` reached healthy, `GET /healthz` 204, `/readyz` 204, `/` 200 `text/html`, `/operations/pos` 200 `text/html` (SPA fallback), `/api/v1/nope` and `/api/foo` 404 `application/problem+json`, a hashed `_app/immutable` asset 200 `text/javascript`, `create-user` inside the container created the first `owner`, and login -> `/auth/me` -> `/products` all 200 with the cookie. Cookie flags compared directly: `APP_COOKIE_SECURE=false` yields `HttpOnly; SameSite=Strict; Path=/`, and `true` adds `Secure` — confirming S17's premise. Stack torn down with `down -v`; no deployment containers or volumes remain. `cargo fmt --check`, `cargo clippy -D warnings` and the suite (39 + 16 + 24 + 1 + 5 + 8 = 93 in the filtered run) pass.
+
+L25. Independent verification (`gentle-ai-verify`) over the change found one blocker that self-review had missed: `.env.prod.example` documented `APP_LOGIN_MAX_FAILURES`, `APP_LOGIN_BLOCK_MINUTES` and `APP_LOGIN_IP_MAX_PER_MINUTE`, but `compose.prod.yaml` never forwarded them, so an operator setting a limit would silently keep the defaults. Fixed by wiring the three keys with defaults, and pinned by `tests/deploy.rs::every_documented_env_key_is_forwarded`, which reads both files and fails if the template names a key the compose file does not forward. Re-verified after the fix: `docker compose exec app printenv` shows `APP_LOGIN_MAX_FAILURES=7` when the env file sets 7. Also corrected from the same report: `docker compose ps` (without `-a`) hides the exited one-shot `migrate` service, and the project-structure line in README omitted `migrate`.
+
+L26. Native review closed `approved` for lineage `review-cda22092d5275f8e` (medium tier, 10 changed files, all four lenses) and its acknowledgement burned the authority. Seven advisory findings, all non-blocking and recorded as later work rather than corrections: backup/restore absent (already L20), plaintext cookie on the LAN hop (the accepted S17 trade-off), two readability nits in README and `tests/deploy.rs`, and three reliability nits in `compose.prod.yaml:34`, `src/bin/migrate.rs:21-23` and the temp-directory handling in `tests/deploy.rs:34-39`.
 
 L17. Spec correction: S1 said TypeScript 7, which is not installable today. `@sveltejs/kit` 3.1.1 — the latest published version — declares `peerDependencies: { "typescript": "^6.0.0" }`, and installing TypeScript 7.0.2 breaks `npm run check` with `Cannot read properties of undefined (reading 'readFile')` inside `svelte-kit sync`. The spec now says TypeScript 6, matching `frontend/package.json` (`^6.0.0`) and what is actually installed (6.0.3). Moving to 7 is a follow-up gated on Kit supporting it, not a decision this project can take alone.
