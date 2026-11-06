@@ -48,6 +48,8 @@ curl -i localhost:3000/readyz    # 204 - the DB responds
 | `make fe-check` | Type-checks the frontend |
 | `make fe-schema` | Regenerates TS types from OpenAPI |
 | `make check` | `fmt` + `clippy -D warnings` + `test` + `fe-check` |
+| `make backup` / `backup-check` | Dumps the deployment DB / proves the last dump restores |
+| `make backup-install` | Installs the daily systemd timer (Linux) |
 
 ## Project structure
 
@@ -87,6 +89,7 @@ migrations/      versioned SQL migrations
 src/bin/         CLI binaries (create-user, openapi, migrate)
 src/openapi.rs   OpenAPI 3.1 spec generated from code
 tests/           integration tests (in-memory Router + real DB)
+scripts/         host operations: backup, restore check, timer install
 docs/            design decisions
 .sqlx/           query cache (committed: builds without a DB)
 
@@ -181,15 +184,15 @@ Slices 1–3: skeleton, authentication, and catalog with a stock ledger.
 - **Login rate limiting**: per-account lockout (survives restarts) and per-IP
   limit (blocks before spending time on argon2), with `429` + `Retry-After`.
 - **Sales**: server-persisted cart with transactional checkout.
-- **114 tests** (unit + integration against real Postgres).
+- **124 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
   navigation rail** (expandable, with groups and user menu), product list,
   movements, and **point of sale with barcode scanner** at `/operations/pos`.
 - **OpenAPI 3.1** generated from code; frontend types are generated from that
   spec (`make fe-schema`).
 
-See `docs/auth.md`, `docs/catalog.md`, `docs/ratelimit.md` and `docs/sales.md`
-for the reasoning and what is missing.
+See `docs/auth.md`, `docs/catalog.md`, `docs/ratelimit.md`, `docs/sales.md` and
+`docs/backup.md` for the reasoning and what is missing.
 
 ## Frontend
 
@@ -385,4 +388,5 @@ reasoning, what it does **not** cover, and how to restore in a real emergency:
 `docs/backup.md`.
 
 **Not covered yet:** an offsite copy. A dead disk loses the backups with the
-data. `docs/backup.md` says so explicitly.
+data. `docs/backup.md` says so explicitly, and also carries the emergency
+restore procedure and how to change the destination.
