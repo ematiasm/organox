@@ -11,7 +11,10 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - db_data:/var/lib/postgresql/data
+      # Postgres 18 moved PGDATA to /var/lib/postgresql/18/docker and the image
+      # VOLUME to /var/lib/postgresql. Mounting the old /var/lib/postgresql/data
+      # makes the container refuse to start. See L21.
+      - db_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U organox -d organox"]
       interval: 2s

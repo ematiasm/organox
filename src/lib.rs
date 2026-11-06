@@ -28,9 +28,13 @@ pub struct AppState {
     /// Per-IP request limit. Lives in memory, shared between requests through
     /// the `Arc`.
     pub ip_limiter: Arc<crate::ratelimit::IpLimiter>,
-    /// Session cookies use `Secure` except on local HTTP. In production this
-    /// must always be `true`; the dev default is `false` so `curl` against
-    /// http://localhost works.
+    /// Session cookies use `Secure` except on plain HTTP. `Secure` keeps the
+    /// cookie off unencrypted connections, but the browser then drops it over
+    /// `http://` entirely: login succeeds and every later request returns 401.
+    /// A deployment served over plain HTTP — a LAN address, or a tailnet IP
+    /// where the WireGuard layer already encrypts the traffic — sets this to
+    /// `false` on purpose (see `compose.prod.yaml` and S17 in
+    /// `odd/tasks/ui-admin.md`).
     pub cookie_secure: bool,
 }
 
