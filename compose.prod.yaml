@@ -79,5 +79,28 @@ services:
       retries: 5
       start_period: 10s
 
+  # Creating the first owner. Runs only when named: `docker compose run --rm
+  # bootstrap ...`. A profile keeps it out of `up -d`, so a restart never
+  # recreates users and a deleted account stays deleted.
+  bootstrap:
+    profiles: ["init"]
+    image: organox:local
+    build:
+      context: .
+    # The service name supplies the subcommand; everything after it is passed
+    # through, e.g. `--email owner@pyme.com --role owner`.
+    entrypoint: ["create-user"]
+    environment: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # No password key here, on purpose: `create-user` reads it from the terminal
+    # without echo, or from stdin with `--password-stdin`. An environment
+    # variable would keep the plaintext password in `docker inspect` forever
+    # (see S15).
+    restart: "no"
+
 volumes:
   db_data:
