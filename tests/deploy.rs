@@ -12,6 +12,16 @@ use std::process::Command;
 ///
 /// Returns `None` when the Docker CLI is unavailable: the structural tests below
 /// still run, and a machine without Docker has no deployment to protect.
+///
+/// Two isolation measures, both load-bearing:
+///
+///  * the temp directory is created **beside** `compose.prod.yaml`, because
+///    compose loads the `.env` sitting next to the file and would otherwise read
+///    the developer's own configuration; and
+///  * the inheritable environment is cleared, because `docker compose` lets the
+///    process environment win over the values written here. Without that, a shell
+///    that exports `APP_COOKIE_SECURE=true` makes the S17 assertion fail against
+///    a correct compose file.
 fn render(env_body: &str) -> Option<Result<serde_json::Value, String>> {
     let probe = Command::new("docker")
         .args(["compose", "version"])
@@ -25,17 +35,27 @@ fn render(env_body: &str) -> Option<Result<serde_json::Value, String>> {
     // path would let one test read another's env file.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("organox-deploy-{}-{seq}", std::process::id()));
+    let repo = root();
+    let dir = repo.join(format!(".compose-test-{}-{seq}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("temp dir");
+    // A panicking test leaves this behind; the sweep keeps the tree clean even
+    // then, without relying on a Drop guard that could mask the failure.
+    sweep_stale_test_dirs(&repo);
+    // An empty `.env` next to the compose file: any project `.env` would be read
+    // from here, so this is the file that neutralizes it.
+    fs::write(dir.join(".env"), "").expect("write empty .env");
     let env_file = dir.join("deploy.env");
     fs::write(&env_file, env_body).expect("write env file");
 
     let out = Command::new("docker")
-        .args(["compose", "-f", "compose.prod.yaml", "--env-file"])
+        .args(["compose", "-f"])
+        .arg(repo.join("compose.prod.yaml"))
+        .arg("--env-file")
         .arg(&env_file)
         .args(["config", "--format", "json"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .current_dir(&dir)
+        .env_clear()
         .output()
         .expect("spawn docker compose");
     let _ = fs::remove_dir_all(&dir);
@@ -49,6 +69,36 @@ fn render(env_body: &str) -> Option<Result<serde_json::Value, String>> {
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Remove scratch directories a previous run abandoned mid-test.
+///
+/// Runs once per process and only removes directories owned by a **different**
+/// process. Both parts matter: tests run in parallel, and a sweep that removed
+/// its own siblings deleted a live test's `.env` mid-render, which is exactly
+/// the interference the per-call directory exists to prevent.
+fn sweep_stale_test_dirs(repo: &std::path::Path) {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+
+    ONCE.call_once(|| {
+        let Ok(entries) = fs::read_dir(repo) else {
+            return;
+        };
+        let own_pid = std::process::id().to_string();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(rest) = name.strip_prefix(".compose-test-") else {
+                continue;
+            };
+            // `<pid>-<seq>`: skip anything this process still owns.
+            if rest.split('-').next() == Some(own_pid.as_str()) {
+                continue;
+            }
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    });
 }
 
 /// `S14` — the server never migrates at startup. Only the `migrate` binary
