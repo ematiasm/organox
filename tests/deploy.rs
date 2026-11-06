@@ -199,6 +199,71 @@ fn rendered_deployment_contract() {
     assert_eq!(published, ["3000"], "only the app may publish a port");
 }
 
+/// `S18` — the first owner is created by an explicitly named service, never by
+/// `up`, and it can read the password from a terminal.
+///
+/// The failure this prevents: a service that starts on every `up` would recreate
+/// a user that was deleted, and an `environment` password would sit in
+/// `docker inspect` in plaintext forever.
+#[test]
+fn bootstrap_is_profiled_and_carries_no_password() {
+    let compose = fs::read_to_string(root().join("compose.prod.yaml")).unwrap();
+    let block = compose
+        .split("\n  bootstrap:")
+        .nth(1)
+        .expect("compose.prod.yaml must define a bootstrap service");
+    let block = block.split("\n  app:").next().unwrap_or(block);
+    // Comments explain the rules; only real configuration counts.
+    let config_lines = || {
+        block
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    };
+
+    assert!(
+        config_lines().any(|line| line.starts_with("profiles:")),
+        "bootstrap must sit under a profile, or `up -d` would run it"
+    );
+    assert!(
+        config_lines().any(|line| line.contains("create-user")),
+        "bootstrap must run the create-user binary"
+    );
+    assert!(
+        !config_lines().any(|line| line.contains("--password-stdin")),
+        "bootstrap must stay interactive so the password never reaches a shell history"
+    );
+    // `DATABASE_URL` interpolates the database password; anything else named
+    // PASSWORD in this block would be a credential held in the container.
+    let offending: Vec<&str> = config_lines()
+        .filter(|line| line.contains("PASSWORD") && !line.contains("DATABASE_URL"))
+        .collect();
+    assert!(
+        offending.is_empty(),
+        "the bootstrap service must not carry a password in its environment: {offending:?}"
+    );
+
+    // The service only exists when the profile is named, which is what keeps it
+    // out of `up -d`.
+    let Some(rendered) = render("POSTGRES_PASSWORD=x\n") else {
+        eprintln!("skipped: docker compose is not available");
+        return;
+    };
+    let cfg = rendered.expect("compose must render with a password");
+    let services = cfg["services"].as_object().expect("services");
+    assert!(
+        !services.contains_key("bootstrap"),
+        "bootstrap must not be part of the default service set"
+    );
+    assert_eq!(
+        cfg["services"]["app"]["depends_on"]
+            .as_object()
+            .map(|deps| deps.keys().cloned().collect::<Vec<_>>()),
+        Some(vec!["db".to_string(), "migrate".to_string()]),
+        "app must not depend on bootstrap: it is a manual step"
+    );
+}
+
 /// `S16` — a missing password refuses to render instead of starting a database
 /// with an empty one.
 #[test]

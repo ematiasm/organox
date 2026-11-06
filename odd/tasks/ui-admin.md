@@ -33,14 +33,15 @@ S13. The API client is **generated from OpenAPI** (`utoipa` -> `openapi.json` ->
 
 S14. **Migrations are a separate step, never part of server startup.** The image ships a `migrate` binary with the migrations embedded (`sqlx::migrate!`), and `compose.prod.yaml` runs it as a one-shot service that the server waits for (`condition: service_completed_successfully`). A restarting process that migrates would race itself, and two instances would migrate concurrently.
 
-S15. The image ships **`organox` and `create-user`**; `migrate` is the third binary. There is no seeding: the first `owner` is created once with `docker compose exec -T app create-user --password-stdin`. A password in a container environment variable would live there forever.
+S15. The image ships **`organox`, `create-user` and `migrate`**. There is no seeding: the first `owner` is created once with a dedicated `bootstrap` service that runs `create-user` interactively. A password in a container environment variable would live there forever.
 
 S16. The deployment reads **one `.env` per machine**, from `.env.prod.example`, and `POSTGRES_PASSWORD` is the **single source** of the database password: the compose file builds `DATABASE_URL` from it, so the two cannot disagree.
 
 S17. **Plain HTTP over both LAN and tailnet, with `APP_COOKIE_SECURE=false`.** A `Secure` cookie is silently dropped over `http://`: the login appears to succeed and every later request returns 401. Tailscale encrypts tailnet traffic end to end, so only the LAN hop is in clear text. `tailscale serve`/TLS is a later decision that also changes the per-IP login limit (the app deliberately ignores `X-Forwarded-For`).
 
-## Tasks
+S18. The first `owner` is created by a **`bootstrap` service under the `init` profile**, run explicitly with `docker compose run --rm bootstrap`. It never starts with `up -d`, so a restart cannot recreate a deleted user, and the password is **typed at the terminal, never piped**: a herestring stays in the shell history and an environment variable stays in `docker inspect`.
 
+## Tasks
 | ID | Task | Specs | Route | Commit |
 |---|---|---|---|---|
 | T1 | OpenAPI with `utoipa` and TS type generation | S13 | inline | - |
@@ -50,7 +51,8 @@ S17. **Plain HTTP over both LAN and tailnet, with `APP_COOKIE_SECURE=false`.** A
 | T5 | Login screen | S6, S12 | inline | - |
 | T6 | Layout with sidebar + session guard | S7, S11 | inline | - |
 | T7 | Product list with search and stock | S9, S10 | inline | - |
-| T8 | Deploy artifacts: `Dockerfile`, `.dockerignore`, `compose.prod.yaml`, `src/bin/migrate.rs`, `.env.prod.example`, `tests/deploy.rs`, README "Deploy" | S2, S14-S17 | inline | uncommitted |
+| T8 | Deploy artifacts: `Dockerfile`, `.dockerignore`, `compose.prod.yaml`, `src/bin/migrate.rs`, `.env.prod.example`, `tests/deploy.rs`, README "Deploy" | S2, S14-S17 | inline | 6779565 |
+| T9 | `bootstrap` service under the `init` profile, interactive password | S18 | inline | b9f104e |
 
 ## Log
 
@@ -133,5 +135,24 @@ L24. Verification of T8 (evidence, not intent): built `organox:local` (174 MB), 
 L25. Independent verification (`gentle-ai-verify`) over the change found one blocker that self-review had missed: `.env.prod.example` documented `APP_LOGIN_MAX_FAILURES`, `APP_LOGIN_BLOCK_MINUTES` and `APP_LOGIN_IP_MAX_PER_MINUTE`, but `compose.prod.yaml` never forwarded them, so an operator setting a limit would silently keep the defaults. Fixed by wiring the three keys with defaults, and pinned by `tests/deploy.rs::every_documented_env_key_is_forwarded`, which reads both files and fails if the template names a key the compose file does not forward. Re-verified after the fix: `docker compose exec app printenv` shows `APP_LOGIN_MAX_FAILURES=7` when the env file sets 7. Also corrected from the same report: `docker compose ps` (without `-a`) hides the exited one-shot `migrate` service, and the project-structure line in README omitted `migrate`.
 
 L26. Native review closed `approved` for lineage `review-cda22092d5275f8e` (medium tier, 10 changed files, all four lenses) and its acknowledgement burned the authority. Seven advisory findings, all non-blocking and recorded as later work rather than corrections: backup/restore absent (already L20), plaintext cookie on the LAN hop (the accepted S17 trade-off), two readability nits in README and `tests/deploy.rs`, and three reliability nits in `compose.prod.yaml:34`, `src/bin/migrate.rs:21-23` and the temp-directory handling in `tests/deploy.rs:34-39`.
+
+L27. User question on the documented bootstrap command: "estoy leyendo este comando `docker compose -f compose.prod.yaml exec -T app create-user ... --password-stdin <<< 'la-password'`. No es mejor dejar setteado un user y password en el .env?" Answer: no. Seeding from the environment keeps the plaintext password in `.env` and in `docker inspect` forever, does not rotate (an `upsert` seed would overwrite a changed password and a create-if-missing seed leaves an orphan), and resurrects deleted users. The friction behind the question is real, so the fix is fewer keystrokes without persisting the secret: S18's interactive `bootstrap` service. The documented herestring was itself a defect: it leaves the plaintext password in `.bash_history`, and it is gone from the README.
+
+L28. User request: "hace el 1 nomas, el bootstrap por ahora, descarta 2 y 3". T9 is limited to the interactive `bootstrap` service. Explicitly discarded, so nobody reopens them by accident:
+
+- **Not doing: a settings table for business rules** (VAT included in prices, receipt numbering, business identity). Postponed, not rejected on the merits: it belongs in the database, not `.env`, and it is what S8's `/settings` screen is for.
+- **Not doing: choosing which modules load** (sales, invoicing, accounting). The reasoning is recorded so it is not re-litigated from scratch: only sales is optional today, catalog and users are prerequisites; hiding a rail item is not authorization (S11 says the backend authorizes); and the open question that blocks the design is what happens to the data of a module that is switched off — hiding it leaves unauditable records, deleting it destroys history.
+
+L29. T9 implemented and verified. The `bootstrap` service sits under the `init` profile with `entrypoint: ["create-user"]`, so arguments pass through after the service name and no password key exists in its environment (`tests/deploy.rs::bootstrap_is_profiled_and_carries_no_password` asserts the profile, the absence of `--password-stdin`, and the absence of any `PASSWORD` key other than the one embedded in `DATABASE_URL`). Verified with a real TTY (`script -qec`): the `password:` / `repeat password:` prompts appear without echo, the hash is argon2id, and the user is stored. `docker compose config --services` lists `app db migrate` by default and adds `bootstrap` only with `--profile init`, which is what keeps it out of `up -d`. The stack was torn down with `down -v` and left no residue.
+
+L30. Independent verification of T9: `gentle-ai-verify` was launched but **stalled and was reported unavailable** (timeout after 30 minutes with a `bash` call still running). Per the bounded-stop rule it was not retried; the checks it would have performed were done inline instead, with mutation evidence rather than assertion:
+
+- **V1 (profiled out of `up -d`)**: `docker compose -f compose.prod.yaml config --services` lists `app db migrate`; adding `--profile init` adds `bootstrap`. No service lists `bootstrap` under `depends_on`.
+- **V2 (argument pass-through, highest risk)**: already proven empirically in L29 — `docker compose run --rm bootstrap --email boot@pyme.com --role owner` created `boot@pyme.com` with role `owner`, so `entrypoint: ["create-user"]` forwards the arguments to clap unchanged. The same run also proves `docker compose run` of an explicitly named profiled service does **not** require `--profile`, which is what the README relies on.
+- **V3 (interactive path)**: `src/bin/create-user.rs:110-117` refuses when stdin is not a terminal and otherwise prompts twice through `rpassword` without echo.
+- **V4 (the test is not vacuous)**: verified by mutation. Renaming the service to `bootstrapX` fails with "compose.prod.yaml must define a bootstrap service"; deleting the `profiles:` line fails with "bootstrap must sit under a profile". Both mutations were reverted and the full file re-tested (5/5 green). The block extraction is not order-dependent in the way that matters: it slices from `bootstrap:` to the next service header, and renaming or removing the key fails loudly instead of passing silently.
+- **V6 (README matches the compose file)**: the documented command is the one that was executed.
+
+L31. Third native review (lineage `review-a31a71a6f3eebc4c`, target 4 files / 131 lines, medium tier, correction budget 66 unused) closed `approved`, and its acknowledgement burned the authority. Five advisory findings, all non-blocking. Three share one root cause worth recording: `tests/deploy.rs` greps the `bootstrap` block for text instead of parsing it, so an **alias** (a YAML anchor that injects `--password-stdin` or a password key) would slip past it (`tests/deploy.rs:236-244`, `:238-239`). The test holds for the file as written and fails loudly when the service is renamed or the profile is removed (verified by mutation, L30), but it is a grep, not a contract. Parsing the rendered YAML would close that gap if this file becomes more dynamic. Also flagged: the README's non-interactive fallback (`README.md:320-321`) still mentions `--password-stdin`, which is the form that can leak into history; it is labeled as the no-terminal fallback and is kept for that reason.
 
 L17. Spec correction: S1 said TypeScript 7, which is not installable today. `@sveltejs/kit` 3.1.1 — the latest published version — declares `peerDependencies: { "typescript": "^6.0.0" }`, and installing TypeScript 7.0.2 breaks `npm run check` with `Cannot read properties of undefined (reading 'readFile')` inside `svelte-kit sync`. The spec now says TypeScript 6, matching `frontend/package.json` (`^6.0.0`) and what is actually installed (6.0.3). Moving to 7 is a follow-up gated on Kit supporting it, not a decision this project can take alone.

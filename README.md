@@ -303,8 +303,22 @@ Create the first owner once. There is no seeding, and the password is never a
 container environment variable — it would stay there forever:
 
 ```bash
-docker compose -f compose.prod.yaml exec -T app \
-  create-user --email owner@pyme.com --role owner --password-stdin <<< 'the-password'
+docker compose -f compose.prod.yaml run --rm bootstrap \
+  --email owner@pyme.com --role owner
+# password:        <- typed here, never echoed, never written to disk
+# repeat password:
+```
+
+`bootstrap` is a service under the `init` profile, so `up -d` never starts it and
+a restart never recreates a user that was deleted. It runs interactively, which
+is why the password can be typed instead of piped: piping it (`--password-stdin`
+with a herestring) leaves the plaintext in the shell history.
+
+The older, non-interactive form still works where there is no terminal:
+
+```bash
+printf '%s' "$PW" | docker compose -f compose.prod.yaml exec -T app \
+  create-user --email owner@pyme.com --role owner --password-stdin
 ```
 
 Check it is up:
