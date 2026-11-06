@@ -60,6 +60,14 @@ fn require_docker() -> bool {
 ///    that exports `APP_COOKIE_SECURE=true` makes the S17 assertion fail against
 ///    a correct compose file.
 fn render(env_body: &str) -> Result<serde_json::Value, String> {
+    render_with_profiles(env_body, &[])
+}
+
+/// Render with profiles enabled, so a service behind a profile becomes part of
+/// the JSON. Needed because compose omits profiled services from the default
+/// render entirely: a test that only looked at the default output could not
+/// assert anything about `bootstrap` beyond its absence.
+fn render_with_profiles(env_body: &str, profiles: &[&str]) -> Result<serde_json::Value, String> {
     // A directory per call, not per process: tests run in parallel and a shared
     // path would let one test read another's env file.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -77,11 +85,18 @@ fn render(env_body: &str) -> Result<serde_json::Value, String> {
     let env_file = dir.join("deploy.env");
     fs::write(&env_file, env_body).expect("write env file");
 
-    let out = Command::new("docker")
-        .args(["compose", "-f"])
+    let mut cmd = Command::new("docker");
+    cmd.args(["compose", "-f"])
         .arg(repo.join("compose.prod.yaml"))
         .arg("--env-file")
-        .arg(&env_file)
+        .arg(&env_file);
+    if !profiles.is_empty() {
+        cmd.arg("--profile");
+        for profile in profiles {
+            cmd.arg(profile);
+        }
+    }
+    let out = cmd
         .args(["config", "--format", "json"])
         .current_dir(&dir)
         .env_clear()
@@ -295,55 +310,93 @@ fn rendered_deployment_contract() {
 /// `docker inspect` in plaintext forever.
 #[test]
 fn bootstrap_is_profiled_and_carries_no_password() {
-    let compose = fs::read_to_string(root().join("compose.prod.yaml")).unwrap();
-    let block = compose
-        .split("\n  bootstrap:")
-        .nth(1)
-        .expect("compose.prod.yaml must define a bootstrap service");
-    let block = block.split("\n  app:").next().unwrap_or(block);
-    // Comments explain the rules; only real configuration counts.
-    let config_lines = || {
-        block
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-    };
+    if !require_docker() {
+        return;
+    }
 
+    // Read the **rendered** service, not the file's text. Grepping the YAML
+    // meant a YAML alias or anchor could inject `--password-stdin` or a password
+    // key into the service without the string ever appearing in its block.
+    let cfg = render_with_profiles("POSTGRES_PASSWORD=x\n", &["init"])
+        .expect("compose must render with a password");
+    let services = cfg["services"].as_object().expect("services");
+    let bootstrap = services
+        .get("bootstrap")
+        .expect("compose.prod.yaml must define a bootstrap service");
+
+    // S18: a profile keeps it out of `up -d`, and a restart cannot resurrect a
+    // user that was deleted.
+    let profiles = bootstrap["profiles"]
+        .as_array()
+        .expect("bootstrap must sit under a profile, or `up -d` would run it");
     assert!(
-        config_lines().any(|line| line.starts_with("profiles:")),
-        "bootstrap must sit under a profile, or `up -d` would run it"
+        profiles.iter().any(|p| p == "init"),
+        "bootstrap must be reachable through the init profile, got: {profiles:?}"
     );
-    assert!(
-        config_lines().any(|line| line.contains("create-user")),
-        "bootstrap must run the create-user binary"
+    assert_eq!(
+        bootstrap["restart"], "no",
+        "a one-shot service must not restart itself"
     );
+
+    // The binary and its arguments, as compose will actually execute them.
+    let entrypoint = bootstrap["entrypoint"]
+        .as_array()
+        .expect("bootstrap must declare an entrypoint");
+    assert_eq!(
+        entrypoint.first().and_then(|v| v.as_str()),
+        Some("create-user"),
+        "bootstrap must run the create-user binary, got: {entrypoint:?}"
+    );
+    let flattened = entrypoint
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        !config_lines().any(|line| line.contains("--password-stdin")),
+        !flattened.contains("--password-stdin"),
         "bootstrap must stay interactive so the password never reaches a shell history"
     );
-    // `DATABASE_URL` interpolates the database password; anything else named
-    // PASSWORD in this block would be a credential held in the container.
-    let offending: Vec<&str> = config_lines()
-        .filter(|line| line.contains("PASSWORD") && !line.contains("DATABASE_URL"))
+
+    // The credential rule, read from the rendered environment instead of the
+    // file text. `DATABASE_URL` is the one place the database password is
+    // allowed to appear; it interpolates `POSTGRES_PASSWORD` by design (S16).
+    let env = bootstrap["environment"]
+        .as_object()
+        .expect("bootstrap must declare an environment");
+    let offending: Vec<&String> = env
+        .iter()
+        .filter(|(key, _)| key.contains("PASSWORD") && *key != "DATABASE_URL")
+        .map(|(key, _)| key)
         .collect();
     assert!(
         offending.is_empty(),
         "the bootstrap service must not carry a password in its environment: {offending:?}"
     );
-
-    // The service only exists when the profile is named, which is what keeps it
-    // out of `up -d`.
-    if !require_docker() {
-        return;
-    }
-    let cfg = render("POSTGRES_PASSWORD=x\n").expect("compose must render with a password");
-    let services = cfg["services"].as_object().expect("services");
     assert!(
-        !services.contains_key("bootstrap"),
+        env.contains_key("DATABASE_URL"),
+        "bootstrap needs DATABASE_URL to reach the database"
+    );
+
+    // It runs after the schema exists, or it would fail on first deploy.
+    assert_eq!(
+        bootstrap["depends_on"]["db"]["condition"], "service_healthy",
+        "bootstrap must wait for a healthy database"
+    );
+    assert_eq!(
+        bootstrap["depends_on"]["migrate"]["condition"], "service_completed_successfully",
+        "bootstrap must wait for the migrations"
+    );
+
+    // S18, the other half: without the profile the service does not exist, so
+    // `up -d` cannot start it and `app` must not wait for it.
+    let default = render("POSTGRES_PASSWORD=x\n").expect("compose must render with a password");
+    let default_services = default["services"].as_object().expect("services");
+    assert!(
+        !default_services.contains_key("bootstrap"),
         "bootstrap must not be part of the default service set"
     );
     assert_eq!(
-        cfg["services"]["app"]["depends_on"]
+        default["services"]["app"]["depends_on"]
             .as_object()
             .map(|deps| deps.keys().cloned().collect::<Vec<_>>()),
         Some(vec!["db".to_string(), "migrate".to_string()]),
