@@ -3,6 +3,10 @@
 Business management for an SMB: stock and supplies.
 Backend in Rust/Axum + PostgreSQL + sqlx. Single-tenant.
 
+Work arrives as an issue, then a PR that links it. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for labels, commit shape and what a PR is
+expected to prove.
+
 ## Requirements
 
 - Stable Rust (pinned by `rust-toolchain.toml`)
