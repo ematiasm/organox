@@ -3,15 +3,52 @@
 //! These are cheap structural tests, not a deployment. The rendered cases shell
 //! out to `docker compose config`, which is the same path the operator runs, so
 //! a value that never reaches the container fails here instead of in production.
+//!
+//! **Docker is a requirement, not an optional extra.** A suite that quietly
+//! skips its only meaningful assertions and still reports green is worse than
+//! one that fails, because the green is read as evidence. If Docker is missing,
+//! these tests fail and say what to install. Set `ORGANOX_DEPLOY_TESTS=skip` to
+//! turn the rendered cases off on purpose; the skip is then printed, not silent.
 
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Render `compose.prod.yaml` with a throwaway env file and return the JSON.
+/// Whether `docker compose` can run, probed once per process.
+fn docker_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        Command::new("docker")
+            .args(["compose", "version"])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Guard the rendered cases: return `false` only when the skip was asked for.
 ///
-/// Returns `None` when the Docker CLI is unavailable: the structural tests below
-/// still run, and a machine without Docker has no deployment to protect.
+/// Panics with instructions otherwise, so a machine without Docker cannot report
+/// a passing suite that asserted nothing.
+fn require_docker() -> bool {
+    match std::env::var("ORGANOX_DEPLOY_TESTS").as_deref() {
+        Ok("skip") => {
+            eprintln!("skipped on purpose: ORGANOX_DEPLOY_TESTS=skip");
+            false
+        }
+        _ if docker_available() => true,
+        _ => panic!(
+            "these tests render compose.prod.yaml through `docker compose config`, \
+             and Docker is not available. Install Docker, or set \
+             ORGANOX_DEPLOY_TESTS=skip to leave the rendered checks out on purpose."
+        ),
+    }
+}
+
+/// Render `compose.prod.yaml` with a throwaway env file.
+///
+/// The caller must have passed [`require_docker`] first: this runs the CLI
+/// without re-probing it.
 ///
 /// Two isolation measures, both load-bearing:
 ///
@@ -22,15 +59,7 @@ use std::process::Command;
 ///    process environment win over the values written here. Without that, a shell
 ///    that exports `APP_COOKIE_SECURE=true` makes the S17 assertion fail against
 ///    a correct compose file.
-fn render(env_body: &str) -> Option<Result<serde_json::Value, String>> {
-    let probe = Command::new("docker")
-        .args(["compose", "version"])
-        .output()
-        .ok()?;
-    if !probe.status.success() {
-        return None;
-    }
-
+fn render(env_body: &str) -> Result<serde_json::Value, String> {
     // A directory per call, not per process: tests run in parallel and a shared
     // path would let one test read another's env file.
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -57,14 +86,19 @@ fn render(env_body: &str) -> Option<Result<serde_json::Value, String>> {
         .current_dir(&dir)
         .env_clear()
         .output()
-        .expect("spawn docker compose");
+        // `require_docker` already proved the binary runs; reaching here without
+        // it means something removed Docker mid-run, so say that instead of a
+        // bare panic from `expect`.
+        .unwrap_or_else(|err| {
+            panic!("`docker compose config` could not be spawned after a successful probe: {err}")
+        });
     let _ = fs::remove_dir_all(&dir);
 
-    Some(if out.status.success() {
+    if out.status.success() {
         serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).map_err(|e| e.to_string())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).into_owned())
-    })
+    }
 }
 
 fn root() -> PathBuf {
@@ -190,13 +224,11 @@ fn every_documented_env_key_is_forwarded() {
 /// the same file: the assertions are cheap and independent, the render is not.
 #[test]
 fn rendered_deployment_contract() {
-    let Some(rendered) =
-        render("POSTGRES_PASSWORD=Sup3r_Secret\nDATABASE_URL=postgres://stray@elsewhere/x\n")
-    else {
-        eprintln!("skipped: docker compose is not available");
+    if !require_docker() {
         return;
-    };
-    let cfg = rendered.expect("compose must render with a password");
+    }
+    let cfg = render("POSTGRES_PASSWORD=Sup3r_Secret\nDATABASE_URL=postgres://stray@elsewhere/x\n")
+        .expect("compose must render with a password");
 
     // S16: one source. A stray DATABASE_URL in the environment cannot win.
     let derived = "postgres://organox:Sup3r_Secret@db:5432/organox";
@@ -301,11 +333,10 @@ fn bootstrap_is_profiled_and_carries_no_password() {
 
     // The service only exists when the profile is named, which is what keeps it
     // out of `up -d`.
-    let Some(rendered) = render("POSTGRES_PASSWORD=x\n") else {
-        eprintln!("skipped: docker compose is not available");
+    if !require_docker() {
         return;
-    };
-    let cfg = rendered.expect("compose must render with a password");
+    }
+    let cfg = render("POSTGRES_PASSWORD=x\n").expect("compose must render with a password");
     let services = cfg["services"].as_object().expect("services");
     assert!(
         !services.contains_key("bootstrap"),
@@ -324,12 +355,11 @@ fn bootstrap_is_profiled_and_carries_no_password() {
 /// with an empty one.
 #[test]
 fn missing_postgres_password_fails_to_render() {
+    if !require_docker() {
+        return;
+    }
     for body in ["APP_COOKIE_SECURE=false\n", "POSTGRES_PASSWORD=\n"] {
-        let Some(rendered) = render(body) else {
-            eprintln!("skipped: docker compose is not available");
-            return;
-        };
-        let err = rendered.expect_err("compose must not render without a password");
+        let err = render(body).expect_err("compose must not render without a password");
         assert!(
             err.contains("required variable POSTGRES_PASSWORD"),
             "the error must name the variable, got: {err}"
