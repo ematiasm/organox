@@ -89,11 +89,17 @@ fn sweep_stale_test_dirs(repo: &std::path::Path) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
+            // The exact shape this module creates: `.compose-test-<pid>-<seq>`,
+            // both numeric. Anything else sharing the prefix belongs to the
+            // developer and is never deleted.
             let Some(rest) = name.strip_prefix(".compose-test-") else {
                 continue;
             };
-            // `<pid>-<seq>`: skip anything this process still owns.
-            if rest.split('-').next() == Some(own_pid.as_str()) {
+            let Some((pid, seq)) = rest.split_once('-') else {
+                continue;
+            };
+            let numeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+            if !numeric(pid) || !numeric(seq) || pid == own_pid {
                 continue;
             }
             let _ = fs::remove_dir_all(entry.path());
