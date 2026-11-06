@@ -7,3 +7,6 @@
 /frontend/build
 /frontend/.svelte-kit
 .atl/
+
+# Scratch directories from tests/deploy.rs when a run is interrupted.
+.compose-test-*
