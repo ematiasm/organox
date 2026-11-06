@@ -6,12 +6,24 @@
       {
         "ordinal": 0,
         "name": "failed_count",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "failed_count"
+          }
+        }
       },
       {
         "ordinal": 1,
         "name": "blocked_until",
-        "type_info": "Timestamptz"
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "blocked_until"
+          }
+        }
       }
     ],
     "parameters": {

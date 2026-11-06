@@ -16,17 +16,35 @@
               ]
             }
           }
+        },
+        "origin": {
+          "Table": {
+            "table": "products",
+            "name": "kind"
+          }
         }
       },
       {
         "ordinal": 1,
         "name": "name",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "products",
+            "name": "name"
+          }
+        }
       },
       {
         "ordinal": 2,
         "name": "price",
-        "type_info": "Numeric"
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "products",
+            "name": "price"
+          }
+        }
       }
     ],
     "parameters": {

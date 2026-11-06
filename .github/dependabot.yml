@@ -6,11 +6,14 @@ version: 2
 #
 # Three deliberate choices:
 #
-#   1. Nothing is ignored. An ignore entry silences a real advisory; the four
-#      open alerts are all `low` and reachable only through dev-time
-#      dependencies, so the groups below keep them visible instead of hiding
-#      them. Suppressing an advisory is a decision for a human reviewing the
-#      alert, not for a config file.
+#   1. Exactly one exception, and it cannot hide an advisory. The only `ignore`
+#      entry is TypeScript majors, keyed by `update-types`, which GitHub
+#      documents as not applying to security updates. Nothing is ignored by
+#      dependency name or version: those forms do expand to the security path
+#      and silence a real advisory. The four open alerts are all `low` and
+#      reachable only through dev-time dependencies, so the groups below keep
+#      them visible instead of hiding them. Suppressing an advisory is a
+#      decision for a human reviewing the alert, not for a config file.
 #   2. Version and security updates share `open-pull-requests-limit`, so the
 #      caps here keep version bumps from starving a security fix out of the
 #      queue.
@@ -26,6 +29,17 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    # TypeScript 7 is not installable here yet: both @sveltejs/kit 3.1.1 and
+    # svelte-check 4.7.8 declare `peerDependencies.typescript` that stops at
+    # `^6.0.0`, so `npm ci` on PR #9 died with ERESOLVE before any check ran.
+    # Decision recorded in odd/tasks/ui-admin.md (S1, L17). Only version-update
+    # majors are ignored: `update-types` does not apply to security updates, so
+    # an advisory whose only fix is a major TypeScript still reaches this queue.
+    # Drop this entry once Kit supports 7.
+    ignore:
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
     # Keep lockfile churn reviewable: a regenerated lock is what broke the
     # offline build once, so one PR per change audits better than a batch.
     # Security updates are never grouped.
