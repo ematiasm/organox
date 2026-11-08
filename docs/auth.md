@@ -120,10 +120,30 @@ printf '%s' "$ADMIN_PW" | docker compose exec -T app create-user \
 The password is never passed as an argument: it would be visible in `ps aux` to
 any system user.
 
+## Login rate limiting
+
+Implemented, with its own document: `docs/ratelimit.md`. Two layers, applied to
+`POST /auth/login` only: a per-account lockout in Postgres, which survives a
+restart, and a per-IP fixed window in memory, which rejects before argon2 is
+paid. Both answer `429` with `Retry-After`.
+
 ## What is missing
 
-- **Login rate limiting.** A single unlimited login endpoint enables distributed
-  brute force. `tower_governor` per IP, plus per-account lockout.
-- **Password change** (`POST /auth/password`) and revocation of all the user's
-  sessions.
-- **Unlocking**: there is no lockout for failed attempts yet.
+- **Password change** (`POST /auth/password`). There is no such route: the auth
+  router serves only `/auth/login`, `/auth/logout`, `/auth/me` and `/users`, and
+  no `UPDATE users` statement exists anywhere in the codebase. A password can be
+  set once, by `create-user`, and never rotated.
+- **Revoking every session of one user.** `POST /auth/logout` deletes the row of
+  the token that made the request (`src/auth/repository.rs:181`); no statement
+  deletes the sessions of a `user_id`. A cookie copied from a second device keeps
+  working until it expires, which matters more once password change exists,
+  because changing a password is exactly when a user expects other devices to be
+  kicked out.
+- **Manual unlock.** None, and none is wanted: the per-account lockout is soft on
+  purpose and expires on its own (`APP_LOGIN_BLOCK_MINUTES`, 5 by default). A
+  hard lockout would let anyone who knows the owner's email lock them out of
+  their own system by typing the wrong password. `docs/ratelimit.md` has the
+  reasoning and the accepted trade-off.
+- **Cleanup of `login_attempts` and `sessions`.** The functions exist
+  (`purge_stale`, `purge_expired_sessions`) but nothing schedules them; see
+  `docs/ratelimit.md`.
