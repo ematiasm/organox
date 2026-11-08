@@ -134,11 +134,12 @@ paid. Both answer `429` with `Retry-After`.
   no `UPDATE users` statement exists anywhere in the codebase. A password can be
   set once, by `create-user`, and never rotated.
 - **Revoking every session of one user.** `POST /auth/logout` deletes the row of
-  the token that made the request (`src/auth/repository.rs:181`); no statement
-  deletes the sessions of a `user_id`. A cookie copied from a second device keeps
-  working until it expires, which matters more once password change exists,
-  because changing a password is exactly when a user expects other devices to be
-  kicked out.
+  the token that made the request (`src/auth/repository.rs:181`). No statement
+  filters `sessions` by `user_id`: the other two touch `token_hash` and
+  `expires_at`, so `sessions_user_id_idx` (`migrations/0002_auth.sql:51`) currently
+  serves nothing. The gap is revocation, not lookup: a session token stolen and
+  replayed on another device keeps working until it expires, and changing a
+  password is precisely when a user expects the other devices to be kicked out.
 - **Manual unlock.** None, and none is wanted: the per-account lockout is soft on
   purpose and expires on its own (`APP_LOGIN_BLOCK_MINUTES`, 5 by default). A
   hard lockout would let anyone who knows the owner's email lock them out of
