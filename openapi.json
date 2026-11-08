@@ -1433,7 +1433,8 @@
         "required": [
           "items",
           "limit",
-          "offset"
+          "offset",
+          "total"
         ],
         "properties": {
           "items": {
@@ -1444,11 +1445,18 @@
           },
           "limit": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "Page size actually applied (the request defaults to 50, is capped at 200)."
           },
           "offset": {
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "description": "Offset of `items[0]` in the filtered set."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many products the filters match in total, ignoring the page. A client\nneeds this to tell a full page from the last one."
           }
         }
       },

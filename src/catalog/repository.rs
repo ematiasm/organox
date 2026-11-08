@@ -112,6 +112,11 @@ fn is_sku_violation(err: &sqlx::Error) -> bool {
 /// The sign is applied in SQL with `CASE`, replicating `MovementReason::sign`.
 /// This is the only deliberate duplication of that rule and integration tests
 /// cover it by comparing both paths.
+/// A page of products plus the number of products the filters match in total.
+///
+/// `total` is what lets a client tell a full page from the last page. Without
+/// it a caller that pages by `limit`/`offset` can only guess whether more rows
+/// exist, which is how the product list truncated silently at 50 (issue #22).
 pub async fn list_products(
     pool: &PgPool,
     kind: Option<ProductKind>,
@@ -119,7 +124,7 @@ pub async fn list_products(
     search: Option<&str>,
     limit: i64,
     offset: i64,
-) -> Result<Vec<ProductWithStock>, RepoError> {
+) -> Result<(Vec<ProductWithStock>, i64), RepoError> {
     let rows = sqlx::query!(
         r#"
         SELECT
@@ -133,7 +138,13 @@ pub async fn list_products(
             p.is_active,
             p.created_at,
             p.updated_at,
-            s.stock
+            s.stock,
+            -- Window function, not a second query: the count of every matching
+            -- row is computed in the same pass as the page. `COUNT(*) OVER ()`
+            -- is evaluated after the WHERE clause and before LIMIT/OFFSET, so it
+            -- is the total, and it survives an empty page because the row set
+            -- it counts is the filtered one.
+            COUNT(*) OVER () AS "total!"
         FROM products p
         LEFT JOIN LATERAL (
             SELECT COALESCE(SUM(
@@ -162,7 +173,12 @@ pub async fn list_products(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
+    // Every row of a page carries the same total, so any row answers for it.
+    // An empty page carries none, which is why the caller re-counts in that
+    // case instead of trusting a zero it cannot distinguish from "no rows".
+    let total = rows.first().map(|r| r.total).unwrap_or(-1);
+
+    let items = rows
         .into_iter()
         .map(|r| {
             let kind = r.kind;
@@ -188,7 +204,40 @@ pub async fn list_products(
                 product,
             }
         })
-        .collect())
+        .collect();
+
+    Ok((items, total))
+}
+
+/// The number of products the same filters match, ignoring the page.
+///
+/// Only the empty-page case of [`list_products`] needs this: `COUNT(*) OVER ()`
+/// reports nothing when the page holds no rows, and an offset past the end is a
+/// real case once a client pages by `offset` (a product deleted between two
+/// requests is enough). Returning 0 there would tell the client the catalog is
+/// empty instead of telling it to come back to an earlier page.
+pub async fn count_products(
+    pool: &PgPool,
+    kind: Option<ProductKind>,
+    include_inactive: bool,
+    search: Option<&str>,
+) -> Result<i64, RepoError> {
+    let total = sqlx::query!(
+        r#"
+        SELECT COUNT(*) AS "count!"
+        FROM products p
+        WHERE ($1::product_kind IS NULL OR p.kind = $1::product_kind)
+          AND ($2::bool OR p.is_active)
+          AND ($3::text IS NULL OR p.name ILIKE '%' || $3::text || '%')
+        "#,
+        kind as Option<ProductKind>,
+        include_inactive,
+        search,
+    )
+    .fetch_one(pool)
+    .await?;
+
+    Ok(total.count)
 }
 
 pub async fn find_product(pool: &PgPool, id: Uuid) -> Result<Option<ProductWithStock>, RepoError> {

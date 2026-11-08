@@ -77,6 +77,7 @@ pub async fn create_product(
     Ok(id)
 }
 
+/// A page of products and how many the filters match in total.
 pub async fn list_products(
     pool: &PgPool,
     kind: Option<ProductKind>,
@@ -84,16 +85,30 @@ pub async fn list_products(
     search: Option<&str>,
     limit: i64,
     offset: i64,
-) -> Result<Vec<ProductWithStock>, CatalogError> {
+) -> Result<(Vec<ProductWithStock>, i64), CatalogError> {
     // Defensive cap: a `limit` of 10 million is a per-query DoS.
     let limit = limit.clamp(1, 200);
     let offset = offset.max(0);
 
     let search = search.map(str::trim).filter(|s| !s.is_empty());
 
-    repository::list_products(pool, kind, include_inactive, search, limit, offset)
-        .await
-        .map_err(map_repo_error)
+    let (items, total) =
+        repository::list_products(pool, kind, include_inactive, search, limit, offset)
+            .await
+            .map_err(map_repo_error)?;
+
+    // An offset past the last product returns an empty page, and a page with no
+    // rows carries no `COUNT(*) OVER ()` value. Re-count so a stale page link
+    // reports the real total instead of claiming the catalog is empty.
+    let total = if total < 0 {
+        repository::count_products(pool, kind, include_inactive, search)
+            .await
+            .map_err(map_repo_error)?
+    } else {
+        total
+    };
+
+    Ok((items, total))
 }
 
 pub async fn get_product(pool: &PgPool, id: Uuid) -> Result<ProductWithStock, CatalogError> {

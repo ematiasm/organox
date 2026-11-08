@@ -398,15 +398,17 @@ async fn deactivate_hides_from_default_list_but_keeps_history(pool: PgPool) {
         .await
         .unwrap();
     assert!(
-        visible.is_empty(),
+        visible.0.is_empty(),
         "an inactive product does not appear by default"
     );
+    assert_eq!(visible.1, 0, "the hidden product is not counted");
 
     let all = service::list_products(&pool, None, true, None, 50, 0)
         .await
         .unwrap();
-    assert_eq!(all.len(), 1);
-    assert_eq!(all[0].stock, Some(dec!(5)), "history is preserved");
+    assert_eq!(all.0.len(), 1);
+    assert_eq!(all.1, 1, "include_inactive counts the inactive product");
+    assert_eq!(all.0[0].stock, Some(dec!(5)), "history is preserved");
 
     // Deactivation is idempotent.
     service::deactivate_product(&pool, product).await.unwrap();
@@ -431,20 +433,23 @@ async fn filters_by_kind_and_search(pool: PgPool) {
     let products = service::list_products(&pool, Some(ProductKind::Product), false, None, 50, 0)
         .await
         .unwrap();
-    assert_eq!(products.len(), 2);
+    assert_eq!(products.0.len(), 2);
+    assert_eq!(products.1, 2, "the total uses the same filters as the page");
 
     let services = service::list_products(&pool, Some(ProductKind::Service), false, None, 50, 0)
         .await
         .unwrap();
-    assert_eq!(services.len(), 1);
-    assert_eq!(services[0].stock, None);
+    assert_eq!(services.0.len(), 1);
+    assert_eq!(services.1, 1, "a service is counted under its own kind");
+    assert_eq!(services.0[0].stock, None);
 
     // Search is case-insensitive, not accent-insensitive: ILIKE handles case,
     // which is what is promised.
     let found = service::list_products(&pool, None, false, Some("flour"), 50, 0)
         .await
         .unwrap();
-    assert_eq!(found.len(), 2);
+    assert_eq!(found.0.len(), 2);
+    assert_eq!(found.1, 2, "the total respects the search filter");
 }
 
 #[sqlx::test]
@@ -676,6 +681,77 @@ async fn http_list_returns_items_array(pool: PgPool) {
     let body = body_json(response).await;
     assert_eq!(body["items"].as_array().unwrap().len(), 1);
     assert_eq!(body["items"][0]["name"], "Flour");
+}
+
+/// The list must say how many products match in total, not how many fit in the
+/// page. Without it a client cannot tell a full page from the last page, which
+/// is what made the frontend truncate at 50 silently (issue #22).
+#[sqlx::test]
+async fn http_list_reports_the_total_independently_of_the_page(pool: PgPool) {
+    seed_user(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    for name in ["Flour", "Rice", "Salt"] {
+        seed_product(&pool, ProductKind::Product, name, None).await;
+    }
+
+    let response = app(pool)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/products?limit=2&offset=0")
+                .header("cookie", format!("session={cookie}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["items"].as_array().unwrap().len(),
+        2,
+        "the page holds `limit` items"
+    );
+    assert_eq!(body["limit"], 2, "the page size echoes back");
+    assert_eq!(body["offset"], 0, "the page offset echoes back");
+    assert_eq!(
+        body["total"], 3,
+        "the total counts every matching product, not the page"
+    );
+}
+
+/// An offset past the last product returns an empty page. The total must still
+/// be the real one: `COUNT(*) OVER ()` reports nothing for zero rows, and a
+/// client that reads 0 would conclude the catalog is empty instead of stale.
+#[sqlx::test]
+async fn http_list_past_the_last_page_still_reports_the_total(pool: PgPool) {
+    seed_user(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    for name in ["Flour", "Rice"] {
+        seed_product(&pool, ProductKind::Product, name, None).await;
+    }
+
+    let response = app(pool)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/products?limit=2&offset=2")
+                .header("cookie", format!("session={cookie}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert!(
+        body["items"].as_array().unwrap().is_empty(),
+        "the second page of two products is empty"
+    );
+    assert_eq!(
+        body["total"], 2,
+        "an empty page still reports the real total, so the client can step back"
+    );
 }
 
 async fn body_json(response: axum::response::Response) -> Value {

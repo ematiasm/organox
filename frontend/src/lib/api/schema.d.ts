@@ -408,10 +408,22 @@ export interface components {
         ProductKind: "product" | "service";
         ProductListResponse: {
             items: components["schemas"]["ProductResponse"][];
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Page size actually applied (the request defaults to 50, is capped at 200).
+             */
             limit: number;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Offset of `items[0]` in the filtered set.
+             */
             offset: number;
+            /**
+             * Format: int64
+             * @description How many products the filters match in total, ignoring the page. A client
+             *     needs this to tell a full page from the last one.
+             */
+            total: number;
         };
         ProductResponse: {
             /** Format: date-time */

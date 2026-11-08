@@ -141,6 +141,18 @@ operational work: `owner` and `manager` can do it.
 
 `limit` is capped at 200: a `limit` of 10 million is a DoS by query.
 
+The list response is `{ items, limit, offset, total }`. `total` is how many
+products the filters match **ignoring the page**, computed with
+`COUNT(*) OVER ()` in the same query that returns the page — not a second round
+trip and not a cached number. A client needs it to tell a full page from the last
+one: `items.len()` alone cannot. When the requested page is past the end, the
+page comes back empty and `total` is re-counted, so a stale `offset` reports the
+real catalog size instead of `0`.
+
+That last case is not hypothetical: the product list pages by `offset`, and a
+product created or deleted between two requests is enough to leave a page link
+pointing past the end.
+
 Example of creation and stock entry:
 
 ```bash

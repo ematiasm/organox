@@ -117,12 +117,20 @@ export const api = {
 
 	logout: () => request<void>('/api/v1/auth/logout', { method: 'POST', skipAuthRedirect: true }),
 
-	listProducts: (params: { search?: string; kind?: ProductKind; includeInactive?: boolean }) =>
+	listProducts: (params: {
+		search?: string;
+		kind?: ProductKind;
+		includeInactive?: boolean;
+		limit?: number;
+		offset?: number;
+	}) =>
 		request<ProductList>('/api/v1/products', {
 			query: {
 				search: params.search,
 				kind: params.kind,
-				include_inactive: params.includeInactive
+				include_inactive: params.includeInactive,
+				limit: params.limit,
+				offset: params.offset
 			}
 		}),
 

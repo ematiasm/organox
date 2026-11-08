@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import {
 		Table,
@@ -18,15 +19,36 @@
 	let search = $derived(data.search);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 
+	/**
+	 * Build a products URL from the state that must survive navigation.
+	 *
+	 * Search resets the page: staying on page 4 of the old result set after a new
+	 * search would show an empty screen that looks like "no matches".
+	 */
+	function productsUrl(params: { search?: string; page?: number }): string {
+		const query = new URLSearchParams();
+		const term = (params.search ?? search).trim();
+		if (term) query.set('search', term);
+		if ((params.page ?? 1) > 1) query.set('page', String(params.page));
+
+		const qs = query.toString();
+		return qs ? `/products?${qs}` : '/products';
+	}
+
 	function onInput(event: Event) {
 		const value = (event.target as HTMLInputElement).value;
 		clearTimeout(timer);
 		timer = setTimeout(() => {
-			const query = value.trim() ? `?search=${encodeURIComponent(value.trim())}` : '';
 			// `reset: false` preserves input focus; `replace` avoids adding each
 			// keystroke to the history.
-			goto(`/products${query}`, { reset: false, replace: true });
+			goto(productsUrl({ search: value, page: 1 }), { reset: false, replace: true });
 		}, 300);
+	}
+
+	// Page changes are real navigations, not replaces: Back must return to the
+	// previous page instead of leaving the list entirely.
+	function goTo(page: number) {
+		goto(productsUrl({ page }));
 	}
 
 	/** Decimals arrive as strings ("1500.50") and are displayed unchanged. */
@@ -39,6 +61,15 @@
 		if (product.kind === 'service') return '—';
 		return product.stock ?? '0';
 	}
+
+	/** "1–50 of 137": the range on screen and the real total. */
+	let counter = $derived.by(() => {
+		if (data.total === 0) return '0 products';
+		const from = data.offset + 1;
+		const to = data.offset + data.items.length;
+		const noun = data.total === 1 ? 'product' : 'products';
+		return `${from}–${to} of ${data.total} ${noun}`;
+	});
 </script>
 
 <!-- Starting a sale lives in the rail; the page does not repeat the link. -->
@@ -89,7 +120,25 @@
 		</Table>
 	</div>
 
-	<p class="mt-3 text-sm text-muted-foreground">
-		{data.items.length} {data.items.length === 1 ? 'product' : 'products'}
-	</p>
+	<div class="mt-3 flex items-center justify-between gap-4 text-sm text-muted-foreground">
+		<span>{counter}</span>
+
+		{#if data.lastPage > 1}
+			<div class="flex items-center gap-2">
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={data.page <= 1}
+					onclick={() => goTo(data.page - 1)}>Previous</Button
+				>
+				<span class="tabular-nums">Page {data.page} of {data.lastPage}</span>
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={data.page >= data.lastPage}
+					onclick={() => goTo(data.page + 1)}>Next</Button
+				>
+			</div>
+		{/if}
+	</div>
 {/if}

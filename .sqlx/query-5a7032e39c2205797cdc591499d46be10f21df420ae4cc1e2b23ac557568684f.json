@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COUNT(*) AS \"count!\"\n        FROM products p\n        WHERE ($1::product_kind IS NULL OR p.kind = $1::product_kind)\n          AND ($2::bool OR p.is_active)\n          AND ($3::text IS NULL OR p.name ILIKE '%' || $3::text || '%')\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "product_kind",
+            "kind": {
+              "Enum": [
+                "product",
+                "service"
+              ]
+            }
+          }
+        },
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5a7032e39c2205797cdc591499d46be10f21df420ae4cc1e2b23ac557568684f"
+}
