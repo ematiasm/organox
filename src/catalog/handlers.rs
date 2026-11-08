@@ -60,8 +60,13 @@ pub struct ProductResponse {
 #[derive(Serialize, ToSchema)]
 pub struct ProductListResponse {
     pub items: Vec<ProductResponse>,
+    /// Page size actually applied (the request defaults to 50, is capped at 200).
     pub limit: i64,
+    /// Offset of `items[0]` in the filtered set.
     pub offset: i64,
+    /// How many products the filters match in total, ignoring the page. A client
+    /// needs this to tell a full page from the last one.
+    pub total: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -145,7 +150,7 @@ async fn list_products(
     let limit = query.limit.unwrap_or(50);
     let offset = query.offset.unwrap_or(0);
 
-    let items = service::list_products(
+    let (items, total) = service::list_products(
         &state.pool,
         query.kind,
         query.include_inactive,
@@ -159,6 +164,7 @@ async fn list_products(
         items: items.into_iter().map(to_response).collect(),
         limit,
         offset,
+        total,
     }))
 }
 
