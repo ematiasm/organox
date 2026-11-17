@@ -1,9 +1,15 @@
 import { api, type Movement, type Product } from '$lib/api/client';
 
 /**
- * Load movements. The backend exposes movements for one product at a time
- * (`GET /api/v1/products/{id}/movements`), not a paginated global history.
- * Fetch recent products' movements in parallel and sort them by date.
+ * Recent activity, not a complete ledger. The backend exposes movements for one
+ * product at a time (`GET /api/v1/products/{id}/movements`), not a paginated
+ * global history, so this screen fans out over the first products of the
+ * catalog. It says so: the header names how many products it covers and how many
+ * exist, and there is no page number because there is no second page.
+ *
+ * A global movements endpoint is tracked as a separate follow-up; until it
+ * exists, this screen deliberately shows a sample rather than pretending to be
+ * a history.
  */
 const MAX_PRODUCTS = 12;
 
@@ -34,5 +40,8 @@ export async function load() {
 		.sort((a, b) => b.created_at.localeCompare(a.created_at))
 		.slice(0, 50);
 
-	return { movements, productCount: products.length, totalProducts: list.items.length };
+	// `total` counts every product the filters match; `items.length` is only the
+	// page the API returned. Before #26 the screen printed `items.length` as the
+	// catalog size, which understated it whenever the API page was shorter.
+	return { movements, productCount: products.length, totalProducts: list.total ?? 0 };
 }

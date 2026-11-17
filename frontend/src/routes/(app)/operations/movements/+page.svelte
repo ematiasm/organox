@@ -40,7 +40,14 @@
 <div class="mb-4">
 	<h1 class="text-xl font-semibold tracking-tight">Movements</h1>
 	<p class="mt-1 text-sm text-muted-foreground">
-		The {data.productCount} {data.productCount === 1 ? 'product' : 'products'} with the most recent activity, out of {data.totalProducts} in the catalog.
+		{#if data.productCount >= data.totalProducts}
+			Recent activity across all {data.totalProducts}
+			{data.totalProducts === 1 ? 'product' : 'products'}.
+		{:else}
+			Recent activity across the first {data.productCount}
+			{data.productCount === 1 ? 'product' : 'products'} of {data.totalProducts} in the
+			catalog. Products outside this sample are not shown.
+		{/if}
 	</p>
 </div>
 
@@ -83,6 +90,9 @@
 	</div>
 	<p class="mt-3 text-sm text-muted-foreground">
 		Showing {shown}
-		{shown === 1 ? 'movement' : 'movements'} · page 1
+		{shown === 1 ? 'movement' : 'movements'}.
+		{#if data.productCount < data.totalProducts}
+			The full history needs a product the sample does not cover.
+		{/if}
 	</p>
 {/if}
