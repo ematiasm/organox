@@ -73,6 +73,20 @@ async function login(page) {
 				page.url().includes('id='),
 				`url=${page.url()}`
 			);
+			// The sheet animates in (200ms, slide-from-right). Playwright calls an
+			// element visible as soon as it has a box, so a screenshot taken right
+			// after the assertions catches the panel mid-translate, off-frame. Wait
+			// until its right edge is actually inside the viewport before capturing,
+			// or the screenshot contradicts the passing checks.
+			await page.waitForFunction(
+				() => {
+					const el = document.querySelector('[data-slot="sheet-content"]');
+					if (!el) return false;
+					const box = el.getBoundingClientRect();
+					return box.right <= window.innerWidth + 1 && box.width > 0;
+				},
+				{ timeout: 5000 }
+			);
 		} catch (e) {
 			check('D1', 'row click opens the drawer', false, String(e).split('\n')[0]);
 		}
