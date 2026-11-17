@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import ProductDrawer from '$lib/components/product-drawer.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -30,15 +30,21 @@
 	 * omission is what lets the drawer open and close without moving the list
 	 * underneath it.
 	 *
-	 * Search and page changes drop the drawer: it is a peek at one row of the
-	 * current result set, and a new result set closes the peek.
+	 * `new` and `id` are mutually exclusive drawer states; search and page
+	 * changes drop both, because a new result set closes the peek.
 	 */
-	function productsUrl(params: { search?: string; page?: number; id?: string | null }): string {
+	function productsUrl(params: {
+		search?: string;
+		page?: number;
+		id?: string | null;
+		new?: boolean;
+	}): string {
 		const query = new URLSearchParams();
 		const term = (params.search ?? search).trim();
 		if (term) query.set('search', term);
 		if ((params.page ?? data.page) > 1) query.set('page', String(params.page ?? data.page));
-		if (params.id) query.set('id', params.id);
+		if (params.new) query.set('new', '1');
+		else if (params.id) query.set('id', params.id);
 
 		const qs = query.toString();
 		return qs ? `/products?${qs}` : '/products';
@@ -68,7 +74,17 @@
 	}
 
 	function closeDrawer() {
-		goto(productsUrl({ id: null }), { replace: true });
+		goto(productsUrl(data.creating ? { new: false } : { id: null }), { replace: true });
+	}
+
+	function startCreate() {
+		goto(productsUrl({ new: true }));
+	}
+
+	// A create replaces the `?new` entry with the new product's `?id`, so Back
+	// after saving leaves the list instead of reopening an empty form.
+	function created(id: string) {
+		goto(productsUrl({ id }), { replace: true });
 	}
 
 	/** Decimals arrive as strings ("1500.50") and are displayed unchanged. */
@@ -93,7 +109,10 @@
 </script>
 
 <!-- Starting a sale lives in the rail; the page does not repeat the link. -->
-<h1 class="mb-4 text-xl font-semibold tracking-tight">Products</h1>
+<div class="mb-4 flex items-center justify-between gap-4">
+	<h1 class="text-xl font-semibold tracking-tight">Products</h1>
+	<Button size="sm" onclick={startCreate}>New product</Button>
+</div>
 
 <div class="mb-4 max-w-sm">
 	<Input type="search" placeholder="Search by name…" value={search} oninput={onInput} />
@@ -168,8 +187,11 @@
 {/if}
 
 <ProductDrawer
-	open={data.id !== ''}
+	open={data.id !== '' || data.creating}
+	creating={data.creating}
 	product={data.product}
 	movements={data.movements}
 	onClose={closeDrawer}
+	onSaved={invalidateAll}
+	onCreated={created}
 />

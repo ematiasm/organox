@@ -26,6 +26,7 @@ export type SaleStatus = components['schemas']['SaleStatus'];
 export type CompletedSale = components['schemas']['CompletedSaleResponse'];
 export type Draft = components['schemas']['DraftResponse'];
 export type Problem = components['schemas']['Problem'];
+export type IdResponse = components['schemas']['IdResponse'];
 
 /** Normalized API error. */
 export class ApiError extends Error {
@@ -137,6 +138,37 @@ export const api = {
 	getProduct: (id: string) => request<Product>(`/api/v1/products/${id}`),
 
 	listMovements: (id: string) => request<Movement[]>(`/api/v1/products/${id}/movements`),
+
+	// --- Product mutations ---
+	//
+	// The server is the only validator: the wrappers send raw strings (decimals
+	// stay strings per the API contract) and surface `problem.detail` on failure.
+	// An empty input must arrive as `undefined`, never `''`: for `price`,
+	// `min_stock` and `sku` an omitted field means "unchanged" on PATCH, and an
+	// empty string would either be a no-op (sku) or a deserialization error.
+
+	createProduct: (body: {
+		kind: ProductKind;
+		name: string;
+		sku?: string;
+		description?: string;
+		price?: string;
+		min_stock?: string;
+	}) => request<IdResponse>('/api/v1/products', { method: 'POST', body }),
+
+	updateProduct: (
+		id: string,
+		body: {
+			name?: string;
+			sku?: string;
+			description?: string;
+			price?: string;
+			min_stock?: string;
+		}
+	) => request<void>(`/api/v1/products/${id}`, { method: 'PATCH', body }),
+
+	deactivateProduct: (id: string) =>
+		request<void>(`/api/v1/products/${id}/deactivate`, { method: 'POST' }),
 
 	// --- Sales ---
 	//
