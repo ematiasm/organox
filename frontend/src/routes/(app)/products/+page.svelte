@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import ProductDrawer from '$lib/components/product-drawer.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -22,14 +23,22 @@
 	/**
 	 * Build a products URL from the state that must survive navigation.
 	 *
-	 * Search resets the page: staying on page 4 of the old result set after a new
-	 * search would show an empty screen that looks like "no matches".
+	 * Contract of `page`: omitting it KEEPS the current page; every caller that
+	 * must reset passes `1` explicitly. The search call site resets that way on
+	 * purpose — staying on page 4 of an old result set after a new search would
+	 * show an empty screen that reads as "no matches" — and keeping the page on
+	 * omission is what lets the drawer open and close without moving the list
+	 * underneath it.
+	 *
+	 * Search and page changes drop the drawer: it is a peek at one row of the
+	 * current result set, and a new result set closes the peek.
 	 */
-	function productsUrl(params: { search?: string; page?: number }): string {
+	function productsUrl(params: { search?: string; page?: number; id?: string | null }): string {
 		const query = new URLSearchParams();
 		const term = (params.search ?? search).trim();
 		if (term) query.set('search', term);
-		if ((params.page ?? 1) > 1) query.set('page', String(params.page));
+		if ((params.page ?? data.page) > 1) query.set('page', String(params.page ?? data.page));
+		if (params.id) query.set('id', params.id);
 
 		const qs = query.toString();
 		return qs ? `/products?${qs}` : '/products';
@@ -49,6 +58,17 @@
 	// previous page instead of leaving the list entirely.
 	function goTo(page: number) {
 		goto(productsUrl({ page }));
+	}
+
+	// Opening the drawer is a real navigation too, so Back closes it. Closing
+	// replaces the entry instead: after a close, Back leaves the list rather
+	// than reopening what the user just dismissed.
+	function openProduct(id: string) {
+		goto(productsUrl({ id }));
+	}
+
+	function closeDrawer() {
+		goto(productsUrl({ id: null }), { replace: true });
 	}
 
 	/** Decimals arrive as strings ("1500.50") and are displayed unchanged. */
@@ -101,8 +121,12 @@
 			</TableHeader>
 			<TableBody>
 				{#each data.items as product (product.id)}
-					<TableRow>
-						<TableCell class="font-medium">{product.name}</TableCell>
+					<TableRow class="cursor-pointer" onclick={() => openProduct(product.id)}>
+						<TableCell class="font-medium">
+							<!-- A real button so the row is reachable by keyboard; the click bubbles
+							     to the row handler. -->
+							<button type="button" class="text-left">{product.name}</button>
+						</TableCell>
 						<TableCell class="text-muted-foreground">{product.sku ?? '—'}</TableCell>
 						<TableCell>
 							{product.kind === 'service' ? 'Service' : 'Product'}
@@ -142,3 +166,10 @@
 		{/if}
 	</div>
 {/if}
+
+<ProductDrawer
+	open={data.id !== ''}
+	product={data.product}
+	movements={data.movements}
+	onClose={closeDrawer}
+/>
