@@ -27,10 +27,11 @@ export async function load({ url }: { url: URL }) {
 
 	const total = list.total ?? 0;
 
-	// `id` selects the drawer's product. The URL is the source of truth for the
-	// same reason as `search` and `page`: Back closes the drawer and a link to a
-	// product is shareable.
+	// `id` selects the drawer's product; `?new` opens it empty for creation.
+	// The URL is the source of truth for the same reason as `search` and `page`:
+	// Back closes the drawer and a link to a product is shareable.
 	const id = url.searchParams.get('id') ?? '';
+	const creating = url.searchParams.get('new') === '1';
 
 	// A stale `?id=` (removed elsewhere, hand-typed URL) must not take the whole
 	// list down: the drawer says "not found" and the list stays usable. Any
@@ -56,6 +57,7 @@ export async function load({ url }: { url: URL }) {
 		search,
 		page,
 		id,
+		creating,
 		product,
 		movements,
 		items: list.items ?? [],
@@ -71,6 +73,7 @@ export async function load({ url }: { url: URL }) {
 		search: string;
 		page: number;
 		id: string;
+		creating: boolean;
 		product: Product | null;
 		movements: Movement[];
 		items: Product[];

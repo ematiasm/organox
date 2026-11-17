@@ -251,9 +251,11 @@ Open `http://localhost:3000`. Interactive API documentation is at
 `make fe-check` runs `svelte-kit sync` + `svelte-check`; it is part of
 `make check`, so a type error in a component fails the same gate as a clippy
 warning. There is no frontend unit-test runner yet: the behavior that matters
-lives in the Rust integration tests, and `frontend/e2e/nav-shell.cjs` is a manual
-Playwright script for the navigation shell that needs a running app and
-credentials.
+lives in the Rust integration tests, and the behavior only a browser can prove
+lives in two manual Playwright scripts — `frontend/e2e/nav-shell.cjs` for the
+navigation shell and `frontend/e2e/drawer.cjs` for the product drawer (row
+click, edit, create, deactivate). Each needs a running app and credentials
+(`E2E_BASE`, `E2E_EMAIL`, `E2E_PASSWORD`).
 
 When an API type changes, regenerate instead of editing: `make fe-schema`
 runs the OpenAPI generator and then `openapi-typescript`. `schema.d.ts` is
