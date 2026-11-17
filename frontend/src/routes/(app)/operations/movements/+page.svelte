@@ -89,8 +89,12 @@
 		</Table>
 	</div>
 	<p class="mt-3 text-sm text-muted-foreground">
-		Showing {shown}
-		{shown === 1 ? 'movement' : 'movements'}.
+		{#if data.truncated}
+			Showing the {shown} most recent movements. Older movements are not shown.
+		{:else}
+			Showing {shown}
+			{shown === 1 ? 'movement' : 'movements'}.
+		{/if}
 		{#if data.productCount < data.totalProducts}
 			The full history needs a product the sample does not cover.
 		{/if}
