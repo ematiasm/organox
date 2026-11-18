@@ -13,8 +13,11 @@ use organox::auth::repository::{self, NewUser};
 use organox::auth::{password, validation};
 use organox::catalog::model::{MovementReason, ProductKind};
 use organox::catalog::service::{self as catalog, CreateProductInput, RecordMovementInput};
+use organox::payments::model::WalletMovementKind;
+use organox::payments::service::{self as payments, CreateMethodInput, CreateWalletInput};
 use organox::routes::router;
-use organox::sales::model::SaleStatus;
+use organox::sales::model::{SalePaymentInput, SaleStatus};
+use organox::sales::repository::CompletedSale;
 use organox::sales::service::{self as sales, SalesError};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -99,6 +102,58 @@ async fn current_stock(pool: &PgPool, product: Uuid) -> Decimal {
         .expect("stock")
 }
 
+/// A payment method is required to charge. Seeded once per test database so a
+/// test that charges twice does not collide on the unique name.
+async fn cash(pool: &PgPool) -> Uuid {
+    let existing = sqlx::query_scalar("SELECT id FROM payment_methods WHERE name = 'Cash'")
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+    if let Some(id) = existing {
+        return id;
+    }
+
+    let wallet = payments::create_wallet(
+        pool,
+        CreateWalletInput {
+            name: "Caja".to_string(),
+        },
+    )
+    .await
+    .expect("wallet");
+
+    payments::create_method(
+        pool,
+        CreateMethodInput {
+            name: "Cash".to_string(),
+            wallet_id: wallet,
+        },
+    )
+    .await
+    .expect("method")
+}
+
+/// Charge the sale in full with cash. Every completion needs a payment, so this
+/// keeps the tests about the rule they name instead of about plumbing.
+async fn complete(
+    pool: &PgPool,
+    sale: Uuid,
+    actor: Uuid,
+    amount: Decimal,
+) -> Result<CompletedSale, SalesError> {
+    let method = cash(pool).await;
+    sales::complete(
+        pool,
+        sale,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: method,
+            amount,
+        }],
+    )
+    .await
+}
+
 // --- Draft --------------------------------------------------------------
 
 /// Reloading the sales screen must not create new carts.
@@ -129,7 +184,7 @@ async fn open_draft_creates_new_after_completion(pool: PgPool) {
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
-    sales::complete(&pool, draft, actor).await.unwrap();
+    complete(&pool, draft, actor, dec!(100)).await.unwrap();
 
     let next = sales::open_draft(&pool, actor).await.unwrap();
     assert_ne!(draft, next, "after completion, the next draft is new");
@@ -251,7 +306,7 @@ async fn completing_a_sale_discounts_stock_exactly_once(pool: PgPool) {
     sales::add_item(&pool, draft, product, dec!(3))
         .await
         .unwrap();
-    let done = sales::complete(&pool, draft, actor).await.unwrap();
+    let done = complete(&pool, draft, actor, dec!(4501.50)).await.unwrap();
 
     assert_eq!(done.total, dec!(4501.50));
     assert_eq!(done.movement_ids.len(), 1);
@@ -281,9 +336,9 @@ async fn completing_twice_is_rejected(pool: PgPool) {
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
-    sales::complete(&pool, draft, actor).await.unwrap();
+    complete(&pool, draft, actor, dec!(100)).await.unwrap();
 
-    let err = sales::complete(&pool, draft, actor)
+    let err = sales::complete(&pool, draft, actor, &[])
         .await
         .expect_err("already completed");
     assert!(matches!(err, SalesError::NotEditable));
@@ -304,7 +359,7 @@ async fn insufficient_stock_leaves_no_state_change(pool: PgPool) {
         .await
         .unwrap();
 
-    let err = sales::complete(&pool, draft, actor)
+    let err = complete(&pool, draft, actor, dec!(500))
         .await
         .expect_err("insufficient stock");
 
@@ -367,11 +422,11 @@ async fn two_drafts_competing_for_the_last_units(pool: PgPool) {
         .unwrap();
 
     // A completes the sale: it wins.
-    sales::complete(&pool, draft_a, actor_a).await.unwrap();
+    complete(&pool, draft_a, actor_a, dec!(500)).await.unwrap();
     assert_eq!(current_stock(&pool, product).await, dec!(0));
 
     // B cannot complete the sale: the unit is already gone.
-    let err = sales::complete(&pool, draft_b, actor_b)
+    let err = complete(&pool, draft_b, actor_b, dec!(500))
         .await
         .expect_err("no stock remains");
     assert!(matches!(err, SalesError::InsufficientStock { .. }));
@@ -382,7 +437,7 @@ async fn empty_sale_cannot_be_completed(pool: PgPool) {
     let actor = seed_user(&pool).await;
     let draft = sales::open_draft(&pool, actor).await.unwrap();
 
-    let err = sales::complete(&pool, draft, actor)
+    let err = sales::complete(&pool, draft, actor, &[])
         .await
         .expect_err("empty cart");
     assert!(matches!(err, SalesError::EmptySale));
@@ -422,7 +477,7 @@ async fn cancelling_a_completed_sale_is_rejected(pool: PgPool) {
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
-    sales::complete(&pool, draft, actor).await.unwrap();
+    complete(&pool, draft, actor, dec!(100)).await.unwrap();
 
     let err = sales::cancel(&pool, draft)
         .await
@@ -441,12 +496,262 @@ async fn completed_sales_are_listed_newest_first(pool: PgPool) {
         sales::add_item(&pool, draft, product, dec!(1))
             .await
             .unwrap();
-        sales::complete(&pool, draft, actor).await.unwrap();
+        complete(&pool, draft, actor, dec!(100)).await.unwrap();
     }
 
     let list = sales::list_completed(&pool, 10).await.unwrap();
     assert_eq!(list.len(), 2);
     assert!(list.iter().all(|s| s.status == SaleStatus::Completed));
+}
+
+// --- Payment ------------------------------------------------------------
+
+async fn wallet_for(pool: &PgPool, method: Uuid) -> Uuid {
+    payments::list_methods(pool, true)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == method)
+        .expect("method")
+        .wallet_id
+}
+
+async fn wallet_balance(pool: &PgPool, wallet: Uuid) -> Decimal {
+    payments::get_wallet(pool, wallet).await.unwrap().balance
+}
+
+async fn payment_movement_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM wallet_movements")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Charging a sale must move the money, not only the stock: the same operation,
+/// the same transaction.
+#[sqlx::test]
+async fn charging_a_sale_credits_the_method_wallet(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(2))
+        .await
+        .unwrap();
+
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let done = sales::complete(
+        &pool,
+        draft,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: method,
+            amount: dec!(3001.00),
+        }],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(done.payment_movement_ids.len(), 1);
+    assert_eq!(wallet_balance(&pool, wallet).await, dec!(3001.00));
+
+    let movements = payments::list_movements(&pool, wallet, 10).await.unwrap();
+    assert_eq!(movements.len(), 1);
+    assert_eq!(movements[0].kind, WalletMovementKind::SalePayment);
+    assert_eq!(movements[0].sale_id, Some(draft));
+    assert_eq!(movements[0].payment_method_id, Some(method));
+    assert_eq!(movements[0].amount, dec!(3001.00));
+}
+
+/// Half cash, half card: one sale, two wallets, two ledger lines.
+#[sqlx::test]
+async fn a_split_payment_credits_every_wallet(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+
+    let cash_method = cash(&pool).await;
+    let cash_wallet = wallet_for(&pool, cash_method).await;
+    let card_wallet = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Banco".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    let card_method = payments::create_method(
+        &pool,
+        CreateMethodInput {
+            name: "Card".to_string(),
+            wallet_id: card_wallet,
+        },
+    )
+    .await
+    .unwrap();
+
+    sales::complete(
+        &pool,
+        draft,
+        actor,
+        &[
+            SalePaymentInput {
+                payment_method_id: cash_method,
+                amount: dec!(60),
+            },
+            SalePaymentInput {
+                payment_method_id: card_method,
+                amount: dec!(40),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(wallet_balance(&pool, cash_wallet).await, dec!(60));
+    assert_eq!(wallet_balance(&pool, card_wallet).await, dec!(40));
+    assert_eq!(payment_movement_count(&pool).await, 2);
+}
+
+/// A payment that does not match the total is not "almost right": the sale stays
+/// a draft and nothing enters either ledger.
+#[sqlx::test]
+async fn a_payment_that_does_not_add_up_leaves_no_trace(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(2))
+        .await
+        .unwrap();
+
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let err = sales::complete(
+        &pool,
+        draft,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: method,
+            amount: dec!(150),
+        }],
+    )
+    .await
+    .expect_err("150 is not the 200 total");
+
+    match err {
+        SalesError::PaymentMismatch { total, paid } => {
+            assert_eq!(total, dec!(200));
+            assert_eq!(paid, dec!(150));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(wallet_balance(&pool, wallet).await, Decimal::ZERO);
+
+    let sale_movements: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM stock_movements WHERE reason = 'sale'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(sale_movements, 0);
+}
+
+#[sqlx::test]
+async fn an_empty_payment_list_is_rejected(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+
+    let err = sales::complete(&pool, draft, actor, &[])
+        .await
+        .expect_err("a sale cannot close without saying how it was paid");
+    assert!(matches!(err, SalesError::PaymentRequired));
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(payment_movement_count(&pool).await, 0);
+}
+
+#[sqlx::test]
+async fn a_deactivated_method_cannot_charge(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+
+    let method = cash(&pool).await;
+    payments::update_method(
+        &pool,
+        method,
+        organox::payments::service::UpdateMethodInput {
+            name: None,
+            wallet_id: None,
+            is_active: Some(false),
+        },
+    )
+    .await
+    .unwrap();
+
+    let err = sales::complete(
+        &pool,
+        draft,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: method,
+            amount: dec!(100),
+        }],
+    )
+    .await
+    .expect_err("the method is inactive");
+    assert!(matches!(err, SalesError::PaymentMethodUnavailable));
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+}
+
+#[sqlx::test]
+async fn an_unknown_method_cannot_charge(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+
+    let err = sales::complete(
+        &pool,
+        draft,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: Uuid::now_v7(),
+            amount: dec!(100),
+        }],
+    )
+    .await
+    .expect_err("unknown method");
+    assert!(matches!(err, SalesError::PaymentMethodUnavailable));
 }
 
 // --- HTTP ---------------------------------------------------------------

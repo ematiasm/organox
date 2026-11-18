@@ -77,6 +77,17 @@ impl SaleItem {
     }
 }
 
+/// One way a sale was paid.
+///
+/// A list, not a single method: half cash and half card is an ordinary way to
+/// pay, and discovering that after the schema is live means a migration.
+#[derive(Debug, Clone)]
+pub struct SalePaymentInput {
+    pub payment_method_id: Uuid,
+    /// Positive. The sum of every input must equal the server-computed total.
+    pub amount: Decimal,
+}
+
 #[derive(Debug, Clone)]
 pub struct Sale {
     pub id: Uuid,

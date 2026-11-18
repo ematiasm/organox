@@ -61,6 +61,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/payment-methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List payment methods with the wallet each one pays into. */
+        get: operations["list_payment_methods_doc"];
+        put?: never;
+        /**
+         * Create a payment method pointing at a wallet.
+         * @description This is the endpoint that makes a new method a data change instead of a
+         *     deploy.
+         */
+        post: operations["create_payment_method_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/payment-methods/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Rename, re-point or (de)activate a payment method.
+         * @description Re-pointing changes where future money lands. Movements already recorded keep
+         *     the wallet they hit: the ledger is history, not a live join.
+         */
+        patch: operations["update_payment_method_doc"];
+        trace?: never;
+    };
     "/api/v1/products": {
         parameters: {
             query?: never;
@@ -228,9 +271,10 @@ export interface paths {
         put?: never;
         /**
          * Complete the sale.
-         * @description In one transaction: validate stock with the product row locked, write an
-         *     outflow movement per item and close the sale. If stock is insufficient,
-         *     reject with 409 and leave **no** movements or status change.
+         * @description In one transaction: validate stock with the product row locked, check that
+         *     the payments add up to the total, write an outflow movement per item and a
+         *     money movement per payment, then close the sale. Any rejection leaves **no**
+         *     movements and no status change.
          */
         post: operations["complete_sale_doc"];
         delete?: never;
@@ -294,6 +338,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/wallets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List wallets with their calculated balance. */
+        get: operations["list_wallets_doc"];
+        put?: never;
+        /** Create a wallet (a cash box, a bank account). */
+        post: operations["create_wallet_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/wallets/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One wallet with its calculated balance. */
+        get: operations["get_wallet_doc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Rename or (de)activate a wallet. Wallets are never deleted. */
+        patch: operations["update_wallet_doc"];
+        trace?: never;
+    };
+    "/api/v1/wallets/{id}/movements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Movements of one wallet, newest first. */
+        get: operations["list_wallet_movements_doc"];
+        put?: never;
+        /**
+         * Record money leaving or entering a wallet by hand.
+         * @description `sale_payment` is rejected with 422: a collection enters the ledger only by
+         *     charging a sale.
+         */
+        post: operations["record_manual_movement_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -304,13 +406,30 @@ export interface components {
             /** @example 2 */
             quantity: string;
         };
+        /**
+         * @description How the sale is paid. Required: a sale never closes without saying where the
+         *     money went.
+         */
+        CompleteSaleRequest: {
+            payments: components["schemas"]["SalePaymentRequest"][];
+        };
         CompletedSaleResponse: {
             /** Format: date-time */
             completed_at: string;
             movement_ids: string[];
+            /**
+             * @description One movement per payment, so the client can follow the money into its
+             *     wallets without a second request.
+             */
+            payment_movement_ids: string[];
             /** Format: uuid */
             sale_id: string;
             total: string;
+        };
+        CreatePaymentMethodRequest: {
+            name: string;
+            /** Format: uuid */
+            wallet_id: string;
         };
         CreateProductRequest: {
             description?: string | null;
@@ -336,6 +455,9 @@ export interface components {
             /** Format: uuid */
             id: string;
         };
+        CreateWalletRequest: {
+            name: string;
+        };
         DraftResponse: {
             /** Format: uuid */
             id: string;
@@ -354,6 +476,16 @@ export interface components {
             /** Format: date-time */
             expires_at: string;
             user: components["schemas"]["UserResponse"];
+        };
+        ManualMovementRequest: {
+            /** @example 1200.00 */
+            amount: string;
+            /**
+             * @description `expense`, `adjustment_in` or `adjustment_out`. `sale_payment` is
+             *     rejected: that money is recorded by charging a sale.
+             */
+            kind: components["schemas"]["WalletMovementKind"];
+            note?: string | null;
         };
         /**
          * @description Why stock was moved.
@@ -376,6 +508,23 @@ export interface components {
              */
             signed_quantity: string;
             unit_cost?: string | null;
+        };
+        PaymentMethodResponse: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            is_active: boolean;
+            name: string;
+            /** Format: date-time */
+            updated_at: string;
+            /**
+             * Format: uuid
+             * @description The wallet this method pays into. The UI shows its name so nobody
+             *     charges into the wrong account without noticing.
+             */
+            wallet_id: string;
+            wallet_name: string;
         };
         /** @description RFC 7807 error body. Same shape for every status code. */
         Problem: {
@@ -470,6 +619,17 @@ export interface components {
             subtotal: string;
             unit_price: string;
         };
+        /** @description One payment of the charge. A sale can be paid with several. */
+        SalePaymentRequest: {
+            /**
+             * @description Positive. The sum of every payment must equal the total the server
+             *     calculated, or the charge is rejected with 422.
+             * @example 1500.00
+             */
+            amount: string;
+            /** Format: uuid */
+            payment_method_id: string;
+        };
         SaleResponse: {
             /** Format: date-time */
             completed_at?: string | null;
@@ -489,6 +649,16 @@ export interface components {
             /** @example 3 */
             quantity: string;
         };
+        UpdatePaymentMethodRequest: {
+            is_active?: boolean | null;
+            name?: string | null;
+            /**
+             * Format: uuid
+             * @description Moving a method to another wallet changes where **future** money lands.
+             *     Nothing already recorded moves: every movement keeps the wallet it hit.
+             */
+            wallet_id?: string | null;
+        };
         UpdateProductRequest: {
             description?: string | null;
             is_active?: boolean | null;
@@ -499,11 +669,67 @@ export interface components {
             price?: string | null;
             sku?: string | null;
         };
+        UpdateWalletRequest: {
+            is_active?: boolean | null;
+            name?: string | null;
+        };
         UserResponse: {
             email: string;
             /** Format: uuid */
             id: string;
             role: components["schemas"]["Role"];
+        };
+        /**
+         * @description Why money moved.
+         *
+         *     This is an enum while payment methods are rows, and the asymmetry is the
+         *     point: a new method is business data the operator creates, but a new kind
+         *     always arrives with a writer, a validation and a screen — that is, with code.
+         * @enum {string}
+         */
+        WalletMovementKind: "sale_payment" | "expense" | "adjustment_in" | "adjustment_out";
+        WalletMovementResponse: {
+            /** @description Always positive; the kind carries the sign. */
+            amount: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            created_by?: string | null;
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["WalletMovementKind"];
+            note?: string | null;
+            /**
+             * Format: uuid
+             * @description Set only for a `sale_payment`: which method was used.
+             */
+            payment_method_id?: string | null;
+            /**
+             * Format: uuid
+             * @description Set only for a `sale_payment`: which sale put this money here.
+             */
+            sale_id?: string | null;
+            /**
+             * @description The wallet's effect of this movement, so the client does not replicate
+             *     the sign rule.
+             */
+            signed_amount: string;
+        };
+        WalletResponse: {
+            /**
+             * @description Calculated: the signed sum of the wallet's movements, as a string with
+             *     two decimals. `"-1500.00"` is a valid answer — expenses can exceed what
+             *     the wallet holds.
+             */
+            balance: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            is_active: boolean;
+            name: string;
+            /** Format: date-time */
+            updated_at: string;
         };
     };
     responses: never;
@@ -607,6 +833,162 @@ export interface operations {
             };
             /** @description No session or expired session */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_payment_methods_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Include deactivated rows. The settings screen needs them so a wallet can
+                 *     be brought back; the POS does not.
+                 */
+                include_inactive: boolean;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Payment methods */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentMethodResponse"][];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_payment_method_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePaymentMethodRequest"];
+            };
+        };
+        responses: {
+            /** @description Payment method created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Wallet not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Name is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_payment_method_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Payment method id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdatePaymentMethodRequest"];
+            };
+        };
+        responses: {
+            /** @description Payment method updated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Payment method or wallet not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Name is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1096,7 +1478,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompleteSaleRequest"];
+            };
+        };
         responses: {
             /** @description Sale completed */
             200: {
@@ -1134,7 +1520,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Sale is empty */
+            /** @description Sale empty, payments missing, wrong sum or unusable method */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -1357,6 +1743,290 @@ export interface operations {
                 };
             };
             /** @description Invalid input (email or password) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_wallets_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Include deactivated rows. The settings screen needs them so a wallet can
+                 *     be brought back; the POS does not.
+                 */
+                include_inactive: boolean;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Wallets with balance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WalletResponse"][];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_wallet_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWalletRequest"];
+            };
+        };
+        responses: {
+            /** @description Wallet created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Name is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_wallet_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wallet id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Wallet with balance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WalletResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Wallet not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_wallet_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wallet id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWalletRequest"];
+            };
+        };
+        responses: {
+            /** @description Wallet updated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Wallet not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Name is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_wallet_movements_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wallet id */
+                id: string;
+                limit: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Movements */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WalletMovementResponse"][];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Wallet not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    record_manual_movement_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wallet id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ManualMovementRequest"];
+            };
+        };
+        responses: {
+            /** @description Movement recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Wallet not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
             422: {
                 headers: {
                     [name: string]: unknown;

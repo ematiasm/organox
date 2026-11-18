@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
-use crate::sales::model::{Sale, SaleStatus};
+use crate::sales::model::{Sale, SalePaymentInput, SaleStatus};
 use crate::sales::service::{self, SalesError};
 
 pub fn router() -> Router<AppState> {
@@ -72,7 +72,27 @@ pub struct CompletedSaleResponse {
     pub sale_id: Uuid,
     pub total: String,
     pub movement_ids: Vec<Uuid>,
+    /// One movement per payment, so the client can follow the money into its
+    /// wallets without a second request.
+    pub payment_movement_ids: Vec<Uuid>,
     pub completed_at: DateTime<Utc>,
+}
+
+/// One payment of the charge. A sale can be paid with several.
+#[derive(Deserialize, ToSchema)]
+pub struct SalePaymentRequest {
+    pub payment_method_id: Uuid,
+    /// Positive. The sum of every payment must equal the total the server
+    /// calculated, or the charge is rejected with 422.
+    #[schema(value_type = String, example = "1500.00")]
+    pub amount: Decimal,
+}
+
+/// How the sale is paid. Required: a sale never closes without saying where the
+/// money went.
+#[derive(Deserialize, ToSchema)]
+pub struct CompleteSaleRequest {
+    pub payments: Vec<SalePaymentRequest>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -153,12 +173,23 @@ async fn complete_sale(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    Json(body): Json<CompleteSaleRequest>,
 ) -> Result<Json<CompletedSaleResponse>, AppError> {
-    let done = service::complete(&state.pool, id, user.id()).await?;
+    let payments: Vec<SalePaymentInput> = body
+        .payments
+        .into_iter()
+        .map(|payment| SalePaymentInput {
+            payment_method_id: payment.payment_method_id,
+            amount: payment.amount,
+        })
+        .collect();
+
+    let done = service::complete(&state.pool, id, user.id(), &payments).await?;
     Ok(Json(CompletedSaleResponse {
         sale_id: done.sale_id,
         total: format_money(done.total),
         movement_ids: done.movement_ids,
+        payment_movement_ids: done.payment_movement_ids,
         completed_at: done.completed_at,
     }))
 }
@@ -235,6 +266,14 @@ impl From<SalesError> for AppError {
             )),
             SalesError::NotEditable => AppError::Conflict(err.to_string()),
             SalesError::EmptySale => AppError::Validation(err.to_string()),
+            SalesError::PaymentRequired
+            | SalesError::PaymentAmountNotPositive
+            | SalesError::PaymentMethodUnavailable => AppError::Validation(err.to_string()),
+            SalesError::PaymentMismatch { total, paid } => AppError::Validation(format!(
+                "the payments add up to {}, but the sale total is {}",
+                format_money(paid),
+                format_money(total)
+            )),
             SalesError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
     }
@@ -348,14 +387,16 @@ fn remove_item_doc() {}
 
 /// Complete the sale.
 ///
-/// In one transaction: validate stock with the product row locked, write an
-/// outflow movement per item and close the sale. If stock is insufficient,
-/// reject with 409 and leave **no** movements or status change.
+/// In one transaction: validate stock with the product row locked, check that
+/// the payments add up to the total, write an outflow movement per item and a
+/// money movement per payment, then close the sale. Any rejection leaves **no**
+/// movements and no status change.
 #[utoipa::path(
     post,
     path = "/api/v1/sales/{id}/complete",
     tag = "sales",
     params(("id" = Uuid, Path, description = "Sale ID")),
+    request_body = CompleteSaleRequest,
     responses(
         (status = 200, description = "Sale completed", body = CompletedSaleResponse),
         (status = 401, description = "No session", body = crate::openapi::Problem,
@@ -364,7 +405,7 @@ fn remove_item_doc() {}
          content_type = "application/problem+json"),
         (status = 409, description = "Insufficient stock or sale already closed", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 422, description = "Sale is empty", body = crate::openapi::Problem,
+        (status = 422, description = "Sale empty, payments missing, wrong sum or unusable method", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
