@@ -82,6 +82,13 @@ fn catalog_keeps_its_spanish_aliases() {
     );
 }
 
+/// The four strings below are the subject of this test, not credentials.
+///
+/// They are the known-common passwords the validator exists to reject, so they
+/// cannot be generated. CodeQL reports them as
+/// `rust/hard-coded-cryptographic-value`; the alert is dismissed as "used in
+/// tests" (issue #44). Do not replace them with generated values: the test
+/// would stop testing anything.
 #[test]
 fn forbidden_passwords_are_still_rejected() {
     for bad in [

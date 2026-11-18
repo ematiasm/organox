@@ -263,11 +263,16 @@ pub fn warm_dummy_hash() {
 }
 
 /// Dummy hash, computed once per process.
+///
+/// The hashed value is meaningless on purpose: nothing is ever authenticated
+/// against it, it only has to cost as much as a real verification. A literal
+/// would put a credential-shaped constant in the source for no gain, and
+/// generating it per process means the dummy is not a stable value either.
 fn dummy_hash() -> PasswordHash {
     static DUMMY: OnceLock<Option<PasswordHash>> = OnceLock::new();
 
     DUMMY
-        .get_or_init(|| password::hash("relleno-solo-para-gastar-tiempo-de-hash").ok())
+        .get_or_init(|| password::hash(&Uuid::now_v7().to_string()).ok())
         .clone()
         .unwrap_or_else(|| {
             // If the hasher is unavailable, any hash is as useless as any
@@ -277,4 +282,33 @@ fn dummy_hash() -> PasswordHash {
                     .to_string(),
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The dummy hash only does its job while it is a well-formed hash that
+    /// rejects.
+    ///
+    /// A malformed one makes `verify` fail immediately instead of costing a
+    /// full argon2 round, and the timing difference that reveals which emails
+    /// exist comes back silently: the login path discards `verify`'s result on
+    /// that branch on purpose.
+    ///
+    /// In a debug build `PasswordHash::from_phc` panics first, on its
+    /// `debug_assert!`. This assertion is what catches the same defect in a
+    /// release build, where that assert is compiled out and the bad value
+    /// instead reaches `verify`.
+    #[test]
+    fn dummy_hash_is_well_formed_and_rejects_a_wrong_password() {
+        let dummy = dummy_hash();
+        assert!(
+            matches!(
+                password::verify("anything-but-a-real-password", &dummy),
+                Ok(false)
+            ),
+            "the dummy must be a valid hash that rejects, so it costs a real round"
+        );
+    }
 }
