@@ -132,6 +132,51 @@
         }
       }
     },
+    "/api/v1/auth/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Change the current user's password.",
+        "description": "Requires the current password. The new one must satisfy the password rule.\nEvery other session of the user is revoked; the session making the change\nremains valid.",
+        "operationId": "change_password_doc",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Password changed, other sessions revoked"
+          },
+          "401": {
+            "description": "Wrong current password or no session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid new password",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/payment-methods": {
       "get": {
         "tags": [
@@ -1389,6 +1434,83 @@
         }
       }
     },
+    "/api/v1/users/{id}/password": {
+      "put": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Reset another user's password. Only `owner`.",
+        "description": "No current password is requested: the owner cannot know it. Every session\nof the target is revoked, except the caller's when resetting their own.",
+        "operationId": "reset_password_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Target user id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Password reset, target sessions revoked"
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Role does not permit managing users",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid new password",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/wallets": {
       "get": {
         "tags": [
@@ -1777,6 +1899,21 @@
           "quantity": {
             "type": "string",
             "example": "2"
+          }
+        }
+      },
+      "ChangePasswordRequest": {
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": "string"
+          },
+          "new_password": {
+            "type": "string"
           }
         }
       },
@@ -2288,6 +2425,17 @@
               "null"
             ],
             "example": "1200.00"
+          }
+        }
+      },
+      "ResetPasswordRequest": {
+        "type": "object",
+        "required": [
+          "new_password"
+        ],
+        "properties": {
+          "new_password": {
+            "type": "string"
           }
         }
       },

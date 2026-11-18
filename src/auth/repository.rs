@@ -7,7 +7,7 @@
 //! `DATABASE_URL`, or the `cargo sqlx prepare` cache committed in `.sqlx/`.
 
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool};
 use uuid::Uuid;
 
 use super::model::{PasswordHash, Role, SESSION_MAX_LIFETIME, SESSION_TTL};
@@ -106,6 +106,26 @@ pub async fn find_user_by_email(
     }))
 }
 
+/// Find a user by id, including the stored hash needed to check a password.
+pub async fn find_user_by_id(pool: &PgPool, id: Uuid) -> Result<Option<FoundUser>, RepoError> {
+    let row = sqlx::query!(
+        r#"
+        SELECT id, password_hash, role AS "role: Role"
+        FROM users
+        WHERE id = $1
+        "#,
+        id
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| FoundUser {
+        id: r.id,
+        password_hash: PasswordHash::from_phc(r.password_hash),
+        role: r.role,
+    }))
+}
+
 /// Every user, in a stable order for the screen and its tests.
 pub async fn list_users(pool: &PgPool) -> Result<Vec<ListedUser>, RepoError> {
     let rows = sqlx::query!(
@@ -126,6 +146,59 @@ pub async fn list_users(pool: &PgPool) -> Result<Vec<ListedUser>, RepoError> {
             role: r.role,
         })
         .collect())
+}
+
+/// Replace a password hash. `false` means the user no longer exists.
+pub async fn update_password_hash<'e, E>(
+    executor: E,
+    id: Uuid,
+    hash: &PasswordHash,
+) -> Result<bool, RepoError>
+where
+    E: Executor<'e, Database = sqlx::Postgres>,
+{
+    let result = sqlx::query!(
+        r#"
+        UPDATE users SET password_hash = $1 WHERE id = $2
+        "#,
+        hash.as_str(),
+        id,
+    )
+    .execute(executor)
+    .await?;
+
+    Ok(result.rows_affected() == 1)
+}
+
+/// Revoke every session of a user, optionally sparing one token.
+///
+/// The caller supplies the executor, normally an open transaction, so the
+/// hash change and the revocation commit together. The `user_id` predicate
+/// leads so Postgres can use `sessions_user_id_idx`; the same statement serves
+/// both rules (keep the caller's session or revoke all of them).
+pub async fn delete_sessions_for_user<'e, E>(
+    executor: E,
+    user_id: Uuid,
+    keep_hash: Option<&TokenHash>,
+) -> Result<u64, RepoError>
+where
+    E: Executor<'e, Database = sqlx::Postgres>,
+{
+    let keep: Option<&[u8]> = keep_hash.map(TokenHash::as_bytes);
+
+    let result = sqlx::query!(
+        r#"
+        DELETE FROM sessions
+        WHERE user_id = $1
+          AND ($2::bytea IS NULL OR token_hash <> $2)
+        "#,
+        user_id,
+        keep,
+    )
+    .execute(executor)
+    .await?;
+
+    Ok(result.rows_affected())
 }
 
 /// Issue a session. `expires_at` is calculated in the DB to avoid depending on

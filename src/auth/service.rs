@@ -15,7 +15,7 @@ use crate::auth::model::{PasswordHash, Role, User};
 use crate::auth::password::{self, PasswordError};
 use crate::auth::repository::{self, NewUser, RepoError};
 use crate::auth::token::{SessionToken, TokenHash};
-use crate::auth::validation::{ValidatedEmail, ValidationError};
+use crate::auth::validation::{self, ValidatedEmail, ValidationError};
 use crate::ratelimit::{AccountLimiter, Decision};
 
 #[derive(Debug, thiserror::Error)]
@@ -35,6 +35,9 @@ pub enum AuthError {
 
     #[error("the email is already registered")]
     EmailTaken,
+
+    #[error("the user does not exist")]
+    NotFound,
 
     #[error(transparent)]
     Validation(#[from] ValidationError),
@@ -114,6 +117,78 @@ pub async fn create_user(
     })?;
 
     Ok(id)
+}
+
+/// Change the calling user's password after checking the current one.
+///
+/// The new password is validated first: the rule is public, so there is no
+/// reason to spend an argon2 round on a request that cannot succeed. The
+/// session making the change is spared; the others are revoked in the same
+/// transaction as the hash update.
+pub async fn change_password(
+    pool: &PgPool,
+    user_id: Uuid,
+    current_password: &str,
+    new_password: &str,
+    token_hash: &TokenHash,
+) -> Result<(), AuthError> {
+    validation::validate_password(new_password)?;
+
+    let found = repository::find_user_by_id(pool, user_id)
+        .await?
+        .ok_or(AuthError::NotFound)?;
+
+    let matches = verify_off_thread(current_password.to_string(), found.password_hash).await?;
+    if !matches {
+        return Err(AuthError::InvalidCredentials);
+    }
+
+    let new_hash = hash_off_thread(new_password.to_string()).await?;
+
+    let mut tx = pool.begin().await?;
+    if !repository::update_password_hash(&mut *tx, user_id, &new_hash).await? {
+        return Err(AuthError::NotFound);
+    }
+    repository::delete_sessions_for_user(&mut *tx, user_id, Some(token_hash)).await?;
+    tx.commit().await?;
+
+    Ok(())
+}
+
+/// Reset any user's password on behalf of an owner.
+///
+/// No current password is requested: an owner cannot know another user's.
+/// Every session of the target is revoked except the caller's when the target
+/// is the caller, so both this route and `change_password` share one rule.
+pub async fn reset_password(
+    pool: &PgPool,
+    actor_role: Role,
+    target_id: Uuid,
+    new_password: &str,
+    caller_id: Uuid,
+    caller_token_hash: &TokenHash,
+) -> Result<(), AuthError> {
+    if !actor_role.can_manage_users() {
+        return Err(AuthError::Forbidden);
+    }
+    validation::validate_password(new_password)?;
+
+    // Check the target before hashing: a 404 must not pay for a new hash.
+    repository::find_user_by_id(pool, target_id)
+        .await?
+        .ok_or(AuthError::NotFound)?;
+
+    let new_hash = hash_off_thread(new_password.to_string()).await?;
+    let keep = (caller_id == target_id).then_some(caller_token_hash);
+
+    let mut tx = pool.begin().await?;
+    if !repository::update_password_hash(&mut *tx, target_id, &new_hash).await? {
+        return Err(AuthError::NotFound);
+    }
+    repository::delete_sessions_for_user(&mut *tx, target_id, keep).await?;
+    tx.commit().await?;
+
+    Ok(())
 }
 
 /// Verify credentials and, if valid, issue a new session.
@@ -248,6 +323,13 @@ impl AuthenticatedUser {
 
 async fn hash_off_thread(plain: String) -> Result<PasswordHash, AuthError> {
     tokio::task::spawn_blocking(move || password::hash(&plain))
+        .await
+        .map_err(|_| AuthError::Internal(RepoError::Crypto))?
+        .map_err(AuthError::from)
+}
+
+async fn verify_off_thread(plain: String, stored: PasswordHash) -> Result<bool, AuthError> {
+    tokio::task::spawn_blocking(move || password::verify(&plain, &stored))
         .await
         .map_err(|_| AuthError::Internal(RepoError::Crypto))?
         .map_err(AuthError::from)

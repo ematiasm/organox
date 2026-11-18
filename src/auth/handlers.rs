@@ -3,7 +3,7 @@
 //! Limited responsibility: translate HTTP ↔ use cases. No SQL, business rules,
 //! or authorization decisions (those live in the service and extractors).
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
@@ -23,7 +23,7 @@ use crate::error::AppError;
 
 pub fn router(state: AppState) -> Router<AppState> {
     use axum::middleware::from_fn_with_state;
-    use axum::routing::{get, post};
+    use axum::routing::{get, post, put};
 
     // Apply the IP limit ONLY to login. Applying it to the entire API would
     // penalize a legitimate polling frontend and add nothing against brute force.
@@ -38,8 +38,10 @@ pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .merge(guarded_login)
         .route("/auth/logout", post(logout))
+        .route("/auth/password", post(change_password))
         .route("/auth/me", axum::routing::get(me))
         .route("/users", get(list_users).post(create_user))
+        .route("/users/{id}/password", put(reset_password))
 }
 
 // --- DTOs ---------------------------------------------------------------
@@ -75,6 +77,17 @@ pub struct CreateUserRequest {
 #[derive(Serialize, ToSchema)]
 pub struct CreateUserResponse {
     pub id: Uuid,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ResetPasswordRequest {
+    pub new_password: String,
 }
 
 // --- Handlers -----------------------------------------------------------
@@ -196,6 +209,45 @@ async fn create_user(
     Ok((StatusCode::CREATED, Json(CreateUserResponse { id })))
 }
 
+async fn change_password(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    service::change_password(
+        &state.pool,
+        user.id(),
+        &body.current_password,
+        &body.new_password,
+        user.token_hash(),
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn reset_password(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ResetPasswordRequest>,
+) -> Result<StatusCode, AppError> {
+    // Same owner-only gate as user creation, before any DB work or hashing.
+    user.require_user_management()?;
+
+    service::reset_password(
+        &state.pool,
+        user.role(),
+        id,
+        &body.new_password,
+        user.id(),
+        user.token_hash(),
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // --- Cookies ------------------------------------------------------------
 
 fn session_cookie(value: String, expires_at: DateTime<Utc>, secure: bool) -> Cookie<'static> {
@@ -238,6 +290,7 @@ impl From<AuthError> for AppError {
             AuthError::EmailTaken => {
                 AppError::Conflict("the email is already registered".to_string())
             }
+            AuthError::NotFound => AppError::NotFound,
             AuthError::Internal(repo_err) => AppError::Internal(repo_err.to_string()),
         }
     }
@@ -337,3 +390,49 @@ fn list_users_doc() {}
 )]
 #[allow(dead_code)]
 fn create_user_doc() {}
+
+/// Change the current user's password.
+///
+/// Requires the current password. The new one must satisfy the password rule.
+/// Every other session of the user is revoked; the session making the change
+/// remains valid.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/password",
+    tag = "auth",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 204, description = "Password changed, other sessions revoked"),
+        (status = 401, description = "Wrong current password or no session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid new password", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn change_password_doc() {}
+
+/// Reset another user's password. Only `owner`.
+///
+/// No current password is requested: the owner cannot know it. Every session
+/// of the target is revoked, except the caller's when resetting their own.
+#[utoipa::path(
+    put,
+    path = "/api/v1/users/{id}/password",
+    tag = "auth",
+    request_body = ResetPasswordRequest,
+    params(("id" = Uuid, Path, description = "Target user id")),
+    responses(
+        (status = 204, description = "Password reset, target sessions revoked"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "User not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid new password", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn reset_password_doc() {}

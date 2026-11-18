@@ -61,6 +61,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change the current user's password.
+         * @description Requires the current password. The new one must satisfy the password rule.
+         *     Every other session of the user is revoked; the session making the change
+         *     remains valid.
+         */
+        post: operations["change_password_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/payment-methods": {
         parameters: {
             query?: never;
@@ -339,6 +361,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/users/{id}/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Reset another user's password. Only `owner`.
+         * @description No current password is requested: the owner cannot know it. Every session
+         *     of the target is revoked, except the caller's when resetting their own.
+         */
+        put: operations["reset_password_doc"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/wallets": {
         parameters: {
             query?: never;
@@ -406,6 +449,10 @@ export interface components {
             product_id: string;
             /** @example 2 */
             quantity: string;
+        };
+        ChangePasswordRequest: {
+            current_password: string;
+            new_password: string;
         };
         /**
          * @description How the sale is paid. Required: a sale never closes without saying where the
@@ -605,6 +652,9 @@ export interface components {
             reason: components["schemas"]["MovementReason"];
             /** @example 1200.00 */
             unit_cost?: string | null;
+        };
+        ResetPasswordRequest: {
+            new_password: string;
         };
         /** @enum {string} */
         Role: "owner" | "manager";
@@ -834,6 +884,46 @@ export interface operations {
             };
             /** @description No session or expired session */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    change_password_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Password changed, other sessions revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Wrong current password or no session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid new password */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1782,6 +1872,67 @@ export interface operations {
                 };
             };
             /** @description Invalid input (email or password) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    reset_password_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Target user id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Password reset, target sessions revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Role does not permit managing users */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description User not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid new password */
             422: {
                 headers: {
                     [name: string]: unknown;
