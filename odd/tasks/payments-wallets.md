@@ -191,3 +191,15 @@ instances of the same rule in `tests/ratelimit.rs`, `tests/contracts.rs` and
 but a PR that adds a 26th instance does not get to call it someone else's. The
 password is now generated per test run (`8bf7da2`); cleaning the existing
 instances is a separate change.
+
+L12. Correction to L11: the "25 open instances" above are history, not current
+state. `605309a` (PR #39) replaced the fixture passwords across six files —
+`src/auth/password.rs`, `tests/auth.rs`, `tests/catalog.rs`, `tests/contracts.rs`,
+`tests/ratelimit.rs` and `tests/sales.rs` — and that closed 29 of the 31 alerts of
+that rule. Three remained and none was a fixture: `tests/contracts.rs:87`, whose
+literals are the common passwords under test, dismissed as "used in tests";
+`tests/ratelimit.rs:302`, an `assert!` message formatting a rate-limit `Decision`
+(`rust/cleartext-logging`, a false positive); and `src/auth/service.rs:270`, a
+literal used as the dummy hash input, removed by generating it per process. The
+first two are dismissed on the alerts with their reason; the third is fixed. See
+issue #44.
