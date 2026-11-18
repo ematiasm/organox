@@ -19,7 +19,9 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
-use crate::payments::model::{PaymentMethod, WalletMovement, WalletMovementKind, WalletWithBalance};
+use crate::payments::model::{
+    PaymentMethod, WalletMovement, WalletMovementKind, WalletWithBalance,
+};
 use crate::payments::service::{
     self, CreateMethodInput, CreateWalletInput, ManualMovementInput, PaymentsError,
     UpdateMethodInput, UpdateWalletInput,
@@ -156,11 +158,7 @@ async fn create_wallet(
     _user: AuthUser,
     Json(body): Json<CreateWalletRequest>,
 ) -> Result<(StatusCode, Json<IdResponse>), AppError> {
-    let id = service::create_wallet(
-        &state.pool,
-        CreateWalletInput { name: body.name },
-    )
-    .await?;
+    let id = service::create_wallet(&state.pool, CreateWalletInput { name: body.name }).await?;
     Ok((StatusCode::CREATED, Json(IdResponse { id })))
 }
 

@@ -145,7 +145,14 @@ async fn record(pool: &PgPool, cookie: &str, wallet: Uuid, kind: &str, amount: &
 }
 
 async fn balance(pool: &PgPool, cookie: &str, wallet: Uuid) -> String {
-    let (status, body) = call(pool, cookie, "GET", &format!("/api/v1/wallets/{wallet}"), None).await;
+    let (status, body) = call(
+        pool,
+        cookie,
+        "GET",
+        &format!("/api/v1/wallets/{wallet}"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     body["balance"].as_str().unwrap().to_string()
 }
@@ -284,7 +291,11 @@ async fn an_unknown_wallet_is_not_found(pool: PgPool) {
         Some(json!({ "name": "Cash", "wallet_id": missing })),
     )
     .await;
-    assert_eq!(method_status, StatusCode::NOT_FOUND, "a method needs a real wallet");
+    assert_eq!(
+        method_status,
+        StatusCode::NOT_FOUND,
+        "a method needs a real wallet"
+    );
 }
 
 // --- Balance ------------------------------------------------------------

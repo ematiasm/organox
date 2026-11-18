@@ -128,10 +128,7 @@ pub async fn list_wallets(
     Ok(repository::list_wallets(pool, include_inactive).await?)
 }
 
-pub async fn get_wallet(
-    pool: &sqlx::PgPool,
-    id: Uuid,
-) -> Result<WalletWithBalance, PaymentsError> {
+pub async fn get_wallet(pool: &sqlx::PgPool, id: Uuid) -> Result<WalletWithBalance, PaymentsError> {
     Ok(repository::get_wallet(pool, id).await?)
 }
 
@@ -140,16 +137,14 @@ pub async fn create_method(
     input: CreateMethodInput,
 ) -> Result<Uuid, PaymentsError> {
     let name = clean_name(&input.name)?;
-    Ok(
-        repository::create_method(
-            pool,
-            repository::NewMethod {
-                name: &name,
-                wallet_id: input.wallet_id,
-            },
-        )
-        .await?,
+    Ok(repository::create_method(
+        pool,
+        repository::NewMethod {
+            name: &name,
+            wallet_id: input.wallet_id,
+        },
     )
+    .await?)
 }
 
 pub async fn update_method(
@@ -230,21 +225,19 @@ pub async fn record_manual_movement(
         .map(|note| note.trim().to_string())
         .filter(|note| !note.is_empty());
 
-    Ok(
-        repository::insert_movement(
-            pool,
-            repository::NewWalletMovement {
-                wallet_id,
-                kind: input.kind,
-                amount,
-                sale_id: None,
-                payment_method_id: None,
-                note: note.as_deref(),
-                created_by: Some(input.actor_id),
-            },
-        )
-        .await?,
+    Ok(repository::insert_movement(
+        pool,
+        repository::NewWalletMovement {
+            wallet_id,
+            kind: input.kind,
+            amount,
+            sale_id: None,
+            payment_method_id: None,
+            note: note.as_deref(),
+            created_by: Some(input.actor_id),
+        },
     )
+    .await?)
 }
 
 #[cfg(test)]
