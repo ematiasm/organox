@@ -506,3 +506,108 @@ async fn invalid_role_in_payload_is_rejected(pool: sqlx::PgPool) {
     // axum rejects the body before it reaches the handler.
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+// --- User listing -------------------------------------------------------
+
+fn list_users_request(cookie: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().uri("/api/v1/users");
+    if let Some(cookie) = cookie {
+        builder = builder.header("cookie", format!("session={cookie}"));
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
+async fn count_rows(pool: &sqlx::PgPool, table: &str) -> i64 {
+    match table {
+        "users" => sqlx::query_scalar("SELECT count(*) FROM users")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        "sessions" => sqlx::query_scalar("SELECT count(*) FROM sessions")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        other => panic!("unknown table: {other}"),
+    }
+}
+
+#[sqlx::test]
+async fn list_users_requires_session(pool: sqlx::PgPool) {
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let users_before = count_rows(&pool, "users").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    let response = app(pool.clone())
+        .oneshot(list_users_request(None))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(count_rows(&pool, "users").await, users_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+}
+
+#[sqlx::test]
+async fn manager_cannot_list_users(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "manager@pyme.com", Role::Manager).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("manager@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+    let users_before = count_rows(&pool, "users").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    let response = app(pool.clone())
+        .oneshot(list_users_request(Some(&cookie)))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(count_rows(&pool, "users").await, users_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+}
+
+#[sqlx::test]
+async fn owner_lists_all_users_ordered_by_email(pool: sqlx::PgPool) {
+    seed_user(&pool, "zoe@pyme.com", Role::Manager).await;
+    seed_user(&pool, "anna@pyme.com", Role::Manager).await;
+    let password = seed_user(&pool, "mike@pyme.com", Role::Owner).await;
+
+    let login = app(pool.clone())
+        .oneshot(login_request("mike@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+
+    let response = app(pool)
+        .oneshot(list_users_request(Some(&cookie)))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let users = body.as_array().expect("a list of users");
+    assert_eq!(users.len(), 3);
+
+    let emails: Vec<&str> = users
+        .iter()
+        .map(|user| user["email"].as_str().expect("email"))
+        .collect();
+    assert_eq!(emails, ["anna@pyme.com", "mike@pyme.com", "zoe@pyme.com"]);
+
+    let roles: Vec<&str> = users
+        .iter()
+        .map(|user| user["role"].as_str().expect("role"))
+        .collect();
+    assert_eq!(roles, ["manager", "owner", "manager"]);
+
+    for user in users {
+        let fields = user.as_object().expect("a user object");
+        assert_eq!(fields.len(), 3, "only id, email and role are public");
+        assert!(fields.contains_key("id"));
+        assert!(user["id"].as_str().is_some(), "id must be a UUID string");
+        assert!(fields.contains_key("email"));
+        assert!(fields.contains_key("role"));
+    }
+}

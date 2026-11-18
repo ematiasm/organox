@@ -20,6 +20,7 @@ export type Movement = components['schemas']['MovementResponse'];
 export type MovementReason = components['schemas']['MovementReason'];
 export type Role = components['schemas']['Role'];
 export type SessionUser = components['schemas']['UserResponse'];
+export type User = components['schemas']['UserResponse'];
 export type Sale = components['schemas']['SaleResponse'];
 export type SaleItem = components['schemas']['SaleItemResponse'];
 export type SaleStatus = components['schemas']['SaleStatus'];
@@ -113,6 +114,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
 export const api = {
 	me: () => request<SessionUser>('/api/v1/auth/me', { skipAuthRedirect: true }),
+
+	listUsers: () => request<User[]>('/api/v1/users'),
 
 	login: (email: string, password: string) =>
 		request<components['schemas']['LoginResponse']>('/api/v1/auth/login', {

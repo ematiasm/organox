@@ -64,6 +64,7 @@ pub struct Problem {
         crate::auth::handlers::login_doc,
         crate::auth::handlers::logout_doc,
         crate::auth::handlers::me_doc,
+        crate::auth::handlers::list_users_doc,
         crate::auth::handlers::create_user_doc,
         crate::catalog::handlers::list_products_doc,
         crate::catalog::handlers::create_product_doc,

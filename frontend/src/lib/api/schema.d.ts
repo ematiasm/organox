@@ -328,7 +328,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List every user, ordered by email. Only `owner`. */
+        get: operations["list_users_doc"];
         put?: never;
         /** Create a user. Only `owner`. */
         post: operations["create_user_doc"];
@@ -1684,6 +1685,44 @@ export interface operations {
             };
             /** @description Sale or product not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_users_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Users ordered by email */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponse"][];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Role does not permit managing users */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
