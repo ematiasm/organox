@@ -262,6 +262,14 @@ pub fn warm_dummy_hash() {
     let _ = dummy_hash();
 }
 
+/// The hash used when the hasher itself fails.
+///
+/// Well-formed argon2id with the parameters a real hash uses, a salt no
+/// generated hash can produce, and a tag no password produces. Any hash would
+/// do here; it is fixed so that the fallback never depends on the thing that
+/// just failed.
+const FALLBACK_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$MDAwMDAwMDAwMDAwMDAwMA$0000000000000000000000000000000000000000000";
+
 /// Dummy hash, computed once per process.
 ///
 /// The hashed value is meaningless on purpose: nothing is ever authenticated
@@ -277,10 +285,7 @@ fn dummy_hash() -> PasswordHash {
         .unwrap_or_else(|| {
             // If the hasher is unavailable, any hash is as useless as any
             // other: all that matters is not cutting the path short.
-            PasswordHash::from_phc(
-                "$argon2id$v=19$m=19456,t=2,p=1$MDAwMDAwMDAwMDAwMDAwMA$0000000000000000000000000000000000000000000"
-                    .to_string(),
-            )
+            PasswordHash::from_phc(FALLBACK_HASH.to_string())
         })
 }
 
@@ -310,6 +315,30 @@ mod tests {
         assert!(
             matches!(password::verify(&wrong, &dummy), Ok(false)),
             "the dummy must be a valid hash that rejects, so it costs a real round"
+        );
+    }
+
+    /// One hash per process: `warm_dummy_hash` at startup has to warm the value
+    /// the login path later uses. If the input were regenerated per call, the
+    /// warm-up would warm nothing and the first unknown-email login would pay
+    /// the generation cost, reopening the timing difference the dummy hides.
+    #[test]
+    fn dummy_hash_is_generated_once_per_process() {
+        assert_eq!(dummy_hash().as_str(), dummy_hash().as_str());
+    }
+
+    /// The dummy must be a generated hash, never the fixed fallback.
+    ///
+    /// If the generated input ever stopped passing `validate_password`, every
+    /// process would settle silently on `FALLBACK_HASH` — the stable value this
+    /// change exists to remove — and the well-formedness test above would still
+    /// pass, because the fallback is a valid hash too.
+    #[test]
+    fn dummy_hash_does_not_settle_for_the_fixed_fallback() {
+        assert_ne!(
+            dummy_hash().as_str(),
+            FALLBACK_HASH,
+            "the dummy fell back to the fixed literal"
         );
     }
 }
