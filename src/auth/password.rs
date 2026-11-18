@@ -60,34 +60,44 @@ pub fn verify(password: &str, stored: &PasswordHash) -> Result<bool, PasswordErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
+
+    /// A password generated per test run, so no credential is written down.
+    fn test_password() -> String {
+        format!("pw-{}", Uuid::new_v4())
+    }
 
     #[test]
     fn roundtrip_accepts_correct_password_and_rejects_wrong_one() {
-        let hash = hash("a-long-enough-password").expect("hash");
+        let password = test_password();
+        let wrong = test_password();
+        let hash = hash(&password).expect("hash");
 
-        assert!(verify("a-long-enough-password", &hash).unwrap());
-        assert!(!verify("another-arbitrary-password", &hash).unwrap());
+        assert!(verify(&password, &hash).unwrap());
+        assert!(!verify(&wrong, &hash).unwrap());
     }
 
     #[test]
     fn same_password_produces_different_hashes() {
         // Random salt per hash: two hashes of the same password must not
         // match; if they do, the salt is not being generated.
-        let a = hash("a-long-enough-password").expect("hash");
-        let b = hash("a-long-enough-password").expect("hash");
+        let password = test_password();
+        let a = hash(&password).expect("hash");
+        let b = hash(&password).expect("hash");
 
         assert_ne!(a.as_str(), b.as_str());
     }
 
     #[test]
     fn rejects_short_passwords() {
-        let err = hash("corta").expect_err("must reject");
+        let short = test_password()[..4].to_string();
+        let err = hash(&short).expect_err("must reject");
         assert!(matches!(err, PasswordError::Invalid(_)));
     }
 
     #[test]
     fn debug_does_not_leak_hash() {
-        let hash = hash("a-long-enough-password").expect("hash");
+        let hash = hash(&test_password()).expect("hash");
         let rendered = format!("{hash:?}");
 
         assert!(!rendered.contains("argon2"), "Debug leaked the hash");

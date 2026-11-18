@@ -21,17 +21,22 @@ use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
-const PASSWORD: &str = "password-long-enough-123";
+/// A password generated per test run, so no credential is written down.
+fn test_password() -> String {
+    format!("pw-{}", Uuid::new_v4())
+}
 
 fn app(pool: PgPool) -> axum::Router {
     router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
 }
 
-/// Creates a user and returns its ID for use as the movement author.
-async fn seed_user(pool: &PgPool, email: &str, role: Role) -> Uuid {
+/// Creates a user and returns both its ID (the movement author) and the
+/// generated password, so an HTTP test can log in with the same value.
+async fn seed_user_with_password(pool: &PgPool, email: &str, role: Role) -> (Uuid, String) {
+    let password = test_password();
     let email = validation::ValidatedEmail::parse(email).expect("email");
-    let hash = password::hash(PASSWORD).expect("hash");
-    repository::create_user(
+    let hash = password::hash(&password).expect("hash");
+    let id = repository::create_user(
         pool,
         NewUser {
             email: &email,
@@ -40,7 +45,12 @@ async fn seed_user(pool: &PgPool, email: &str, role: Role) -> Uuid {
         },
     )
     .await
-    .expect("user")
+    .expect("user");
+    (id, password)
+}
+
+async fn seed_user(pool: &PgPool, email: &str, role: Role) -> Uuid {
+    seed_user_with_password(pool, email, role).await.0
 }
 
 async fn seed_product(
@@ -473,7 +483,7 @@ async fn low_stock_flag_reflects_threshold(pool: PgPool) {
 
 // --- HTTP ---------------------------------------------------------------
 
-async fn login_cookie(pool: &PgPool, email: &str) -> String {
+async fn login_cookie(pool: &PgPool, email: &str, password: &str) -> String {
     let response = app(pool.clone())
         .oneshot(
             Request::builder()
@@ -481,7 +491,7 @@ async fn login_cookie(pool: &PgPool, email: &str) -> String {
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    json!({ "email": email, "password": PASSWORD }).to_string(),
+                    json!({ "email": email, "password": password }).to_string(),
                 ))
                 .unwrap(),
         )
@@ -520,8 +530,8 @@ async fn catalog_endpoints_require_authentication(pool: PgPool) {
 
 #[sqlx::test]
 async fn http_flow_creates_product_and_moves_stock(pool: PgPool) {
-    seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    let (_, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
 
     let created = app(pool.clone())
         .oneshot(
@@ -578,8 +588,8 @@ async fn http_flow_creates_product_and_moves_stock(pool: PgPool) {
 
 #[sqlx::test]
 async fn http_service_has_null_stock(pool: PgPool) {
-    seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    let (_, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
 
     let created = app(pool.clone())
         .oneshot(
@@ -616,8 +626,8 @@ async fn http_service_has_null_stock(pool: PgPool) {
 
 #[sqlx::test]
 async fn http_unknown_product_returns_404(pool: PgPool) {
-    seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    let (_, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
 
     let response = app(pool)
         .oneshot(
@@ -635,8 +645,8 @@ async fn http_unknown_product_returns_404(pool: PgPool) {
 
 #[sqlx::test]
 async fn http_insufficient_stock_returns_409(pool: PgPool) {
-    let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    let (actor, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
     let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
     move_stock(&pool, actor, product, MovementReason::Purchase, dec!(1))
         .await
@@ -662,8 +672,8 @@ async fn http_insufficient_stock_returns_409(pool: PgPool) {
 
 #[sqlx::test]
 async fn http_list_returns_items_array(pool: PgPool) {
-    seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    let (_, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
     seed_product(&pool, ProductKind::Product, "Flour", None).await;
 
     let response = app(pool)
@@ -688,8 +698,8 @@ async fn http_list_returns_items_array(pool: PgPool) {
 /// is what made the frontend truncate at 50 silently (issue #22).
 #[sqlx::test]
 async fn http_list_reports_the_total_independently_of_the_page(pool: PgPool) {
-    seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    let (_, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
     for name in ["Flour", "Rice", "Salt"] {
         seed_product(&pool, ProductKind::Product, name, None).await;
     }
@@ -725,8 +735,8 @@ async fn http_list_reports_the_total_independently_of_the_page(pool: PgPool) {
 /// client that reads 0 would conclude the catalog is empty instead of stale.
 #[sqlx::test]
 async fn http_list_past_the_last_page_still_reports_the_total(pool: PgPool) {
-    seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    let (_, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
     for name in ["Flour", "Rice"] {
         seed_product(&pool, ProductKind::Product, name, None).await;
     }
@@ -821,8 +831,8 @@ async fn record_movement_waits_for_product_lock(pool: PgPool) {
 /// `odd/tasks/ui-admin.md`.
 #[sqlx::test]
 async fn decimal_inputs_accept_both_string_and_number(pool: PgPool) {
-    seed_user(&pool, "a@pyme.com", Role::Owner).await;
-    let cookie = login_cookie(&pool, "a@pyme.com").await;
+    let (_, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
 
     // As a string.
     let as_string = app(pool.clone())

@@ -25,16 +25,22 @@ use sqlx::PgPool;
 use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
-const PASSWORD: &str = "password-long-enough-123";
+/// A password generated per test run, so no credential is written down.
+fn test_password() -> String {
+    format!("pw-{}", Uuid::new_v4())
+}
 
 fn app(pool: PgPool) -> axum::Router {
     router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
 }
 
-async fn seed_user(pool: &PgPool) -> Uuid {
+/// Creates the cashier and returns both its ID and the generated password, so
+/// an HTTP test can log in with the same value.
+async fn seed_user_with_password(pool: &PgPool) -> (Uuid, String) {
+    let password = test_password();
     let email = validation::ValidatedEmail::parse("cashier@pyme.com").expect("email");
-    let hash = password::hash(PASSWORD).expect("hash");
-    repository::create_user(
+    let hash = password::hash(&password).expect("hash");
+    let id = repository::create_user(
         pool,
         NewUser {
             email: &email,
@@ -43,7 +49,12 @@ async fn seed_user(pool: &PgPool) -> Uuid {
         },
     )
     .await
-    .expect("user")
+    .expect("user");
+    (id, password)
+}
+
+async fn seed_user(pool: &PgPool) -> Uuid {
+    seed_user_with_password(pool).await.0
 }
 
 async fn seed_product(pool: &PgPool, name: &str, price: Decimal) -> Uuid {
@@ -395,8 +406,9 @@ async fn insufficient_stock_leaves_no_state_change(pool: PgPool) {
 async fn two_drafts_competing_for_the_last_units(pool: PgPool) {
     let actor_a = seed_user(&pool).await;
     let actor_b = {
+        let password_b = test_password();
         let email = validation::ValidatedEmail::parse("register2@pyme.com").unwrap();
-        let hash = password::hash(PASSWORD).unwrap();
+        let hash = password::hash(&password_b).unwrap();
         repository::create_user(
             &pool,
             NewUser {
@@ -879,7 +891,7 @@ fn with_session(method: &str, uri: &str, cookie: &str) -> axum::http::request::B
         .header("cookie", format!("session={cookie}"))
 }
 
-async fn login_cookie(pool: &PgPool) -> String {
+async fn login_cookie(pool: &PgPool, password: &str) -> String {
     use tower::ServiceExt;
     let response = app(pool.clone())
         .oneshot(
@@ -888,7 +900,7 @@ async fn login_cookie(pool: &PgPool) -> String {
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
-                    serde_json::json!({ "email": "cashier@pyme.com", "password": PASSWORD })
+                    serde_json::json!({ "email": "cashier@pyme.com", "password": password })
                         .to_string(),
                 ))
                 .unwrap(),
@@ -915,7 +927,7 @@ async fn login_cookie(pool: &PgPool) -> String {
 async fn http_sale_flow_returns_server_computed_total(pool: PgPool) {
     use tower::ServiceExt;
 
-    seed_user(&pool).await;
+    let (_, password) = seed_user_with_password(&pool).await;
     let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
     // `query` without a macro needs no `.sqlx/` cache; this test only needs
     // an ID, not query type checking.
@@ -926,7 +938,7 @@ async fn http_sale_flow_returns_server_computed_total(pool: PgPool) {
             .unwrap();
     stock(&pool, actor, product, dec!(10)).await;
 
-    let cookie = login_cookie(&pool).await;
+    let cookie = login_cookie(&pool, &password).await;
 
     let draft = app(pool.clone())
         .oneshot(
