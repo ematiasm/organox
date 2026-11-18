@@ -10,7 +10,7 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::model::Sale;
+use super::model::{Sale, SalePaymentInput};
 use super::repository::{self, CompletedSale, RepoError};
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +40,18 @@ pub enum SalesError {
     #[error("the quantity must be greater than zero")]
     QuantityNotPositive,
 
+    #[error("the payment amount must be greater than zero")]
+    PaymentAmountNotPositive,
+
+    #[error("the payment amount has more than 2 decimal places")]
+    PaymentAmountPrecision,
+
+    #[error("the payments do not add up to the sale total")]
+    PaymentMismatch { total: Decimal, paid: Decimal },
+
+    #[error("the payment method is unknown or inactive")]
+    PaymentMethodUnavailable,
+
     #[error("internal sales error")]
     Internal(#[from] RepoError),
 }
@@ -59,6 +71,10 @@ fn map_repo_error(err: RepoError) -> SalesError {
             requested,
         },
         RepoError::NotEditable => SalesError::NotEditable,
+        RepoError::PaymentAmountNotPositive => SalesError::PaymentAmountNotPositive,
+        RepoError::PaymentAmountPrecision => SalesError::PaymentAmountPrecision,
+        RepoError::PaymentMismatch { total, paid } => SalesError::PaymentMismatch { total, paid },
+        RepoError::PaymentMethodUnavailable => SalesError::PaymentMethodUnavailable,
         other => SalesError::Internal(other),
     }
 }
@@ -149,13 +165,14 @@ pub async fn complete(
     pool: &PgPool,
     sale_id: Uuid,
     actor: Uuid,
+    payments: &[SalePaymentInput],
 ) -> Result<CompletedSale, SalesError> {
     let sale = get(pool, sale_id).await?;
     if sale.items.is_empty() {
         return Err(SalesError::EmptySale);
     }
 
-    repository::complete(pool, sale_id, actor)
+    repository::complete(pool, sale_id, actor, payments)
         .await
         .map_err(map_repo_error)
 }

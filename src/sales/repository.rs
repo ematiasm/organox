@@ -9,7 +9,9 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::model::{Sale, SaleItem, SaleStatus};
+use super::model::{Sale, SaleItem, SalePaymentInput, SaleStatus};
+use crate::payments::model::WalletMovementKind;
+use crate::payments::repository as payments;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
@@ -31,6 +33,18 @@ pub enum RepoError {
 
     #[error("the sale is no longer editable")]
     NotEditable,
+
+    #[error("the payment amount must be greater than zero")]
+    PaymentAmountNotPositive,
+
+    #[error("the payment amount has more than 2 decimal places")]
+    PaymentAmountPrecision,
+
+    #[error("the payments do not add up to the sale total")]
+    PaymentMismatch { total: Decimal, paid: Decimal },
+
+    #[error("the payment method is unknown or inactive")]
+    PaymentMethodUnavailable,
 
     #[error(transparent)]
     Database(#[from] sqlx::Error),
@@ -294,7 +308,76 @@ pub struct CompletedSale {
     pub sale_id: Uuid,
     pub total: Decimal,
     pub movement_ids: Vec<Uuid>,
+    pub payment_movement_ids: Vec<Uuid>,
     pub completed_at: DateTime<Utc>,
+}
+
+/// One payment resolved against its method: which wallet it pays into, and the
+/// amount already rounded to the column's scale.
+struct ResolvedCharge {
+    payment_method_id: Uuid,
+    wallet_id: Uuid,
+    amount: Decimal,
+}
+
+/// Check the payments against the total and resolve each one to its wallet.
+///
+/// Runs inside the sale transaction on purpose: the method and its wallet are
+/// read from the same snapshot the charge uses, so a re-pointing committed
+/// mid-charge cannot split the money from the total.
+async fn resolve_payments(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    payments_input: &[SalePaymentInput],
+    total: Decimal,
+) -> Result<Vec<ResolvedCharge>, RepoError> {
+    // No empty-list rejection here on purpose: a zero-total sale (a sample, a
+    // warranty replacement) has no money to route, and the sum check below
+    // already rejects an empty list whenever there IS something to collect.
+    let mut paid = Decimal::ZERO;
+    let mut resolved = Vec::with_capacity(payments_input.len());
+
+    for payment in payments_input {
+        if payment.amount <= Decimal::ZERO {
+            return Err(RepoError::PaymentAmountNotPositive);
+        }
+        // Rejected, not silently rounded: a client that sends 100.005 is asking
+        // for something the column cannot hold, and charging it as 100.00 would
+        // quietly change the request. Same rule the catalog applies to prices.
+        if payment.amount.round_dp(2) != payment.amount {
+            return Err(RepoError::PaymentAmountPrecision);
+        }
+        paid += payment.amount;
+        let amount = payment.amount;
+
+        let method = payments::find_method(&mut **tx, payment.payment_method_id)
+            .await
+            .map_err(map_payment_error)?
+            .ok_or(RepoError::PaymentMethodUnavailable)?;
+
+        // A deactivated method or a deactivated wallet accepts no new money.
+        if !method.is_active || !method.wallet_is_active {
+            return Err(RepoError::PaymentMethodUnavailable);
+        }
+
+        resolved.push(ResolvedCharge {
+            payment_method_id: method.id,
+            wallet_id: method.wallet_id,
+            amount,
+        });
+    }
+
+    if paid != total {
+        return Err(RepoError::PaymentMismatch { total, paid });
+    }
+
+    Ok(resolved)
+}
+
+fn map_payment_error(err: payments::RepoError) -> RepoError {
+    match err {
+        payments::RepoError::Database(sql) => RepoError::Database(sql),
+        _ => RepoError::PaymentMethodUnavailable,
+    }
 }
 
 /// Complete the sale: validate stock, write movements and close it.
@@ -306,6 +389,7 @@ pub async fn complete(
     pool: &PgPool,
     sale_id: Uuid,
     actor: Uuid,
+    payments_input: &[SalePaymentInput],
 ) -> Result<CompletedSale, RepoError> {
     let mut tx = pool.begin().await?;
 
@@ -338,7 +422,8 @@ pub async fn complete(
         return Err(RepoError::NotFound);
     }
 
-    let mut movement_ids = Vec::with_capacity(items.len());
+    // Pass 1: lock each product, check stock and compute the total. Nothing is
+    // written yet, so a rejected payment leaves no trace at all.
     let mut total = Decimal::ZERO;
 
     for item in &items {
@@ -379,6 +464,22 @@ pub async fn complete(
             });
         }
 
+        total += item.quantity * item.unit_price;
+    }
+
+    // `numeric(14,2)`: rounded on save, not truncated.
+    let total = total.round_dp(2);
+
+    // The money must add up to the total the server computed, and every method
+    // must still be usable. Checked before any write.
+    let charges = resolve_payments(&mut tx, payments_input, total).await?;
+
+    let note = format!("Sale {}", &sale_id.to_string()[..8]);
+
+    // Pass 2: the stock movements. This ledger is the ONLY thing that deducts:
+    // the `sales` table has no stock column.
+    let mut movement_ids = Vec::with_capacity(items.len());
+    for item in &items {
         // The stock movement is the ONLY thing that deducts: the `sales` table
         // has no stock column, and the ledger remains the source of truth.
         let movement_id = Uuid::now_v7();
@@ -391,18 +492,36 @@ pub async fn complete(
             item.product_id,
             item.quantity,
             item.unit_price,
-            Some(format!("Sale {}", &sale_id.to_string()[..8])),
+            Some(note.as_str()),
             actor,
         )
         .execute(&mut *tx)
         .await?;
 
         movement_ids.push(movement_id);
-        total += item.quantity * item.unit_price;
     }
 
-    // `numeric(14,2)`: rounded on save, not truncated.
-    let total = total.round_dp(2);
+    // Money movements: same transaction as the stock, so a charged sale either
+    // records both sides or neither.
+    let mut payment_movement_ids = Vec::with_capacity(charges.len());
+    for charge in &charges {
+        let movement_id = payments::insert_movement(
+            &mut *tx,
+            payments::NewWalletMovement {
+                wallet_id: charge.wallet_id,
+                kind: WalletMovementKind::SalePayment,
+                amount: charge.amount,
+                sale_id: Some(sale_id),
+                payment_method_id: Some(charge.payment_method_id),
+                note: Some(note.as_str()),
+                created_by: Some(actor),
+            },
+        )
+        .await
+        .map_err(map_payment_error)?;
+
+        payment_movement_ids.push(movement_id);
+    }
 
     let completed_at = sqlx::query_scalar!(
         r#"
@@ -424,6 +543,7 @@ pub async fn complete(
         sale_id,
         total,
         movement_ids,
+        payment_movement_ids,
         completed_at,
     })
 }

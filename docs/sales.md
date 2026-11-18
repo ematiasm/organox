@@ -71,9 +71,16 @@ about the ledger.
 | POST | `/api/v1/sales/{id}/items` | Adds; if it was already there, adds the quantity |
 | PUT | `/api/v1/sales/{id}/items/{product_id}` | Sets the quantity; `0` removes it |
 | DELETE | `/api/v1/sales/{id}/items/{product_id}` | Removes the item |
-| POST | `/api/v1/sales/{id}/complete` | Charges |
+| POST | `/api/v1/sales/{id}/complete` | Charges; requires the list of payments |
 | POST | `/api/v1/sales/{id}/cancel` | Cancels the draft |
 | GET | `/api/v1/sales` | Most recent charged sales |
+
+## How the sale is paid
+
+Charging requires at least one payment method and the payments must add up to
+the total the server computed. Each payment writes a movement into the wallet
+that method points at, in the same transaction that deducts stock. Wallets,
+payment methods and their ledger have their own document: `docs/payments.md`.
 
 ## Why a charged sale cannot be corrected
 
@@ -87,10 +94,10 @@ necessary.
 
 ## What is missing
 
-- **Credit note / return**: does not exist.
-- **Payment methods**: today a sale does not record how it was paid (cash, card,
-  store credit). It is the biggest gap for operating for real.
-- **Cash shift / register close**: there is no shift opening or closing.
+- **Credit note / return**: does not exist. It is the correction mechanism for a
+  charged sale, and it will need its own movement kinds in the wallet ledger.
+- **Cash shift / register close**: there is no shift opening or closing, so cash
+  counts are not reconciled against the wallets of `docs/payments.md`.
 - **VAT**: the sale stores the total; the tax is not broken out.
 - **Customer attached** to the sale.
 - **Orphan drafts**: there is no cleanup of old drafts.
