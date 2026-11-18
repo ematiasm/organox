@@ -71,14 +71,21 @@ the available and requested quantities.
 To prevent two simultaneous sales of the last unit, the product row is locked
 with `SELECT ... FOR UPDATE` before reading stock.
 
-**Known and documented limitation:** the `record_movement_waits_for_product_lock`
-test proves that the operation is serialized per product, but it **does not
-isolate** the service's `FOR UPDATE`. The `INSERT` into `stock_movements` causes
-the foreign key to acquire `FOR KEY SHARE` on the `products` row, and that lock
-also conflicts with the test blocker's `FOR UPDATE`. This was verified by
-removing `FOR UPDATE`: the test still passed. The correctness of the service's
-own lock is not covered by an automated test; the business rule
-(`sale_cannot_make_stock_negative`) and the DB `CHECK` are covered.
+The `record_movement_waits_for_product_lock` test isolates that lock. Its
+blocker takes `FOR KEY SHARE` instead of `FOR UPDATE`, and that is the mode the
+`stock_movements` foreign key acquires on the parent row; a lock mode never
+conflicts with itself, so the foreign key check can never wait here, whatever
+the service does. `FOR KEY SHARE` conflicts with exactly one request,
+`FOR UPDATE`, so a backend seen waiting for that row is waiting on the service's
+own lock. The test reads the wait from `pg_locks` rather than assuming it from a
+sleep, so it also fails when the movement never asks for the lock: removing
+`FOR UPDATE` was verified to fail it. The business rule and the DB `CHECK` are
+covered on their own by `sale_cannot_make_stock_negative`.
+
+An earlier version of this test blocked with `FOR UPDATE`. The foreign key's own
+`FOR KEY SHARE` conflicts with that too, so the test passed with the service's
+lock removed: it proved serialization by *something*, not by the lock it was
+named after. Do not weaken the blocker back to `FOR UPDATE`.
 
 ## Products vs services
 
