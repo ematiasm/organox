@@ -191,8 +191,8 @@ Slices 1–3: skeleton, authentication, and catalog with a stock ledger.
 - **OpenAPI 3.1** generated from code; frontend types are generated from that
   spec (`make fe-schema`).
 
-See `docs/auth.md`, `docs/catalog.md`, `docs/ratelimit.md`, `docs/sales.md` and
-`docs/backup.md` for the reasoning and what is missing.
+See `docs/auth.md`, `docs/catalog.md`, `docs/ratelimit.md`, `docs/sales.md`,
+`docs/payments.md` and `docs/backup.md` for the reasoning and what is missing.
 
 ## Frontend
 
