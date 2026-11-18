@@ -181,3 +181,13 @@ with `--no-save` for the run), and running `npm install` while the Vite dev serv
 is up leaves it unable to resolve `$app/tsconfig` until it is restarted — the
 first probe run failed on that, not on the feature. The probe leaves a wallet, a
 deactivated method, one charged sale and one expense in the development database.
+
+L11. Delivery on `main`'s conventions: issue #36, PR #37, label `type:feature`,
+watch on CI. The first CI run went red on CodeQL with one new critical alert in
+this feature's code: `tests/payments.rs` used a literal password for the fixture
+(`rust/hard-coded-cryptographic-value`). The repo already carries 25 open
+instances of the same rule in `tests/ratelimit.rs`, `tests/contracts.rs` and
+`tests/sales.rs`, so the alert is a pre-existing habit rather than a new defect —
+but a PR that adds a 26th instance does not get to call it someone else's. The
+password is now generated per test run (`8bf7da2`); cleaning the existing
+instances is a separate change.
