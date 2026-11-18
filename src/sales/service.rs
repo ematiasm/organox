@@ -40,11 +40,11 @@ pub enum SalesError {
     #[error("the quantity must be greater than zero")]
     QuantityNotPositive,
 
-    #[error("a sale must be paid with at least one payment method")]
-    PaymentRequired,
-
     #[error("the payment amount must be greater than zero")]
     PaymentAmountNotPositive,
+
+    #[error("the payment amount has more than 2 decimal places")]
+    PaymentAmountPrecision,
 
     #[error("the payments do not add up to the sale total")]
     PaymentMismatch { total: Decimal, paid: Decimal },
@@ -71,8 +71,8 @@ fn map_repo_error(err: RepoError) -> SalesError {
             requested,
         },
         RepoError::NotEditable => SalesError::NotEditable,
-        RepoError::PaymentRequired => SalesError::PaymentRequired,
         RepoError::PaymentAmountNotPositive => SalesError::PaymentAmountNotPositive,
+        RepoError::PaymentAmountPrecision => SalesError::PaymentAmountPrecision,
         RepoError::PaymentMismatch { total, paid } => SalesError::PaymentMismatch { total, paid },
         RepoError::PaymentMethodUnavailable => SalesError::PaymentMethodUnavailable,
         other => SalesError::Internal(other),

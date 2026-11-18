@@ -266,8 +266,8 @@ impl From<SalesError> for AppError {
             )),
             SalesError::NotEditable => AppError::Conflict(err.to_string()),
             SalesError::EmptySale => AppError::Validation(err.to_string()),
-            SalesError::PaymentRequired
-            | SalesError::PaymentAmountNotPositive
+            SalesError::PaymentAmountNotPositive
+            | SalesError::PaymentAmountPrecision
             | SalesError::PaymentMethodUnavailable => AppError::Validation(err.to_string()),
             SalesError::PaymentMismatch { total, paid } => AppError::Validation(format!(
                 "the payments add up to {}, but the sale total is {}",

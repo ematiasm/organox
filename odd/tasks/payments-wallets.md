@@ -32,6 +32,10 @@ S6. `POST /api/v1/sales/{id}/complete` requires a list of payments:
 `{"payments": [{"payment_method_id": uuid, "amount": "15000.00"}]}` (decision
 L2.a). The service verifies the sum equals the total it computed; a mismatch, an
 unknown method or an inactive method is a 422 with a `detail` naming the reason.
+An amount with more than two decimals is rejected, not silently rounded (L9.c).
+A zero-total sale (a sample, a warranty replacement) has no money to route: the
+empty list satisfies `sum = total = 0` and the sale completes with no payment
+movement (L9.a).
 
 S7. The payment movements are written inside the existing completion transaction,
 after the stock movements and before the commit, so a sale can never be charged
@@ -142,3 +146,26 @@ L8. Found while touching the POS, outside this feature and not fixed: the
 `/operations/pos` (`frontend/src/routes/(app)/operations/pos/+page.svelte:140`).
 Pre-existing, one-word fix, kept out of this diff so the payment change stays
 reviewable; it is reported to the human instead.
+
+L9. Independent verification of the high-risk migration (item 1) by
+`gentle-ai-verify` against the real binary and a scratch database: all specs
+satisfied, all 9 payment routes 401 without a session, `make test` 154 passed.
+It also found three things worth fixing, all fixed here:
+
+- L9.a **Blocker, introduced by this feature.** A sale whose total is `0.00` could
+  no longer be completed: the empty payment list was rejected and no payment may
+  be zero, so a free sample became a dead end (baseline completed it; the DB
+  allows `total = 0`, `migrations/0005_sales.sql:36`). Now the sum check is the
+  only rule: `0 = 0` passes, and an empty list is still rejected whenever there
+  is something to collect.
+- L9.b **Advisory, test value.** The S3 test re-pointed a method after a *manual*
+  adjustment, so it would have passed even if charges read the method's wallet.
+  Replaced by `repointing_a_method_does_not_move_a_recorded_payment`, which
+  charges first and then re-points.
+- L9.c **Advisory, inconsistency.** Charges and manual movements rounded `10.005`
+  to `10.00` and returned success, while the catalog rejects a price with three
+  decimals. Both now reject with `"... more than 2 decimal places"`.
+- L9.d **Advisory, silent sign.** The balance `CASE` ended in `ELSE -amount`, which
+  would have signed any future kind negative. It now names all four kinds with
+  `ELSE 0`, and `every_kind_is_counted_with_its_own_sign` fails to compile when a
+  kind is added, forcing the query to be checked against it.

@@ -672,7 +672,7 @@ async fn a_payment_that_does_not_add_up_leaves_no_trace(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn an_empty_payment_list_is_rejected(pool: PgPool) {
+async fn an_empty_payment_list_cannot_cover_a_positive_total(pool: PgPool) {
     let actor = seed_user(&pool).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
@@ -685,7 +685,123 @@ async fn an_empty_payment_list_is_rejected(pool: PgPool) {
     let err = sales::complete(&pool, draft, actor, &[])
         .await
         .expect_err("a sale cannot close without saying how it was paid");
-    assert!(matches!(err, SalesError::PaymentRequired));
+    assert!(matches!(
+        err,
+        SalesError::PaymentMismatch { total, paid }
+            if total == dec!(100) && paid == Decimal::ZERO
+    ));
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(payment_movement_count(&pool).await, 0);
+}
+
+/// A zero-total sale (a sample, a warranty replacement) has no money to route,
+/// so it needs no payment. Before this feature it completed with no payments at
+/// all, and making it impossible would be a regression dressed as a rule.
+#[sqlx::test]
+async fn a_zero_total_sale_needs_no_payment(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Sample", dec!(0)).await;
+    stock(&pool, actor, product, dec!(5)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+
+    let done = sales::complete(&pool, draft, actor, &[])
+        .await
+        .expect("a 0.00 total has nothing to collect");
+
+    assert_eq!(done.total, Decimal::ZERO);
+    assert!(done.payment_movement_ids.is_empty());
+    assert_eq!(current_stock(&pool, product).await, dec!(4));
+    assert_eq!(payment_movement_count(&pool).await, 0);
+}
+
+/// The wallet on a movement is the one that received the money, not the one the
+/// method points at today. Without this test, re-pointing a method could move
+/// yesterday's money and nobody would notice.
+#[sqlx::test]
+async fn repointing_a_method_does_not_move_a_recorded_payment(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+
+    let method = cash(&pool).await;
+    let cash_wallet = wallet_for(&pool, method).await;
+    let bank = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Banco".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    sales::complete(
+        &pool,
+        draft,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: method,
+            amount: dec!(100),
+        }],
+    )
+    .await
+    .unwrap();
+
+    payments::update_method(
+        &pool,
+        method,
+        organox::payments::service::UpdateMethodInput {
+            name: None,
+            wallet_id: Some(bank),
+            is_active: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        wallet_balance(&pool, cash_wallet).await,
+        dec!(100),
+        "the money stays in the wallet that received it"
+    );
+    assert_eq!(wallet_balance(&pool, bank).await, Decimal::ZERO);
+}
+
+/// Three decimals are rejected instead of silently rounded: charging 100.005 as
+/// 100.00 changes what the client asked for.
+#[sqlx::test]
+async fn a_payment_with_three_decimals_is_rejected(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+
+    let method = cash(&pool).await;
+    let err = sales::complete(
+        &pool,
+        draft,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: method,
+            amount: dec!(100.005),
+        }],
+    )
+    .await
+    .expect_err("three decimals cannot be charged");
+
+    assert!(matches!(err, SalesError::PaymentAmountPrecision));
     assert_eq!(current_stock(&pool, product).await, dec!(10));
     assert_eq!(payment_movement_count(&pool).await, 0);
 }

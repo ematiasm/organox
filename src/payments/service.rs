@@ -206,13 +206,16 @@ pub async fn record_manual_movement(
         ));
     }
 
-    // Rounded on save, not truncated: the same rule the sale total follows.
-    let amount = input.amount.round_dp(2);
-    if amount <= Decimal::ZERO {
+    // Rejected, not silently rounded: asking for 10.005 and storing 10.00 would
+    // change the request without saying so. Same rule the catalog applies to
+    // prices.
+    if input.amount.round_dp(2) != input.amount {
         return Err(PaymentsError::Validation(
-            "the amount must be greater than zero".to_string(),
+            "the amount has more than 2 decimal places".to_string(),
         ));
     }
+    let amount = input.amount;
+
     if amount > max_amount() {
         return Err(PaymentsError::Validation(format!(
             "the amount must be at most {}",

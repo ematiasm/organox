@@ -13,7 +13,10 @@ use organox::AppState;
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
 use organox::auth::{password, validation};
+use organox::payments::model::WalletMovementKind;
+use organox::payments::repository::{self as ledger, NewWalletMovement};
 use organox::routes::router;
+use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -511,4 +514,108 @@ async fn wallet_movements_cannot_be_rewritten(pool: PgPool) {
     assert!(delete.is_err(), "DELETE must be rejected by the trigger");
 
     assert_eq!(movement_count(&pool, wallet).await, 1);
+}
+
+/// Asking for 10.005 and storing 10.00 changes the request without saying so.
+#[sqlx::test]
+async fn an_amount_with_more_than_two_decimals_is_rejected(pool: PgPool) {
+    let cookie = login(&pool).await;
+    let wallet = create_wallet(&pool, &cookie, "Caja").await;
+
+    let (status, body) = call(
+        &pool,
+        &cookie,
+        "POST",
+        &format!("/api/v1/wallets/{wallet}/movements"),
+        Some(json!({ "kind": "expense", "amount": "10.005" })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["detail"], "the amount has more than 2 decimal places");
+    assert_eq!(movement_count(&pool, wallet).await, 0);
+    assert_eq!(balance(&pool, &cookie, wallet).await, "0.00");
+}
+
+/// Every kind must be counted with its own sign by the balance query. The match
+/// below has no wildcard: adding a kind to the enum breaks this test at compile
+/// time, which is the only way to notice that the SQL `CASE` needs it too.
+#[sqlx::test]
+async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
+    fn all_kinds() -> [WalletMovementKind; 4] {
+        let kinds = [
+            WalletMovementKind::SalePayment,
+            WalletMovementKind::Expense,
+            WalletMovementKind::AdjustmentIn,
+            WalletMovementKind::AdjustmentOut,
+        ];
+        for kind in kinds {
+            match kind {
+                WalletMovementKind::SalePayment
+                | WalletMovementKind::Expense
+                | WalletMovementKind::AdjustmentIn
+                | WalletMovementKind::AdjustmentOut => {}
+            }
+        }
+        kinds
+    }
+
+    let _cookie = login(&pool).await;
+    let owner: Uuid = sqlx::query_scalar("SELECT id FROM users LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // A sale payment needs a sale and a method to point at; the CHECK constraint
+    // refuses an orphan, which is exactly what it is for.
+    let sale_wallet = ledger::create_wallet(&pool, "Sale wallet").await.unwrap();
+    let method = ledger::create_method(
+        &pool,
+        ledger::NewMethod {
+            name: "Cash",
+            wallet_id: sale_wallet,
+        },
+    )
+    .await
+    .unwrap();
+    let sale = Uuid::now_v7();
+    sqlx::query("INSERT INTO sales (id, status, created_by) VALUES ($1, 'draft', $2)")
+        .bind(sale)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for (index, kind) in all_kinds().into_iter().enumerate() {
+        let (wallet, sale_id, method_id) = if kind == WalletMovementKind::SalePayment {
+            (sale_wallet, Some(sale), Some(method))
+        } else {
+            let wallet = ledger::create_wallet(&pool, &format!("Wallet {index}"))
+                .await
+                .unwrap();
+            (wallet, None, None)
+        };
+
+        ledger::insert_movement(
+            &pool,
+            NewWalletMovement {
+                wallet_id: wallet,
+                kind,
+                amount: dec!(10.00),
+                sale_id,
+                payment_method_id: method_id,
+                note: None,
+                created_by: Some(owner),
+            },
+        )
+        .await
+        .unwrap();
+
+        let balance = ledger::get_wallet(&pool, wallet).await.unwrap().balance;
+        assert_eq!(
+            balance,
+            kind.signed_effect(dec!(10.00)),
+            "{kind} must move the balance by its own sign"
+        );
+    }
 }

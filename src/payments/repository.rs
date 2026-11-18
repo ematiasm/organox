@@ -108,10 +108,12 @@ pub async fn list_wallets(
                w.created_at,
                w.updated_at,
                COALESCE(SUM(
-                   CASE
-                       WHEN m.kind = 'sale_payment' THEN m.amount
-                       WHEN m.kind = 'adjustment_in' THEN m.amount
-                       ELSE -m.amount
+                   CASE m.kind
+                       WHEN 'sale_payment' THEN m.amount
+                       WHEN 'adjustment_in' THEN m.amount
+                       WHEN 'expense' THEN -m.amount
+                       WHEN 'adjustment_out' THEN -m.amount
+                       ELSE 0
                    END
                ), 0)::numeric(14, 2) AS "balance!: Decimal"
         FROM wallets w
@@ -149,10 +151,12 @@ pub async fn get_wallet(pool: &PgPool, id: Uuid) -> Result<WalletWithBalance, Re
                w.created_at,
                w.updated_at,
                COALESCE(SUM(
-                   CASE
-                       WHEN m.kind = 'sale_payment' THEN m.amount
-                       WHEN m.kind = 'adjustment_in' THEN m.amount
-                       ELSE -m.amount
+                   CASE m.kind
+                       WHEN 'sale_payment' THEN m.amount
+                       WHEN 'adjustment_in' THEN m.amount
+                       WHEN 'expense' THEN -m.amount
+                       WHEN 'adjustment_out' THEN -m.amount
+                       ELSE 0
                    END
                ), 0)::numeric(14, 2) AS "balance!: Decimal"
         FROM wallets w

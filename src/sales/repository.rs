@@ -34,11 +34,11 @@ pub enum RepoError {
     #[error("the sale is no longer editable")]
     NotEditable,
 
-    #[error("a sale must be paid with at least one payment method")]
-    PaymentRequired,
-
     #[error("the payment amount must be greater than zero")]
     PaymentAmountNotPositive,
+
+    #[error("the payment amount has more than 2 decimal places")]
+    PaymentAmountPrecision,
 
     #[error("the payments do not add up to the sale total")]
     PaymentMismatch { total: Decimal, paid: Decimal },
@@ -330,10 +330,9 @@ async fn resolve_payments(
     payments_input: &[SalePaymentInput],
     total: Decimal,
 ) -> Result<Vec<ResolvedCharge>, RepoError> {
-    if payments_input.is_empty() {
-        return Err(RepoError::PaymentRequired);
-    }
-
+    // No empty-list rejection here on purpose: a zero-total sale (a sample, a
+    // warranty replacement) has no money to route, and the sum check below
+    // already rejects an empty list whenever there IS something to collect.
     let mut paid = Decimal::ZERO;
     let mut resolved = Vec::with_capacity(payments_input.len());
 
@@ -341,13 +340,14 @@ async fn resolve_payments(
         if payment.amount <= Decimal::ZERO {
             return Err(RepoError::PaymentAmountNotPositive);
         }
-        // Rounded per row before summing: each row is stored as
-        // numeric(14,2), so the sum must be the sum of what will be stored.
-        let amount = payment.amount.round_dp(2);
-        if amount <= Decimal::ZERO {
-            return Err(RepoError::PaymentAmountNotPositive);
+        // Rejected, not silently rounded: a client that sends 100.005 is asking
+        // for something the column cannot hold, and charging it as 100.00 would
+        // quietly change the request. Same rule the catalog applies to prices.
+        if payment.amount.round_dp(2) != payment.amount {
+            return Err(RepoError::PaymentAmountPrecision);
         }
-        paid += amount;
+        paid += payment.amount;
+        let amount = payment.amount;
 
         let method = payments::find_method(&mut **tx, payment.payment_method_id)
             .await
