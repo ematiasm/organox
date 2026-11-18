@@ -141,11 +141,11 @@ needs a running app and `E2E_EMAIL`/`E2E_PASSWORD`, which the human holds. T7
 stays blocked until that run happens; `make check` (fmt, clippy with `-D
 warnings`, every Rust test, `svelte-check`) is green on the whole branch.
 
-L8. Found while touching the POS, outside this feature and not fixed: the
-"New sale" button after a charge navigates to `/pos`, but the route is
-`/operations/pos` (`frontend/src/routes/(app)/operations/pos/+page.svelte:140`).
-Pre-existing, one-word fix, kept out of this diff so the payment change stays
-reviewable; it is reported to the human instead.
+L8. Found while touching the POS, outside this feature and fixed on request in
+`57bda8c`: the "New sale" exits after a charge navigated to `/pos`, but the
+route is `/operations/pos`
+(`frontend/src/routes/(app)/operations/pos/+page.svelte`). Pre-existing; kept in
+its own commit so the payment change stays reviewable.
 
 L9. Independent verification of the high-risk migration (item 1) by
 `gentle-ai-verify` against the real binary and a scratch database: all specs
