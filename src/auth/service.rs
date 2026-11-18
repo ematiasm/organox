@@ -303,11 +303,12 @@ mod tests {
     #[test]
     fn dummy_hash_is_well_formed_and_rejects_a_wrong_password() {
         let dummy = dummy_hash();
+        // Generated, not written down: a literal here is a hard-coded value
+        // handed to a password API, which is the rule this change removes an
+        // instance of (`rust/hard-coded-cryptographic-value`).
+        let wrong = Uuid::now_v7().to_string();
         assert!(
-            matches!(
-                password::verify("anything-but-a-real-password", &dummy),
-                Ok(false)
-            ),
+            matches!(password::verify(&wrong, &dummy), Ok(false)),
             "the dummy must be a valid hash that rejects, so it costs a real round"
         );
     }
