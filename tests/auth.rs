@@ -13,17 +13,28 @@ use organox::routes::router;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
+use uuid::Uuid;
 
-const PASSWORD: &str = "password-long-enough-123";
+/// A password generated per test run, so no credential is written down.
+fn test_password() -> String {
+    format!("pw-{}", Uuid::new_v4())
+}
+
+/// A short password for the rejection case, under `MIN_PASSWORD_LEN`.
+fn short_password() -> String {
+    test_password()[..5].to_string()
+}
 
 fn app(pool: sqlx::PgPool) -> axum::Router {
     router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
 }
 
-/// Inserts a user directly into the database, without HTTP.
-async fn seed_user(pool: &sqlx::PgPool, email: &str, role: Role) {
+/// Inserts a user directly into the database, without HTTP. Returns the
+/// generated password so a caller that logs in reuses the same value.
+async fn seed_user(pool: &sqlx::PgPool, email: &str, role: Role) -> String {
+    let password = test_password();
     let email = validation::ValidatedEmail::parse(email).expect("valid email");
-    let hash = password::hash(PASSWORD).expect("hash");
+    let hash = password::hash(&password).expect("hash");
 
     repository::create_user(
         pool,
@@ -35,6 +46,8 @@ async fn seed_user(pool: &sqlx::PgPool, email: &str, role: Role) {
     )
     .await
     .expect("create user");
+
+    password
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -87,11 +100,11 @@ fn session_cookie(response: &axum::response::Response) -> String {
 
 #[sqlx::test]
 async fn login_with_valid_credentials_returns_200_and_cookie(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
     let app = app(pool);
 
     let response = app
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
 
@@ -108,11 +121,11 @@ async fn login_with_valid_credentials_returns_200_and_cookie(pool: sqlx::PgPool)
 
 #[sqlx::test]
 async fn login_is_case_insensitive_on_email(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
     let app = app(pool);
 
     let response = app
-        .oneshot(login_request("  Owner@PyME.COM ", PASSWORD))
+        .oneshot(login_request("  Owner@PyME.COM ", &password))
         .await
         .unwrap();
 
@@ -123,10 +136,11 @@ async fn login_is_case_insensitive_on_email(pool: sqlx::PgPool) {
 /// cannot distinguish whether an email is registered.
 #[sqlx::test]
 async fn login_failures_are_indistinguishable(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let wrong = test_password();
 
     let wrong_password = app(pool.clone())
-        .oneshot(login_request("owner@pyme.com", "another-password-123"))
+        .oneshot(login_request("owner@pyme.com", &wrong))
         .await
         .unwrap();
 
@@ -134,7 +148,7 @@ async fn login_failures_are_indistinguishable(pool: sqlx::PgPool) {
     let wrong_password_body = body_json(wrong_password).await;
 
     let unknown_email = app(pool)
-        .oneshot(login_request("nobody@pyme.com", PASSWORD))
+        .oneshot(login_request("nobody@pyme.com", &password))
         .await
         .unwrap();
 
@@ -148,7 +162,7 @@ async fn login_failures_are_indistinguishable(pool: sqlx::PgPool) {
 #[sqlx::test]
 async fn login_with_malformed_email_returns_401(pool: sqlx::PgPool) {
     let response = app(pool)
-        .oneshot(login_request("not-an-email", PASSWORD))
+        .oneshot(login_request("not-an-email", &test_password()))
         .await
         .unwrap();
 
@@ -174,10 +188,10 @@ async fn me_requires_session_cookie(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn me_returns_authenticated_user(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
@@ -215,10 +229,10 @@ async fn me_rejects_forged_session_token(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn me_rejects_expired_session(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
@@ -246,10 +260,10 @@ async fn me_rejects_expired_session(pool: sqlx::PgPool) {
 /// Logout deletes the database session: a stolen cookie no longer works.
 #[sqlx::test]
 async fn logout_invalidates_session_server_side(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
@@ -285,10 +299,10 @@ async fn logout_invalidates_session_server_side(pool: sqlx::PgPool) {
 /// The plaintext token is not persisted: only its SHA-256 is.
 #[sqlx::test]
 async fn session_token_is_not_stored_in_plaintext(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
@@ -309,30 +323,35 @@ async fn session_token_is_not_stored_in_plaintext(pool: sqlx::PgPool) {
 
 // --- User creation (RBAC) ----------------------------------------------
 
-fn create_user_request(cookie: &str, email: &str, role: &str) -> Request<Body> {
+fn create_user_request(cookie: &str, email: &str, role: &str, password: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri("/api/v1/users")
         .header("content-type", "application/json")
         .header("cookie", format!("session={cookie}"))
         .body(Body::from(
-            json!({ "email": email, "password": PASSWORD, "role": role }).to_string(),
+            json!({ "email": email, "password": password, "role": role }).to_string(),
         ))
         .unwrap()
 }
 
 #[sqlx::test]
 async fn owner_can_create_user(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
 
     let response = app(pool.clone())
-        .oneshot(create_user_request(&cookie, "employee@pyme.com", "manager"))
+        .oneshot(create_user_request(
+            &cookie,
+            "employee@pyme.com",
+            "manager",
+            &password,
+        ))
         .await
         .unwrap();
 
@@ -349,16 +368,21 @@ async fn owner_can_create_user(pool: sqlx::PgPool) {
 /// created and no hash is computed.
 #[sqlx::test]
 async fn manager_cannot_create_user(pool: sqlx::PgPool) {
-    seed_user(&pool, "manager@pyme.com", Role::Manager).await;
+    let password = seed_user(&pool, "manager@pyme.com", Role::Manager).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("manager@pyme.com", PASSWORD))
+        .oneshot(login_request("manager@pyme.com", &password))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
 
     let response = app(pool.clone())
-        .oneshot(create_user_request(&cookie, "other@pyme.com", "owner"))
+        .oneshot(create_user_request(
+            &cookie,
+            "other@pyme.com",
+            "owner",
+            &password,
+        ))
         .await
         .unwrap();
 
@@ -374,6 +398,7 @@ async fn manager_cannot_create_user(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn anonymous_cannot_create_user(pool: sqlx::PgPool) {
+    let password = test_password();
     let response = app(pool.clone())
         .oneshot(
             Request::builder()
@@ -381,7 +406,7 @@ async fn anonymous_cannot_create_user(pool: sqlx::PgPool) {
                 .uri("/api/v1/users")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    json!({ "email": "x@pyme.com", "password": PASSWORD, "role": "owner" })
+                    json!({ "email": "x@pyme.com", "password": password, "role": "owner" })
                         .to_string(),
                 ))
                 .unwrap(),
@@ -394,16 +419,21 @@ async fn anonymous_cannot_create_user(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn duplicate_email_returns_409_and_keeps_single_row(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
 
     let response = app(pool.clone())
-        .oneshot(create_user_request(&cookie, "owner@pyme.com", "manager"))
+        .oneshot(create_user_request(
+            &cookie,
+            "owner@pyme.com",
+            "manager",
+            &password,
+        ))
         .await
         .unwrap();
 
@@ -419,13 +449,14 @@ async fn duplicate_email_returns_409_and_keeps_single_row(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn weak_password_is_rejected_without_creating_user(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
+    let weak = short_password();
 
     let response = app(pool.clone())
         .oneshot(
@@ -435,7 +466,7 @@ async fn weak_password_is_rejected_without_creating_user(pool: sqlx::PgPool) {
                 .header("content-type", "application/json")
                 .header("cookie", format!("session={cookie}"))
                 .body(Body::from(
-                    json!({ "email": "weak@pyme.com", "password": "short", "role": "manager" })
+                    json!({ "email": "weak@pyme.com", "password": weak, "role": "manager" })
                         .to_string(),
                 ))
                 .unwrap(),
@@ -454,16 +485,21 @@ async fn weak_password_is_rejected_without_creating_user(pool: sqlx::PgPool) {
 
 #[sqlx::test]
 async fn invalid_role_in_payload_is_rejected(pool: sqlx::PgPool) {
-    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
 
     let login = app(pool.clone())
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
     let cookie = session_cookie(&login);
 
     let response = app(pool)
-        .oneshot(create_user_request(&cookie, "x@pyme.com", "superadmin"))
+        .oneshot(create_user_request(
+            &cookie,
+            "x@pyme.com",
+            "superadmin",
+            &password,
+        ))
         .await
         .unwrap();
 

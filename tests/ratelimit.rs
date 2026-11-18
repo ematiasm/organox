@@ -22,8 +22,12 @@ use sqlx::PgPool;
 use std::time::Duration;
 use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
+use uuid::Uuid;
 
-const PASSWORD: &str = "password-long-enough-123";
+/// A password generated per test run, so no credential is written down.
+fn test_password() -> String {
+    format!("pw-{}", Uuid::new_v4())
+}
 
 fn config() -> organox::config::Config {
     // Minimal config for test state, without reading the environment.
@@ -61,9 +65,11 @@ fn app(pool: PgPool) -> axum::Router {
     router(strict_state(pool)).layer(CookieManagerLayer::new())
 }
 
-async fn seed_user(pool: &PgPool, email: &str) {
+/// Returns the generated password so a caller that logs in reuses it.
+async fn seed_user(pool: &PgPool, email: &str) -> String {
+    let password = test_password();
     let email = validation::ValidatedEmail::parse(email).expect("email");
-    let hash = password::hash(PASSWORD).expect("hash");
+    let hash = password::hash(&password).expect("hash");
     repository::create_user(
         pool,
         NewUser {
@@ -74,6 +80,7 @@ async fn seed_user(pool: &PgPool, email: &str) {
     )
     .await
     .expect("user");
+    password
 }
 
 fn login_request(email: &str, password: &str) -> Request<Body> {
@@ -108,15 +115,16 @@ async fn attempt(pool: &PgPool, email: &str, password: &str) -> (StatusCode, Opt
 #[sqlx::test]
 async fn account_is_locked_after_max_failures(pool: PgPool) {
     seed_user(&pool, "owner@pyme.com").await;
+    let wrong = test_password();
 
     // max_failures = 3: the first 3 fail with 401.
     for i in 1..=3 {
-        let (status, _) = attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+        let (status, _) = attempt(&pool, "owner@pyme.com", &wrong).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}");
     }
 
     // The next attempt is blocked: 429, not 401.
-    let (status, retry_after) = attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+    let (status, retry_after) = attempt(&pool, "owner@pyme.com", &wrong).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     let retry_after = retry_after.expect("a 429 must include Retry-After");
     assert!(
@@ -129,13 +137,14 @@ async fn account_is_locked_after_max_failures(pool: PgPool) {
 /// block would be pointless: an attacker who guesses correctly could still enter.
 #[sqlx::test]
 async fn correct_password_does_not_bypass_block(pool: PgPool) {
-    seed_user(&pool, "owner@pyme.com").await;
+    let password = seed_user(&pool, "owner@pyme.com").await;
+    let wrong = test_password();
 
     for _ in 0..3 {
-        attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+        attempt(&pool, "owner@pyme.com", &wrong).await;
     }
 
-    let (status, _) = attempt(&pool, "owner@pyme.com", PASSWORD).await;
+    let (status, _) = attempt(&pool, "owner@pyme.com", &password).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
     // No session was issued either.
@@ -150,10 +159,11 @@ async fn correct_password_does_not_bypass_block(pool: PgPool) {
 /// still sees it. An in-memory block would be cleared by a server restart.
 #[sqlx::test]
 async fn block_survives_a_simulated_restart(pool: PgPool) {
-    seed_user(&pool, "owner@pyme.com").await;
+    let password = seed_user(&pool, "owner@pyme.com").await;
+    let wrong = test_password();
 
     for _ in 0..3 {
-        attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+        attempt(&pool, "owner@pyme.com", &wrong).await;
     }
 
     // Fresh state, as if the process just started: a different pool, new
@@ -173,7 +183,7 @@ async fn block_survives_a_simulated_restart(pool: PgPool) {
     let fresh_state = strict_state(pool.clone());
     let response = router(fresh_state)
         .layer(CookieManagerLayer::new())
-        .oneshot(login_request("owner@pyme.com", PASSWORD))
+        .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
 
@@ -184,24 +194,25 @@ async fn block_survives_a_simulated_restart(pool: PgPool) {
 
 #[sqlx::test]
 async fn successful_login_resets_the_counter(pool: PgPool) {
-    seed_user(&pool, "owner@pyme.com").await;
+    let password = seed_user(&pool, "owner@pyme.com").await;
+    let wrong = test_password();
 
     // 2 failures (one less than the maximum of 3).
-    attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
-    attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+    attempt(&pool, "owner@pyme.com", &wrong).await;
+    attempt(&pool, "owner@pyme.com", &wrong).await;
 
     // Successful login: the counter is reset.
-    let (status, _) = attempt(&pool, "owner@pyme.com", PASSWORD).await;
+    let (status, _) = attempt(&pool, "owner@pyme.com", &password).await;
     assert_eq!(status, StatusCode::OK);
 
     // Now 3 attempts are available again: none blocks the account.
     for i in 1..=3 {
-        let (status, _) = attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+        let (status, _) = attempt(&pool, "owner@pyme.com", &wrong).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "post-reset attempt {i}");
     }
 
     // Only the fourth attempt blocks the account.
-    let (status, _) = attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+    let (status, _) = attempt(&pool, "owner@pyme.com", &wrong).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 }
 
@@ -210,12 +221,13 @@ async fn successful_login_resets_the_counter(pool: PgPool) {
 /// registered emails.
 #[sqlx::test]
 async fn unknown_email_also_gets_blocked(pool: PgPool) {
+    let wrong = test_password();
     for _ in 0..3 {
-        let (status, _) = attempt(&pool, "nobody@pyme.com", "wrong-password-123").await;
+        let (status, _) = attempt(&pool, "nobody@pyme.com", &wrong).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
-    let (status, _) = attempt(&pool, "nobody@pyme.com", "wrong-password-123").await;
+    let (status, _) = attempt(&pool, "nobody@pyme.com", &wrong).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM login_attempts")
@@ -227,12 +239,13 @@ async fn unknown_email_also_gets_blocked(pool: PgPool) {
 
 #[sqlx::test]
 async fn block_expires_and_allows_login_again(pool: PgPool) {
-    seed_user(&pool, "owner@pyme.com").await;
+    let password = seed_user(&pool, "owner@pyme.com").await;
+    let wrong = test_password();
 
     for _ in 0..3 {
-        attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+        attempt(&pool, "owner@pyme.com", &wrong).await;
     }
-    let (status, _) = attempt(&pool, "owner@pyme.com", PASSWORD).await;
+    let (status, _) = attempt(&pool, "owner@pyme.com", &password).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
     // Simulate the passage of time, which a test cannot actually do.
@@ -241,7 +254,7 @@ async fn block_expires_and_allows_login_again(pool: PgPool) {
         .await
         .unwrap();
 
-    let (status, _) = attempt(&pool, "owner@pyme.com", PASSWORD).await;
+    let (status, _) = attempt(&pool, "owner@pyme.com", &password).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -252,9 +265,10 @@ async fn block_expires_and_allows_login_again(pool: PgPool) {
 #[sqlx::test]
 async fn failures_outside_the_window_do_not_accumulate(pool: PgPool) {
     seed_user(&pool, "owner@pyme.com").await;
+    let wrong = test_password();
 
-    attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
-    attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+    attempt(&pool, "owner@pyme.com", &wrong).await;
+    attempt(&pool, "owner@pyme.com", &wrong).await;
 
     // The window expires: old attempts no longer count.
     sqlx::query("UPDATE login_attempts SET window_start = now() - interval '20 minutes'")
@@ -263,7 +277,7 @@ async fn failures_outside_the_window_do_not_accumulate(pool: PgPool) {
         .unwrap();
 
     // If old attempts counted, this would be the third and block the account.
-    let (status, _) = attempt(&pool, "owner@pyme.com", "wrong-password-123").await;
+    let (status, _) = attempt(&pool, "owner@pyme.com", &wrong).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
@@ -327,15 +341,16 @@ async fn limiter_purges_stale_rows(pool: PgPool) {
 #[sqlx::test]
 async fn blocking_one_account_does_not_block_another(pool: PgPool) {
     seed_user(&pool, "a@pyme.com").await;
-    seed_user(&pool, "b@pyme.com").await;
+    let password_b = seed_user(&pool, "b@pyme.com").await;
+    let wrong = test_password();
 
     for _ in 0..3 {
-        attempt(&pool, "a@pyme.com", "wrong-password-123").await;
+        attempt(&pool, "a@pyme.com", &wrong).await;
     }
-    let (status, _) = attempt(&pool, "a@pyme.com", "wrong-password-123").await;
+    let (status, _) = attempt(&pool, "a@pyme.com", &wrong).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
     // b is not penalized for a's failures.
-    let (status, _) = attempt(&pool, "b@pyme.com", PASSWORD).await;
+    let (status, _) = attempt(&pool, "b@pyme.com", &password_b).await;
     assert_eq!(status, StatusCode::OK);
 }

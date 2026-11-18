@@ -9,6 +9,12 @@ use std::str::FromStr;
 use organox::auth::model::Role;
 use organox::auth::validation::{ValidationError, validate_password};
 use organox::catalog::model::{MovementReason, ProductKind};
+use uuid::Uuid;
+
+/// A password generated per test run, so no credential is written down.
+fn test_password() -> String {
+    format!("pw-{}", Uuid::new_v4())
+}
 
 #[test]
 fn role_serializes_to_its_wire_value() {
@@ -90,5 +96,5 @@ fn forbidden_passwords_are_still_rejected() {
             "{bad}"
         );
     }
-    assert!(validate_password("a-long-enough-password-1234").is_ok());
+    assert!(validate_password(&test_password()).is_ok());
 }
