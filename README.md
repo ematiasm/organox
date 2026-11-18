@@ -252,10 +252,25 @@ Open `http://localhost:3000`. Interactive API documentation is at
 `make check`, so a type error in a component fails the same gate as a clippy
 warning. There is no frontend unit-test runner yet: the behavior that matters
 lives in the Rust integration tests, and the behavior only a browser can prove
-lives in two manual Playwright scripts — `frontend/e2e/nav-shell.cjs` for the
-navigation shell and `frontend/e2e/drawer.cjs` for the product drawer (row
-click, edit, create, deactivate). Each needs a running app and credentials
-(`E2E_BASE`, `E2E_EMAIL`, `E2E_PASSWORD`).
+lives in three manual Playwright probes under `frontend/e2e/` — `nav-shell.cjs`
+for the navigation shell, `drawer.cjs` for the product drawer (row click, edit,
+create, deactivate) and `payments.cjs` for wallets, payment methods and charging
+at the POS. They are not part of `make check`.
+
+`playwright` is a dev dependency, so `npm ci` provides the module. The browser
+binary is a separate one-time download that `npm` does not run:
+
+```bash
+cd frontend
+npm ci
+npx playwright install chromium
+E2E_BASE=http://localhost:3000 E2E_EMAIL=you@example.com E2E_PASSWORD=... \
+  node e2e/drawer.cjs
+```
+
+Each probe needs a running app, the credentials above and writes to the
+database it points at (a wallet, a sale, a deactivated method, depending on the
+probe).
 
 When an API type changes, regenerate instead of editing: `make fe-schema`
 runs the OpenAPI generator and then `openapi-typescript`. `schema.d.ts` is

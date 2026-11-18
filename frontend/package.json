@@ -27,6 +27,7 @@
     "layerchart": "^2.10.1",
     "mode-watcher": "^1.1.0",
     "paneforge": "^1.0.2",
+    "playwright": "^1.65.1",
     "shadcn-svelte": "^1.8.1",
     "shiki": "^4.6.0",
     "svelte": "^5.57.3",
