@@ -772,17 +772,23 @@ async fn body_json(response: axum::response::Response) -> Value {
 }
 
 // --- Concurrency --------------------------------------------------------
-/// The movement waits if another process holds the product row lock.
+/// The movement waits for the service's own `SELECT ... FOR UPDATE`.
 ///
-/// ACTUAL SCOPE (a known limitation, not a virtue): this proves the operation
-/// serializes per product, but does NOT isolate the service's `SELECT ... FOR
-/// UPDATE`. The `INSERT` into `stock_movements` makes the FK acquire `FOR KEY
-/// SHARE` on the `products` row, which also conflicts with the blocker's
-/// `FOR UPDATE`. Removing the service's `FOR UPDATE` still passed this test.
+/// The blocker deliberately takes `FOR KEY SHARE` instead of `FOR UPDATE`.
+/// `FOR KEY SHARE` is the mode the `stock_movements` foreign key acquires
+/// implicitly when its `INSERT` checks the parent row, and a lock mode never
+/// conflicts with itself: with this blocker the FK check cannot wait, whatever
+/// the service does. `FOR KEY SHARE` conflicts with exactly one request,
+/// `FOR UPDATE`. So a backend waiting for this row can only be waiting on the
+/// service's own lock, and removing that lock makes the wait disappear.
 ///
-/// Thus this covers serialization, not correctness of the service's own lock.
-/// `sale_cannot_make_stock_negative` directly covers the business rule and the
-/// database CHECK.
+/// The wait is *observed* in `pg_locks` rather than assumed from a sleep: a
+/// sleeping test would also pass if the worker had not started yet. `green`
+/// here means another backend was seen waiting for a lock.
+///
+/// This lock is what makes two simultaneous sales of the last unit take
+/// turns; `sale_cannot_make_stock_negative` covers the business rule and the
+/// database CHECK on their own.
 #[sqlx::test]
 async fn record_movement_waits_for_product_lock(pool: PgPool) {
     let actor = seed_user(&pool, "a@pyme.com", Role::Owner).await;
@@ -791,9 +797,9 @@ async fn record_movement_waits_for_product_lock(pool: PgPool) {
         .await
         .unwrap();
 
-    // An "other process" takes the same lock used by the service.
+    // An "other process" holds a lock that only `FOR UPDATE` conflicts with.
     let mut blocker = pool.begin().await.unwrap();
-    sqlx::query("SELECT id FROM products WHERE id = $1 FOR UPDATE")
+    sqlx::query("SELECT id FROM products WHERE id = $1 FOR KEY SHARE")
         .bind(product)
         .execute(&mut *blocker)
         .await
@@ -804,12 +810,42 @@ async fn record_movement_waits_for_product_lock(pool: PgPool) {
         move_stock(&worker_pool, actor, product, MovementReason::Sale, dec!(1)).await
     });
 
-    // While the lock is held, the movement cannot complete.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Wait for the worker to be *seen* queued behind the product row lock. The
+    // query runs on the blocker's connection: no third connection is needed,
+    // and the blocker holds the only lock in this database (each `sqlx::test`
+    // gets its own), so any other backend waiting on a lock is waiting on this
+    // row.
+    //
+    // It does not filter on `locktype`. Postgres reports a row-lock wait as a
+    // `tuple` lock only when the waiter has to queue behind another waiter;
+    // a single waiter blocked by one holder waits on that holder's
+    // `transactionid` instead. Filtering on either one of them would miss
+    // half the cases.
+    let mut observed: Option<String> = None;
+    for _ in 0..100 {
+        observed = sqlx::query_scalar(
+            "SELECT locktype FROM pg_locks \
+             WHERE NOT granted AND pid <> pg_backend_pid() \
+             LIMIT 1",
+        )
+        .fetch_optional(&mut *blocker)
+        .await
+        .unwrap();
+        if observed.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        observed.is_some(),
+        "no backend was seen waiting for a lock after 5s, so the service never \
+         asked for `FOR UPDATE`: the blocker holds `FOR KEY SHARE`, which the \
+         foreign key also takes and which never conflicts with itself, so only \
+         the service's own lock can wait here"
+    );
     assert!(
         !handle.is_finished(),
-        "the movement must wait for the product lock; if it finished, \
-         the service is not serializing per product"
+        "the movement must not complete while the product lock is held"
     );
 
     // Once the lock is released, the movement proceeds normally.
