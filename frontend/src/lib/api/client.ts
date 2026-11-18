@@ -27,6 +27,11 @@ export type CompletedSale = components['schemas']['CompletedSaleResponse'];
 export type Draft = components['schemas']['DraftResponse'];
 export type Problem = components['schemas']['Problem'];
 export type IdResponse = components['schemas']['IdResponse'];
+export type Wallet = components['schemas']['WalletResponse'];
+export type PaymentMethod = components['schemas']['PaymentMethodResponse'];
+export type WalletMovement = components['schemas']['WalletMovementResponse'];
+export type WalletMovementKind = components['schemas']['WalletMovementKind'];
+export type SalePayment = components['schemas']['SalePaymentRequest'];
 
 /** Normalized API error. */
 export class ApiError extends Error {
@@ -170,6 +175,50 @@ export const api = {
 	deactivateProduct: (id: string) =>
 		request<void>(`/api/v1/products/${id}/deactivate`, { method: 'POST' }),
 
+	// --- Wallets and payment methods ---
+	//
+	// Money stays a string all the way to the API and back. Inactive rows are
+	// requested only by settings, which must be able to bring them back; the
+	// POS never asks for them. The server validates amounts and totals.
+
+	listWallets: (includeInactive = false) =>
+		request<Wallet[]>('/api/v1/wallets', {
+			query: { include_inactive: includeInactive || undefined }
+		}),
+
+	createWallet: (name: string) =>
+		request<IdResponse>('/api/v1/wallets', { method: 'POST', body: { name } }),
+
+	updateWallet: (
+		id: string,
+		body: { name?: string; is_active?: boolean }
+	) => request<void>(`/api/v1/wallets/${id}`, { method: 'PATCH', body }),
+
+	listWalletMovements: (id: string, limit = 50) =>
+		request<WalletMovement[]>(`/api/v1/wallets/${id}/movements`, { query: { limit } }),
+
+	recordWalletMovement: (
+		id: string,
+		body: { kind: WalletMovementKind; amount: string; note?: string }
+	) =>
+		request<IdResponse>(`/api/v1/wallets/${id}/movements`, {
+			method: 'POST',
+			body
+		}),
+
+	listPaymentMethods: (includeInactive = false) =>
+		request<PaymentMethod[]>('/api/v1/payment-methods', {
+			query: { include_inactive: includeInactive || undefined }
+		}),
+
+	createPaymentMethod: (body: { name: string; wallet_id: string }) =>
+		request<IdResponse>('/api/v1/payment-methods', { method: 'POST', body }),
+
+	updatePaymentMethod: (
+		id: string,
+		body: { name?: string; wallet_id?: string; is_active?: boolean }
+	) => request<void>(`/api/v1/payment-methods/${id}`, { method: 'PATCH', body }),
+
 	// --- Sales ---
 	//
 	// Every mutation returns the complete recalculated sale. The client only
@@ -196,8 +245,11 @@ export const api = {
 			method: 'DELETE'
 		}),
 
-	completeSale: (saleId: string) =>
-		request<CompletedSale>(`/api/v1/sales/${saleId}/complete`, { method: 'POST' }),
+	completeSale: (saleId: string, payments: SalePayment[]) =>
+		request<CompletedSale>(`/api/v1/sales/${saleId}/complete`, {
+			method: 'POST',
+			body: { payments }
+		}),
 
 	cancelSale: (saleId: string) =>
 		request<void>(`/api/v1/sales/${saleId}/cancel`, { method: 'POST' })

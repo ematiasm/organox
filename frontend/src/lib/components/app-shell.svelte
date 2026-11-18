@@ -16,6 +16,7 @@
 	import ListIcon from '@lucide/svelte/icons/list';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import UsersIcon from '@lucide/svelte/icons/users';
+	import WalletIcon from '@lucide/svelte/icons/wallet';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import ChevronUpIcon from '@lucide/svelte/icons/chevron-up';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
@@ -61,6 +62,17 @@
 					label: 'Movements',
 					icon: ArrowLeftRightIcon,
 					current: (path) => path.startsWith('/operations/movements')
+				}
+			]
+		},
+		{
+			label: 'Settings',
+			items: [
+				{
+					href: '/settings/payments',
+					label: 'Payments',
+					icon: WalletIcon,
+					current: (path) => path.startsWith('/settings/payments')
 				}
 			]
 		},

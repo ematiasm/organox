@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { api, ApiError, type Product, type Sale } from '$lib/api/client';
+	import * as Select from '$lib/components/ui/select';
 
 	let { data } = $props();
 
@@ -13,7 +14,9 @@
 	let busy = $state(false);
 	let search = $state('');
 	let scanInput: HTMLInputElement | undefined = $state();
-	let completed = $state<{ total: string } | null>(null);
+	let completed = $state<{ total: string; method: string; destination: string } | null>(null);
+	// Nothing is preselected: a charge must name a method explicitly.
+	let paymentMethodId = $state('');
 
 	// Client-side search covers loaded products, not the entire catalog.
 	const visible = $derived(
@@ -29,6 +32,8 @@
 	const itemOf = $derived(
 		(id: string) => sale.items.find((i) => i.product_id === id)
 	);
+
+	const selectedMethod = $derived(data.methods.find((m) => m.id === paymentMethodId) ?? null);
 
 	/** Apply the server response, the cart's only source of truth. */
 	function apply(next: Sale) {
@@ -63,14 +68,24 @@
 	}
 
 	async function complete() {
-		if (busy || sale.item_count === 0) return;
+		if (busy || sale.item_count === 0 || !selectedMethod) return;
 		busy = true;
 		try {
-			const done = await api.completeSale(sale.id);
-			completed = { total: done.total };
+			const done = await api.completeSale(sale.id, [
+				{ payment_method_id: selectedMethod.id, amount: sale.total }
+			]);
+			completed = {
+				total: done.total,
+				method: selectedMethod.name,
+				destination: selectedMethod.wallet_name
+			};
 		} catch (e) {
-			// On 409 insufficient stock, show the server's product and quantity message.
-			error = e instanceof ApiError ? e.message : 'Could not charge the sale.';
+			// The server checks the sum and the method. A 422's `problem.detail`
+			// is displayed verbatim, never replaced by a client-side guess.
+			error =
+				e instanceof ApiError
+					? (e.problem?.detail ?? `The server rejected the charge (HTTP ${e.status}).`)
+					: 'Could not charge the sale.';
 		} finally {
 			busy = false;
 		}
@@ -120,7 +135,8 @@
 
 		{#if completed}
 			<div class="done" role="status">
-				<strong>Sale charged.</strong> Total {completed.total}. Stock has been deducted.
+				<strong>Sale charged.</strong> Total {completed.total}. Paid with {completed.method} into
+				{completed.destination}. Stock has been deducted.
 				<button type="button" onclick={() => (window.location.href = '/pos')}>New sale</button>
 			</div>
 		{/if}
@@ -223,6 +239,34 @@
 
 		<div class="totals">
 			<div class="trow big"><span>Total</span><span>{sale.total}</span></div>
+
+			<div class="pay-method">
+				<label class="pm-label" for="payment-method">Payment method</label>
+				{#if data.methods.length === 0}
+					<p class="pm-empty">
+						No active payment methods. <a href="/settings/payments">Add one in payment settings</a>
+						before charging a sale.
+					</p>
+				{:else}
+					<Select.Root type="single" bind:value={paymentMethodId}>
+						<Select.Trigger id="payment-method" class="w-full" disabled={busy}>
+							{selectedMethod?.name ?? 'Choose a payment method'}
+						</Select.Trigger>
+						<Select.Content>
+							{#each data.methods as method (method.id)}
+								<Select.Item value={method.id} label={method.name}>
+									{method.name}
+									<span class="pm-wallet">→ {method.wallet_name}</span>
+								</Select.Item>
+							{/each}
+						</Select.Content>
+					</Select.Root>
+					{#if selectedMethod}
+						<p class="pm-hint">Pays into {selectedMethod.wallet_name}</p>
+					{/if}
+				{/if}
+			</div>
+
 			<p class="note">Calculated by the server. Stock is deducted when the sale is charged.</p>
 			<div class="pay">
 				<button type="button" onclick={cancel} disabled={busy || sale.item_count === 0}>
@@ -232,7 +276,8 @@
 					type="button"
 					class="primary"
 					onclick={complete}
-					disabled={busy || sale.item_count === 0}
+					disabled={busy || sale.item_count === 0 || !selectedMethod}
+					title={!selectedMethod ? 'Choose a payment method first' : undefined}
 				>
 					{busy ? 'Processing…' : 'Charge'}
 				</button>
@@ -492,6 +537,41 @@
 		font-size: 1.3rem;
 		font-weight: 700;
 		margin-bottom: 0.4rem;
+	}
+
+	.pay-method {
+		display: grid;
+		gap: 0.35rem;
+		margin-bottom: 0.85rem;
+	}
+
+	.pm-label {
+		font-size: 0.78rem;
+		font-weight: 500;
+		color: var(--color-muted-foreground);
+	}
+
+	.pm-empty {
+		margin: 0;
+		font-size: 0.78rem;
+		line-height: 1.4;
+		color: var(--color-destructive);
+	}
+
+	.pm-empty a {
+		color: var(--color-primary);
+		text-decoration: underline;
+	}
+
+	.pm-hint {
+		margin: 0;
+		font-size: 0.75rem;
+		color: var(--color-muted-foreground);
+	}
+
+	.pm-wallet {
+		font-size: 0.8rem;
+		color: var(--color-muted-foreground);
 	}
 
 	.note {
