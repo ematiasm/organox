@@ -23,16 +23,25 @@ use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
-const PASSWORD: &str = "password-long-enough-123";
 const EMAIL: &str = "owner@pyme.com";
+
+/// A password generated per test run.
+///
+/// Not a literal on purpose: `rust/hard-coded-cryptographic-value` flags any
+/// fixed value used as a credential, and it is right to — the habit is what
+/// leaks into production code. The other test suites still carry that alert
+/// (25 open instances of the same rule); this file does not add to the pile.
+fn test_password() -> String {
+    format!("pw-{}", Uuid::new_v4())
+}
 
 fn app(pool: PgPool) -> Router {
     router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
 }
 
-async fn seed_owner(pool: &PgPool) {
+async fn seed_owner(pool: &PgPool, password: &str) {
     let email = validation::ValidatedEmail::parse(EMAIL).expect("email");
-    let hash = password::hash(PASSWORD).expect("hash");
+    let hash = password::hash(password).expect("hash");
     repository::create_user(
         pool,
         NewUser {
@@ -46,7 +55,8 @@ async fn seed_owner(pool: &PgPool) {
 }
 
 async fn login(pool: &PgPool) -> String {
-    seed_owner(pool).await;
+    let password = test_password();
+    seed_owner(pool, &password).await;
     let response = app(pool.clone())
         .oneshot(
             Request::builder()
@@ -54,7 +64,7 @@ async fn login(pool: &PgPool) -> String {
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    json!({ "email": EMAIL, "password": PASSWORD }).to_string(),
+                    json!({ "email": EMAIL, "password": password }).to_string(),
                 ))
                 .unwrap(),
         )
