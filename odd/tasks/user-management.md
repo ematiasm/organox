@@ -30,9 +30,9 @@ The Users screen renders "the user list is not available yet" and the only user 
 |---|---|---|---|---|
 | T1 | `GET /api/v1/users` (owner), OpenAPI stub, expected-route list, contract test | S1, S2 | writer | a18f43a |
 | T2 | Users screen: table with email and role, count, API client method | S3 | writer | a18f43a |
-| T3 | Repository: delete sessions by user, optionally keeping one token; `.sqlx` cache | S5, S7, S10 | writer | |
-| T4 | `POST /api/v1/auth/password`: current password check, revoke the others, `204` | S4, S5, S8, S9 | writer | |
-| T5 | `PUT /api/v1/users/{id}/password`: owner reset, revoke the target's sessions | S6, S7, S8, S9 | writer | |
+| T3 | Repository: delete sessions by user, optionally keeping one token; `.sqlx` cache | S5, S7, S10 | writer | 3153f34 |
+| T4 | `POST /api/v1/auth/password`: current password check, revoke the others, `204` | S4, S5, S8, S9 | writer | 3153f34 |
+| T5 | `PUT /api/v1/users/{id}/password`: owner reset, revoke the target's sessions | S6, S7, S8, S9 | writer | 3153f34 |
 | T6 | Frontend: owner reset from the users table, self change from the account menu | S3, S4, S6 | writer | |
 | T7 | Docs: `docs/auth.md` gaps, README index, this log | S10 | inline | |
 | T8 | `frontend/e2e/users.cjs`, full check and close | S11 | writer | |
@@ -40,6 +40,8 @@ The Users screen renders "the user list is not available yet" and the only user 
 Slices, each its own PR so review stays small: T1+T2 · T3+T4+T5 · T6 · T7+T8.
 
 ## Log
+
+L5. Slice 2 (T3, T4, T5) is done, commit `3153f34`: the revocation statement, `POST /auth/password` and `PUT /users/{id}/password`, with eight integration tests. RED was observed first: all seven route tests failed with `404` before the routes existed, and the unknown-id test was then strengthened, because an unregistered path also answers `404` — a test that would have passed for the wrong reason. One honest residual: if a target user is deleted between the existence check and the transaction, a hash is computed and discarded; no write happens.
 
 L4. Slice 1 (T1, T2) is done, commit `a18f43a`: `GET /api/v1/users` owner-only, three integration tests (401 with unchanged counts, 403 with unchanged counts, owner list ordered by email) and the screen reading it. RED was observed first: the three tests failed with `405` before the route existed. Not done in this slice, on purpose: no password route, no session statement.
 
