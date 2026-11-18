@@ -72,7 +72,7 @@ between wallets, VAT breakdown, per-wallet statements as files.
 | T4 | `complete` with `payments[]` inside the sale transaction, with the sum and method checks | S6, S7, S12 | inline | done | 22b643a |
 | T5 | Frontend: wallets and methods settings, POS payment picker, balances and movements, expense form | S1-S3, S8, S11, S12 | worker | done | b8aaae4 |
 | T6 | Docs: `docs/payments.md`, README index, `docs/sales.md` gap list updated | S13 | inline | done | this branch |
-| T7 | e2e probe for charging with a method, then full check and close | S6, S12 | inline | blocked | not run yet |
+| T7 | e2e probe for charging with a method, then full check and close | S6, S12 | inline | done | b3d3d75 + run |
 
 T1 and T2 share one commit: the migration without its repository proves nothing
 and the repository cannot be read without the DDL. T1 carries high-risk item 1.
@@ -169,3 +169,15 @@ It also found three things worth fixing, all fixed here:
   would have signed any future kind negative. It now names all four kinds with
   `ELSE 0`, and `every_kind_is_counted_with_its_own_sign` fails to compile when a
   kind is added, forcing the query to be checked against it.
+
+L10. T7 executed against the dev stack (`localhost:5173`, Vite proxy to the API on
+`:3000`) with a real owner session: **14/14 checks passed** (P1-P6 plus "no page
+errors"). It created a wallet and a method, refused to charge before a method was
+chosen, charged a real sale, saw the balance grow by exactly the sale total,
+recorded a manual expense and saw it come down, deactivated the method and
+confirmed the POS refuses again. Two environment notes worth keeping: the probes
+need `playwright`, which is **not** declared in `frontend/package.json` (installed
+with `--no-save` for the run), and running `npm install` while the Vite dev server
+is up leaves it unable to resolve `$app/tsconfig` until it is restarted — the
+first probe run failed on that, not on the feature. The probe leaves a wallet, a
+deactivated method, one charged sale and one expense in the development database.
