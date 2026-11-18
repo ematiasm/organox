@@ -96,7 +96,7 @@
 		busy = true;
 		try {
 			await api.cancelSale(sale.id);
-			window.location.href = '/pos';
+			window.location.href = '/operations/pos';
 		} catch (e) {
 			error = e instanceof ApiError ? e.message : 'Could not cancel.';
 		} finally {
@@ -137,7 +137,7 @@
 			<div class="done" role="status">
 				<strong>Sale charged.</strong> Total {completed.total}. Paid with {completed.method} into
 				{completed.destination}. Stock has been deducted.
-				<button type="button" onclick={() => (window.location.href = '/pos')}>New sale</button>
+				<button type="button" onclick={() => (window.location.href = '/operations/pos')}>New sale</button>
 			</div>
 		{/if}
 
