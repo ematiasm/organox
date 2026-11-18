@@ -270,7 +270,9 @@ E2E_BASE=http://localhost:3000 E2E_EMAIL=you@example.com E2E_PASSWORD=... \
 
 Each probe needs a running app, the credentials above and writes to the
 database it points at (a wallet, a sale, a deactivated method, depending on the
-probe).
+probe). `E2E_BASE` defaults to `http://localhost:3000`, the built app that
+`make run` serves; pass `E2E_BASE=http://localhost:5173` when the probe should
+hit the Vite dev server instead.
 
 When an API type changes, regenerate instead of editing: `make fe-schema`
 runs the OpenAPI generator and then `openapi-typescript`. `schema.d.ts` is
