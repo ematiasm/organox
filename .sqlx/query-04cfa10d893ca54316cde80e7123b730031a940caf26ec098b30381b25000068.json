@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pm.id,\n               pm.name,\n               pm.wallet_id,\n               w.name AS \"wallet_name!\",\n               w.is_active AS \"wallet_is_active!\",\n               pm.is_active,\n               pm.created_at,\n               pm.updated_at\n        FROM payment_methods pm\n        JOIN wallets w ON w.id = pm.wallet_id\n        WHERE pm.id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "wallet_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "wallet_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "wallet_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "wallets",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "wallet_is_active!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "wallets",
+            "name": "is_active"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "is_active",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "is_active"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "04cfa10d893ca54316cde80e7123b730031a940caf26ec098b30381b25000068"
+}

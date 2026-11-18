@@ -74,6 +74,7 @@ fn api_v1(state: AppState) -> Router<AppState> {
         )
         .merge(crate::auth::handlers::router(state.clone()))
         .merge(crate::catalog::handlers::router())
+        .merge(crate::payments::handlers::router())
         .merge(crate::sales::handlers::router())
 }
 
