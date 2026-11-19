@@ -1689,3 +1689,120 @@ async fn a_fractional_sale_discloses_the_money_allowance(pool: PgPool) {
     assert_eq!(balance(&pool, wallet).await, dec!(0.04));
     assert_eq!(charged - refunded, dec!(0.04));
 }
+
+// --- T9: the T8 advisories ----------------------------------------------
+
+#[sqlx::test]
+async fn a_key_of_exactly_one_hundred_characters_is_accepted_and_replays(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(5)).await;
+    let (sale, _, _) = charged_sale(&pool, actor, product, dec!(2)).await;
+
+    // 100 characters is the boundary of an identity, and the server trims
+    // before it measures: padding is not part of the length and not part of
+    // the identity.
+    let exact = "k".repeat(100);
+    let padded = format!(" {exact} ");
+
+    let first = credit_notes::create_with_idempotency(
+        &pool,
+        sale,
+        actor,
+        "Boundary key",
+        &[line(product, dec!(1))],
+        Some(&exact),
+    )
+    .await
+    .expect("a 100-character key is accepted");
+    assert!(!first.replayed);
+
+    // The retry with the same key replays: the same note, not a second one.
+    let second = credit_notes::create_with_idempotency(
+        &pool,
+        sale,
+        actor,
+        "Boundary key",
+        &[line(product, dec!(1))],
+        Some(&exact),
+    )
+    .await
+    .expect("the boundary key replays");
+    assert!(second.replayed);
+    assert_eq!(second.note.id, first.note.id);
+
+    // A key with padding that trims to 100 characters is the same identity:
+    // accepted, never measured as a 102-character over-long key.
+    let third = credit_notes::create_with_idempotency(
+        &pool,
+        sale,
+        actor,
+        "Boundary key",
+        &[line(product, dec!(1))],
+        Some(&padded),
+    )
+    .await
+    .expect("the padded key is trimmed, not rejected");
+    assert!(third.replayed);
+    assert_eq!(third.note.id, first.note.id);
+
+    // One note, one return: none of the retries wrote anything.
+    assert_eq!(note_count(&pool, sale).await, 1);
+    assert_eq!(return_movement_count(&pool, product).await, 1);
+}
+
+#[sqlx::test]
+async fn a_keyed_create_needs_one_pool_connection(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(5)).await;
+    // Charge with the normal pool first: it may use as many connections as
+    // it likes.
+    let (sale, method, _) = charged_sale(&pool, actor, product, dec!(2)).await;
+    let wallet = wallet_of(&pool, method).await;
+    let charged = balance(&pool, wallet).await;
+
+    // A pool that can hand out exactly one connection. A keyed create that
+    // needed a second checkout while holding the first would stall here until
+    // the acquire timeout; success under the default timeout is the proof.
+    // No sleeps: the assertions themselves are the clock.
+    let one = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .expect("one-connection pool");
+
+    let first = credit_notes::create_with_idempotency(
+        &one,
+        sale,
+        actor,
+        "One connection is enough",
+        &[line(product, dec!(1))],
+        Some("single-connection"),
+    )
+    .await
+    .expect("a keyed create holds exactly one connection");
+    assert!(!first.replayed);
+
+    // The replay takes the same single-connection path: the pre-check reads
+    // through the open transaction, not a second checkout.
+    let second = credit_notes::create_with_idempotency(
+        &one,
+        sale,
+        actor,
+        "One connection is enough",
+        &[line(product, dec!(1))],
+        Some("single-connection"),
+    )
+    .await
+    .expect("the replay needs no second connection");
+    assert!(second.replayed);
+    assert_eq!(second.note.id, first.note.id);
+
+    one.close().await;
+
+    // Both calls together wrote one note and moved the money once.
+    assert_eq!(note_count(&pool, sale).await, 1);
+    assert_eq!(return_movement_count(&pool, product).await, 1);
+    assert_eq!(balance(&pool, wallet).await, charged - dec!(100.00));
+}

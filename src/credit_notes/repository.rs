@@ -544,6 +544,12 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
 
     let created_at: DateTime<Utc> = match insert {
         Ok(created_at) => created_at,
+        // The sale row is locked `FOR UPDATE` before the replay pre-check, so
+        // a keyed create always serializes behind the winner and the pre-check
+        // above already serves the replay: this arm only runs if that lock
+        // ordering ever changes. It exists so that a future caller without
+        // that sale lock cannot double-write — the unique index turns the
+        // second insert into a replay of the first note instead.
         Err(err) if violated_constraint(&err) == Some(IDEMPOTENCY_KEY_UNIQUE) => {
             // Two callers with the same key both found no note. The loser's
             // transaction is aborted by the unique index, so it must roll back

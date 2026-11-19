@@ -89,7 +89,11 @@ together before either is fully spent: 0.002 units still returnable against
 cap refuses rather than clamps — a note's total is always the sum of its
 lines — so `refundable_total` is the honest number a client should show.
 Once the allowance reaches zero, further notes are refused even if units
-remain.
+remain. The residue such a sale is left with — a money allowance smaller
+than the smallest note the prices allow — is permanent: nothing in the
+credit-note flow can refund it, so it stays on the sale until an operator
+writes it off by hand. A close-out flow that resolves the residue is
+explicitly future work.
 
 ## What is missing
 
