@@ -294,3 +294,10 @@ sqlx's default acquire timeout; an explicit short one would make a regression fa
 `R3-padded-key-claim-service-seam-only` (the padded-key case is proved at the service seam,
 while the HTTP schema caps the raw key before the trim). Recorded as later work: closing them
 would start another candidate and another review, so the advisory chain stops here.
+
+L14 — delivery: issue #52 (labelled `status:approved`) carries the intent, and the chain is
+published as six stacked PRs, each linked to it and labelled `type:feature`: #53 s1 → `main`,
+#54 s2, #55 s3, #56 s4, #57 s5, #58 s6 (`Closes #52`). The first push attempt was refused by
+the RDD delivery guard ("native assessment reports a due review") while the only unreviewed
+delta was one passive docs commit; after assessing that delta as passive the push went
+through unchanged.
