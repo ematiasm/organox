@@ -226,3 +226,16 @@ approved and no delivery action was taken.
 Delivery branches, chained in this order: `feat/credit-notes-s1-ledger` `9e6bc30`,
 `-s2-create` `c66f0ec`, `-s3-read` `3370ba3`, `-s4-docs` `26162fa`, `-s5-ui` `d0132cc`.
 `feat/credit-notes` is the last of them.
+
+L8 — native review of slice 2 (`c66f0ec` vs `9e6bc30`, tier medium, lenses risk +
+resilience + reliability): **approved**; authority burned with the exact acknowledgement.
+One lens artifact was refused at admission (`out_of_scope`, same relay defect as slice 1) and
+admitted on the provider-prescribed retry. Seven non-blocking advisories stand as later work,
+none of them reopening the candidate: `R1-uncapped-refund-rounding` (per-note rounding can,
+with many sub-cent notes, refund more than the sale charged), `R1-wallet-rounding-drift`
+(cents of per-wallet drift across notes), `R3-refund-share-drop` (claims a negative remainder
+share; `allocate_refund` clamps every share with `min(remaining)`, so the remainder cannot go
+negative and the claim does not hold), `R3-fractional-quantity-rounding`,
+`R3-http-status-coverage` (404/422 unasserted over HTTP), `R4-concurrency-guard-untested` (the
+committed suite has no concurrent-create test; the independent verifier proved it out of
+tree), `R4-create-retry-duplicates-note` (no idempotency key on create).
