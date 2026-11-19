@@ -168,8 +168,14 @@ movements and the `sale_refund` wallet movements, and commits once.
 - **T7** — S2, S3, S6, S7 — the slice-2 review advisories worth acting on: cap the cumulative
   refund of a sale at what it charged, accept an optional idempotency key on create (a retry
   returns the same note), and add the missing tests (concurrent last unit, fractional
-  quantities, HTTP 404/422) — worker — done in d02f67c (`fix(credit-notes): cap the cumulative refund
-  and make create idempotent`.
+  quantities, HTTP 404/422) — worker — done in d02f67c (`fix(credit-notes): cap the cumulative
+  refund and make create idempotent`).
+- **T8** — S2, S6, S7 — the slice-6 advisories worth acting on: the replay pre-check reads on
+  the create transaction's own connection instead of a second pool checkout; the 409 that the
+  money cap raises names the allowance left, and the read endpoint reports it as
+  `refundable_total`; tests for the 200/201 replay status over HTTP, an over-long key, a
+  concurrent same-key pair, and a fractional sale whose quantities and money run out together.
+  T8 keeps the note's `total` equal to the sum of its lines: the cap refuses, never clamps.
 
 Slices are committed in this order, each one reviewable on its own: plan and
 spec (1 commit); ledger kinds and schema; the create endpoint with its tests;
