@@ -176,6 +176,10 @@ movements and the `sale_refund` wallet movements, and commits once.
   `refundable_total`; tests for the 200/201 replay status over HTTP, an over-long key, a
   concurrent same-key pair, and a fractional sale whose quantities and money run out together.
   T8 keeps the note's `total` equal to the sum of its lines: the cap refuses, never clamps.
+- **T9** — S6, S7 — the four T8 advisories: assert a 100-character key is accepted, prove
+  the one-connection property with a pool capped at one connection, state in the code that
+  the unique-race recovery is unreachable under the sale lock (a comment, not a test), and
+  document that a fractional residue is written off by hand today.
 
 Slices are committed in this order, each one reviewable on its own: plan and
 spec (1 commit); ledger kinds and schema; the create endpoint with its tests;
