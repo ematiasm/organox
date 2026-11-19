@@ -25,9 +25,10 @@
 
 	let { data } = $props();
 
-	// `sale_payment` is deliberately absent: that money only enters a wallet by
-	// charging a sale. The server rejects it, and the form does not offer it.
-	type ManualKind = Exclude<WalletMovementKind, 'sale_payment'>;
+	// `sale_payment` and `sale_refund` are deliberately absent: that money only
+	// moves by charging a sale or returning one. The server rejects them here,
+	// and the form does not offer them.
+	type ManualKind = Exclude<WalletMovementKind, 'sale_payment' | 'sale_refund'>;
 	const MANUAL_KINDS: { value: ManualKind; label: string }[] = [
 		{ value: 'expense', label: 'Expense' },
 		{ value: 'adjustment_in', label: 'Adjustment in' },
@@ -35,6 +36,7 @@
 	];
 	const KIND_LABELS: Record<WalletMovementKind, string> = {
 		sale_payment: 'Sale payment',
+		sale_refund: 'Sale refund',
 		expense: 'Expense',
 		adjustment_in: 'Adjustment in',
 		adjustment_out: 'Adjustment out'

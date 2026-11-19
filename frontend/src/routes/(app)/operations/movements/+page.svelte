@@ -18,6 +18,7 @@
 	const REASONS: Record<MovementReason, string> = {
 		purchase: 'Purchase',
 		sale: 'Sale',
+		return: 'Return',
 		adjustment: 'Adjustment',
 		loss: 'Loss'
 	};
