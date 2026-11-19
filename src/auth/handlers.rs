@@ -17,12 +17,13 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::extract::{AuthUser, SESSION_COOKIE};
 use crate::auth::model::Role;
+use crate::auth::repository;
 use crate::auth::service::{self, AuthError, LoginOutcome};
 use crate::error::AppError;
 
 pub fn router(state: AppState) -> Router<AppState> {
     use axum::middleware::from_fn_with_state;
-    use axum::routing::post;
+    use axum::routing::{get, post};
 
     // Apply the IP limit ONLY to login. Applying it to the entire API would
     // penalize a legitimate polling frontend and add nothing against brute force.
@@ -38,7 +39,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(guarded_login)
         .route("/auth/logout", post(logout))
         .route("/auth/me", axum::routing::get(me))
-        .route("/users", post(create_user))
+        .route("/users", get(list_users).post(create_user))
 }
 
 // --- DTOs ---------------------------------------------------------------
@@ -150,6 +151,29 @@ async fn me(user: AuthUser) -> Json<UserResponse> {
         email: user.email().to_string(),
         role: user.role(),
     })
+}
+
+async fn list_users(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Vec<UserResponse>>, AppError> {
+    // Same authorization rule as user creation, before reading the users.
+    user.require_user_management()?;
+
+    let users = repository::list_users(&state.pool)
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?;
+
+    Ok(Json(
+        users
+            .into_iter()
+            .map(|found| UserResponse {
+                id: found.id,
+                email: found.email,
+                role: found.role,
+            })
+            .collect(),
+    ))
 }
 
 async fn create_user(
@@ -276,6 +300,22 @@ fn logout_doc() {}
 )]
 #[allow(dead_code)]
 fn me_doc() {}
+
+/// List every user, ordered by email. Only `owner`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/users",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Users ordered by email", body = Vec<UserResponse>),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn list_users_doc() {}
 
 /// Create a user. Only `owner`.
 #[utoipa::path(

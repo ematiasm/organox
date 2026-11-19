@@ -50,6 +50,13 @@ pub struct FoundSession {
     pub role: Role,
 }
 
+/// Public fields of a user, ready for the HTTP DTO.
+pub struct ListedUser {
+    pub id: Uuid,
+    pub email: String,
+    pub role: Role,
+}
+
 /// The id is a UUID v7 generated in the app: time-sortable and unpredictable.
 pub async fn create_user(pool: &PgPool, new: NewUser<'_>) -> Result<Uuid, RepoError> {
     let id = Uuid::now_v7();
@@ -97,6 +104,28 @@ pub async fn find_user_by_email(
         password_hash: PasswordHash::from_phc(r.password_hash),
         role: r.role,
     }))
+}
+
+/// Every user, in a stable order for the screen and its tests.
+pub async fn list_users(pool: &PgPool) -> Result<Vec<ListedUser>, RepoError> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT id, email::text AS "email!", role AS "role: Role"
+        FROM users
+        ORDER BY email
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| ListedUser {
+            id: r.id,
+            email: r.email,
+            role: r.role,
+        })
+        .collect())
 }
 
 /// Issue a session. `expires_at` is calculated in the DB to avoid depending on
