@@ -33,6 +33,8 @@ export type PaymentMethod = components['schemas']['PaymentMethodResponse'];
 export type WalletMovement = components['schemas']['WalletMovementResponse'];
 export type WalletMovementKind = components['schemas']['WalletMovementKind'];
 export type SalePayment = components['schemas']['SalePaymentRequest'];
+export type ChangePasswordRequest = components['schemas']['ChangePasswordRequest'];
+export type ResetPasswordRequest = components['schemas']['ResetPasswordRequest'];
 
 /** Normalized API error. */
 export class ApiError extends Error {
@@ -125,6 +127,24 @@ export const api = {
 		}),
 
 	logout: () => request<void>('/api/v1/auth/logout', { method: 'POST', skipAuthRedirect: true }),
+
+	/**
+	 * A 401 means the current password was wrong, not that the session expired:
+	 * `skipAuthRedirect` keeps a typo from sending the operator to /login.
+	 */
+	changePassword: (body: ChangePasswordRequest) =>
+		request<void>('/api/v1/auth/password', {
+			method: 'POST',
+			body,
+			skipAuthRedirect: true
+		}),
+
+	/** The owner resets any user; the target's sessions are revoked by the API. */
+	resetUserPassword: (id: string, body: ResetPasswordRequest) =>
+		request<void>(`/api/v1/users/${encodeURIComponent(id)}/password`, {
+			method: 'PUT',
+			body
+		}),
 
 	listProducts: (params: {
 		search?: string;
