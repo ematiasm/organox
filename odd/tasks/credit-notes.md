@@ -204,3 +204,25 @@ charged total in the list and the credited total on the return screen, because
 that. Same verification round: `docs/credit-notes.md` named a `409 sale_not_creditable`
 identifier that never exists on the wire, which the doc no longer claims; errors are RFC
 7807 with a status and a `detail`.
+
+L7 — native review of slice 1 (tier high, lenses risk + reliability, lineage
+`review-718441ff157bfe52`): both lens artifacts were admitted after two admission retries
+(one echoed a different artifact subject, one listed an inspection path outside the frozen
+candidate); the refuter then ran and closed `correction_required` on one CRITICAL finding,
+`R3-sale-payment-check` (`tests/payments.rs:610-614`). The claim does not hold: the nested
+branches gave `sale_payment` its sale and method in the first branch, and `0008` already
+required that link, so `0010` is additive as it states; the suite was green throughout. The
+correction was accepted anyway (user decision): the linkage is now one flat `match` per
+kind, 38 diff lines, committed `9e6bc30`, with the rest of the chain rebased onto it; the
+final tree differs from the verified one only in that hunk.
+
+The lineage cannot advance: its correction-plan slot reoffers a provider-issued binding
+(`--target=sha256:6e842b…`, `--expected-revision=sha256:9b99cc…`) that the capture tool
+rejects as "missing or stale for current STATUS" after three submissions (canonical object,
+envelope object, exact serialized string), while STATUS reports the corrected candidate
+(`target_identity=sha256:73ff73…`). A facade defect, not a repository problem: nothing was
+approved and no delivery action was taken.
+
+Delivery branches, chained in this order: `feat/credit-notes-s1-ledger` `9e6bc30`,
+`-s2-create` `c66f0ec`, `-s3-read` `3370ba3`, `-s4-docs` `26162fa`, `-s5-ui` `d0132cc`.
+`feat/credit-notes` is the last of them.
