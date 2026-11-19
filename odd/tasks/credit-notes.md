@@ -168,7 +168,7 @@ movements and the `sale_refund` wallet movements, and commits once.
 - **T7** — S2, S3, S6, S7 — the slice-2 review advisories worth acting on: cap the cumulative
   refund of a sale at what it charged, accept an optional idempotency key on create (a retry
   returns the same note), and add the missing tests (concurrent last unit, fractional
-  quantities, HTTP 404/422) — worker — commit `fix(credit-notes): cap the cumulative refund
+  quantities, HTTP 404/422) — worker — done in d02f67c (`fix(credit-notes): cap the cumulative refund
   and make create idempotent`.
 
 Slices are committed in this order, each one reviewable on its own: plan and
