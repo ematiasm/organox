@@ -249,3 +249,20 @@ L9 — user decision after the slice-2 approval (verbatim): "ok, segui con 1", w
 follow-up slice: `R1-uncapped-refund-rounding`, `R4-create-retry-duplicates-note` and the three
 missing tests. `R1-wallet-rounding-drift` stays accepted as documented design (the per-note
 allocation is what the spec asked for) and `R3-refund-share-drop` is refuted, not worked.
+
+L10 — native review of slice 6 (`9770d70` vs `d0132cc`, tier medium, lenses risk + resilience
++ reliability): **approved**, all three artifacts admitted first try, authority burned. Ten
+non-blocking advisories. The ones worth acting on: `R3-keyed-create-double-pool-hold` /
+`R4-keyed-create-needs-a-second-pool-connection` (the replay pre-check reads through the pool
+while the create transaction holds a connection and the sale lock: two connections per keyed
+create, and a saturation path to a 500 — it can read through `&mut *tx` instead);
+`R4-refund-cap-strands-fractional-remainder` (the cap refuses instead of clamping, so a
+fractional sale can end with returnable quantity the read endpoint still advertises and
+create permanently refuses — 0.002 units left against a 0.04 allowance whose natural note is
+0.07); `R3-subtotal-total-cent-drift` (each subtotal rounds, the total rounds the raw sum, so a
+multi-line fractional note can display 0.99 against 1.00); and the missing evidence:
+`R3-replay-status-unasserted` (200 vs 201 never asserted over HTTP),
+`R3-concurrent-replay-unproved` / `R4-concurrent-key-recovery-untested` (the unique-race
+fallback is unexercised), `R3-key-length-boundary-untested`, `R3-key-maxlength-pretrim`
+(schema caps the raw key, the server trims first) and `R1-replay-unscoped-key` (a key replays
+for any session holder of that sale, not only its creator; informational, writes nothing).
