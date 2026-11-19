@@ -285,3 +285,12 @@ property with a pool capped at one), `R4-concurrent-recovery-branch-unexercised`
 unique-race recovery is unreachable under the sale lock; needs a comment saying so or a forced
 test) and `R4-fractional-remainder-has-no-write-off` (the fractional residue is disclosed but
 has no close-out path).
+
+L13 — native review of the polish slice (`e239090` vs `7d6d6cd`, tier medium, lens
+reliability): **approved**, authority burned. Three SUGGESTION advisories, all about test
+rigor: `R3-boundary-retry-money-side-unasserted` (the boundary test asserts the note and the
+stock, not the wallet), `R3-one-connection-proof-implicit-timeout` (the capped pool relies on
+sqlx's default acquire timeout; an explicit short one would make a regression fail fast) and
+`R3-padded-key-claim-service-seam-only` (the padded-key case is proved at the service seam,
+while the HTTP schema caps the raw key before the trim). Recorded as later work: closing them
+would start another candidate and another review, so the advisory chain stops here.
