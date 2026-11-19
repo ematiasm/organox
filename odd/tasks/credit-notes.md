@@ -332,3 +332,15 @@ one-snapshot guarantee rests on argument discipline, since the read helpers stil
 and a later revert of one call site would compile and pass; pinning them to
 `&mut PgConnection` would make that regression fail to compile. Left as later work — the
 advisory chain has to end, and the merge of the chain is the user's decision.
+
+L18 — native review of slice 5 (`d0132cc` vs `26162fa`, tier medium, lenses readability +
+reliability): **approved**, authority burned. Eight non-blocking advisories, two of them real
+UI defects worth fixing: `R3-duplicate-refund-keys` (both keyed `each` blocks key refunds by
+wallet+method, and a sale paid twice with the same method — allowed by `resolve_payments` —
+produces two refunds with one key, which Svelte 5 reports and which drops or mangles the second
+row) and `R2-003` (create and the post-success refresh share one try, so a failed refresh hides
+a note that was actually created and invites a retry that would create a second one; the client
+sends no idempotency key). Also `R2-004` / `R3-fully-returned-untested` (`returnable_quantity
+=== '0'` is string equality against a decimal contract, and the state has no assertion) and five
+e2e-assertion nits (`R2-001`, `R2-002`, `R2-005`, `R3-nav-assertion-drift`: the nav assertion
+was already red at baseline and this slice repaired it).
