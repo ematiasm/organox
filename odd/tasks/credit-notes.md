@@ -272,3 +272,12 @@ multi-line fractional note can display 0.99 against 1.00); and the missing evide
 fallback is unexercised), `R3-key-length-boundary-untested`, `R3-key-maxlength-pretrim`
 (schema caps the raw key, the server trims first) and `R1-replay-unscoped-key` (a key replays
 for any session holder of that sale, not only its creator; informational, writes nothing).
+
+L12 — native review of the T8 fix (`f38c133` vs `0dc163f`, tier medium, lenses resilience +
+reliability): **approved**, both artifacts admitted, authority burned. Four SUGGESTION
+advisories, all later work: `R3-key-accept-boundary-untested` (the 100-character key is never
+asserted as valid), `R3-keyed-create-single-hold-unproved` (no test pins the one-connection
+property with a pool capped at one), `R4-concurrent-recovery-branch-unexercised` (the
+unique-race recovery is unreachable under the sale lock; needs a comment saying so or a forced
+test) and `R4-fractional-remainder-has-no-write-off` (the fractional residue is disclosed but
+has no close-out path).
