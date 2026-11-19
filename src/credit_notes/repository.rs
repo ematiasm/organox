@@ -43,9 +43,10 @@ pub enum RepoError {
     SaleTotalMissing,
 
     #[error(
-        "the returns add up to {:.2} for a sale of {:.2}: a credit note cannot refund more than the sale charged",
+        "the returns add up to {:.2} for a sale of {:.2}: only {:.2} is left to refund",
         already_refunded + requested,
-        sale_total
+        sale_total,
+        sale_total - already_refunded
     )]
     RefundExceedsSale {
         sale_total: Decimal,
@@ -143,6 +144,10 @@ pub struct SaleCreditSummary {
     pub sale_id: Uuid,
     pub sale_total: Decimal,
     pub refunded_total: Decimal,
+    /// The money allowance create still enforces: what the sale charged minus
+    /// what its notes already refunded. Once this reaches zero, further notes
+    /// are refused even if units remain.
+    pub refundable_total: Decimal,
     pub lines: Vec<CreditableLine>,
     pub notes: Vec<CreditNoteDetail>,
 }
@@ -179,38 +184,42 @@ pub async fn for_sale(
 
     let notes = load_notes(pool, sale_id, None).await?;
     let refunded_total = notes.iter().map(|note| note.note.total).sum::<Decimal>();
+    let refundable_total = sale_total - refunded_total;
 
     Ok(Some(SaleCreditSummary {
         sale_id,
         sale_total,
         refunded_total,
+        refundable_total,
         lines,
         notes,
     }))
 }
 
-/// Notes of a sale with their lines and actual refunds, optionally narrowed
-/// to one idempotency key.
+/// One note row, before its lines and refunds are attached.
+struct StoredNote {
+    id: Uuid,
+    sale_id: Uuid,
+    reason: String,
+    total: Decimal,
+    created_by: Uuid,
+    created_at: DateTime<Utc>,
+}
+
+/// The note rows of a sale, optionally narrowed to one idempotency key.
 ///
-/// The read endpoint and a create replay go through the same loader, so a
-/// replayed note is exactly the document a later GET would return. Children
-/// are batched: one query each, whatever the number of notes. Rows arrive in
-/// display order, so grouping only has to append them.
-async fn load_notes(
-    pool: &PgPool,
+/// Generic over the executor like `creditable_lines`: the create pre-check
+/// reads through its own transaction, so a keyed create holds one pool
+/// connection, never two.
+async fn note_rows<'e, E>(
+    executor: E,
     sale_id: Uuid,
     idempotency_key: Option<&str>,
-) -> Result<Vec<CreditNoteDetail>, RepoError> {
-    struct StoredNote {
-        id: Uuid,
-        sale_id: Uuid,
-        reason: String,
-        total: Decimal,
-        created_by: Uuid,
-        created_at: DateTime<Utc>,
-    }
-
-    let notes: Vec<StoredNote> = if let Some(key) = idempotency_key {
+) -> Result<Vec<StoredNote>, RepoError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let rows: Vec<StoredNote> = if let Some(key) = idempotency_key {
         sqlx::query!(
             r#"
             SELECT cn.id,
@@ -226,7 +235,7 @@ async fn load_notes(
             sale_id,
             key
         )
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await?
         .into_iter()
         .map(|row| StoredNote {
@@ -253,7 +262,7 @@ async fn load_notes(
             "#,
             sale_id
         )
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await?
         .into_iter()
         .map(|row| StoredNote {
@@ -267,89 +276,146 @@ async fn load_notes(
         .collect()
     };
 
-    let note_ids: Vec<Uuid> = notes.iter().map(|note| note.id).collect();
+    Ok(rows)
+}
+
+/// The lines of the given notes, grouped by note id. Rows arrive in display
+/// order, so grouping only has to append them.
+async fn item_rows<'e, E>(
+    executor: E,
+    note_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Vec<CreditNoteItem>>, RepoError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     let mut items: HashMap<Uuid, Vec<CreditNoteItem>> = HashMap::new();
-    let mut refunds: HashMap<Uuid, Vec<CreditNoteRefund>> = HashMap::new();
-
-    if !note_ids.is_empty() {
-        let rows = sqlx::query!(
-            r#"
-            SELECT cni.id,
-                   cni.credit_note_id,
-                   cni.product_id,
-                   p.name AS "product_name!",
-                   cni.quantity,
-                   cni.unit_price
-            FROM credit_note_items cni
-            JOIN products p ON p.id = cni.product_id
-            WHERE cni.credit_note_id = ANY($1)
-            ORDER BY p.name, cni.id
-            "#,
-            &note_ids
-        )
-        .fetch_all(pool)
-        .await?;
-
-        for row in rows {
-            items
-                .entry(row.credit_note_id)
-                .or_default()
-                .push(CreditNoteItem {
-                    id: row.id,
-                    product_id: row.product_id,
-                    product_name: row.product_name,
-                    quantity: row.quantity,
-                    unit_price: row.unit_price,
-                });
-        }
-
-        let rows = sqlx::query!(
-            r#"
-            SELECT m.credit_note_id AS "credit_note_id!",
-                   m.wallet_id,
-                   w.name AS "wallet_name!",
-                   m.payment_method_id AS "payment_method_id!",
-                   pm.name AS "payment_method_name!",
-                   m.amount
-            FROM wallet_movements m
-            JOIN wallets w ON w.id = m.wallet_id
-            JOIN payment_methods pm ON pm.id = m.payment_method_id
-            WHERE m.kind = 'sale_refund' AND m.credit_note_id = ANY($1)
-            ORDER BY m.created_at, m.id
-            "#,
-            &note_ids
-        )
-        .fetch_all(pool)
-        .await?;
-
-        for row in rows {
-            refunds
-                .entry(row.credit_note_id)
-                .or_default()
-                .push(CreditNoteRefund {
-                    wallet_id: row.wallet_id,
-                    wallet_name: row.wallet_name,
-                    payment_method_id: row.payment_method_id,
-                    payment_method_name: row.payment_method_name,
-                    amount: row.amount,
-                });
-        }
+    if note_ids.is_empty() {
+        return Ok(items);
     }
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT cni.id,
+               cni.credit_note_id,
+               cni.product_id,
+               p.name AS "product_name!",
+               cni.quantity,
+               cni.unit_price
+        FROM credit_note_items cni
+        JOIN products p ON p.id = cni.product_id
+        WHERE cni.credit_note_id = ANY($1)
+        ORDER BY p.name, cni.id
+        "#,
+        note_ids
+    )
+    .fetch_all(executor)
+    .await?;
+
+    for row in rows {
+        items
+            .entry(row.credit_note_id)
+            .or_default()
+            .push(CreditNoteItem {
+                id: row.id,
+                product_id: row.product_id,
+                product_name: row.product_name,
+                quantity: row.quantity,
+                unit_price: row.unit_price,
+            });
+    }
+
+    Ok(items)
+}
+
+/// The refund movements that name the given notes, grouped by note id.
+async fn refund_rows<'e, E>(
+    executor: E,
+    note_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Vec<CreditNoteRefund>>, RepoError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let mut refunds: HashMap<Uuid, Vec<CreditNoteRefund>> = HashMap::new();
+    if note_ids.is_empty() {
+        return Ok(refunds);
+    }
+
+    let rows = sqlx::query!(
+        r#"
+        SELECT m.credit_note_id AS "credit_note_id!",
+               m.wallet_id,
+               w.name AS "wallet_name!",
+               m.payment_method_id AS "payment_method_id!",
+               pm.name AS "payment_method_name!",
+               m.amount
+        FROM wallet_movements m
+        JOIN wallets w ON w.id = m.wallet_id
+        JOIN payment_methods pm ON pm.id = m.payment_method_id
+        WHERE m.kind = 'sale_refund' AND m.credit_note_id = ANY($1)
+        ORDER BY m.created_at, m.id
+        "#,
+        note_ids
+    )
+    .fetch_all(executor)
+    .await?;
+
+    for row in rows {
+        refunds
+            .entry(row.credit_note_id)
+            .or_default()
+            .push(CreditNoteRefund {
+                wallet_id: row.wallet_id,
+                wallet_name: row.wallet_name,
+                payment_method_id: row.payment_method_id,
+                payment_method_name: row.payment_method_name,
+                amount: row.amount,
+            });
+    }
+
+    Ok(refunds)
+}
+
+/// Attach the stored lines and refunds to one note row.
+fn attach_children(
+    note: StoredNote,
+    items: &mut HashMap<Uuid, Vec<CreditNoteItem>>,
+    refunds: &mut HashMap<Uuid, Vec<CreditNoteRefund>>,
+) -> CreditNoteDetail {
+    CreditNoteDetail {
+        note: CreditNote {
+            id: note.id,
+            sale_id: note.sale_id,
+            reason: note.reason,
+            total: note.total,
+            created_by: note.created_by,
+            created_at: note.created_at,
+        },
+        items: items.remove(&note.id).unwrap_or_default(),
+        refunds: refunds.remove(&note.id).unwrap_or_default(),
+    }
+}
+
+/// Notes of a sale with their lines and actual refunds, optionally narrowed
+/// to one idempotency key.
+///
+/// The read endpoint and a create replay go through the same queries and the
+/// same assembly, so a replayed note is exactly the document a later GET
+/// would return. Children are batched: one query each, whatever the number of
+/// notes. The pool is enough here: a replay inside `create` reads through its
+/// own transaction instead, so it never waits on a second checkout.
+async fn load_notes(
+    pool: &PgPool,
+    sale_id: Uuid,
+    idempotency_key: Option<&str>,
+) -> Result<Vec<CreditNoteDetail>, RepoError> {
+    let notes = note_rows(pool, sale_id, idempotency_key).await?;
+    let note_ids: Vec<Uuid> = notes.iter().map(|note| note.id).collect();
+    let mut items = item_rows(pool, &note_ids).await?;
+    let mut refunds = refund_rows(pool, &note_ids).await?;
 
     Ok(notes
         .into_iter()
-        .map(|note| CreditNoteDetail {
-            note: CreditNote {
-                id: note.id,
-                sale_id: note.sale_id,
-                reason: note.reason,
-                total: note.total,
-                created_by: note.created_by,
-                created_at: note.created_at,
-            },
-            items: items.remove(&note.id).unwrap_or_default(),
-            refunds: refunds.remove(&note.id).unwrap_or_default(),
-        })
+        .map(|note| attach_children(note, &mut items, &mut refunds))
         .collect())
 }
 
@@ -384,15 +450,22 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
 
     // A retry returns the first note, whatever the rest of the request says:
     // the caller did not get its answer, not a new return to record.
+    //
+    // The pre-check reads through the open transaction, not the pool: a keyed
+    // create holds ONE pool connection while it owns the sale lock, so a
+    // saturated pool cannot turn a retry into a 500 with the lock held.
     if let Some(key) = new.idempotency_key
-        && let Some(detail) = load_notes(pool, new.sale_id, Some(key))
+        && let Some(note) = note_rows(&mut *tx, new.sale_id, Some(key))
             .await?
             .into_iter()
             .next()
     {
+        let note_ids = [note.id];
+        let mut items = item_rows(&mut *tx, &note_ids).await?;
+        let mut refunds = refund_rows(&mut *tx, &note_ids).await?;
         tx.rollback().await?;
         return Ok(CreatedCreditNote {
-            detail,
+            detail: attach_children(note, &mut items, &mut refunds),
             replayed: true,
         });
     }

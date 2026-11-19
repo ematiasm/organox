@@ -1098,7 +1098,7 @@
         "tags": [
           "credit_notes"
         ],
-        "summary": "The credits of a sale: what was charged, what came back and where the money\nof each note went. A draft has no stored total, so the charged lines decide\nit; the refunded total is the sum of the notes already issued.",
+        "summary": "The credits of a sale: what was charged, what came back and where the money\nof each note went. A draft has no stored total, so the charged lines decide\nit; the refunded total is the sum of the notes already issued, and\n`refundable_total` is the money allowance create still enforces\n(`sale_total − refunded_total`). Quantities and money can run out together:\nonce the allowance reaches zero, further notes are refused even if units\nremain.",
         "operationId": "get_credit_notes_doc",
         "parameters": [
           {
@@ -1216,7 +1216,7 @@
             }
           },
           "409": {
-            "description": "Sale not completed, more than what can still be returned, or refunds above the sale total",
+            "description": "Sale not completed, more than what can still be returned, or refunds that would cross what the sale charged; the detail names the money allowance left",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2777,11 +2777,12 @@
       },
       "SaleCreditNotesResponse": {
         "type": "object",
-        "description": "The sale's credits: its charged lines and the notes already issued.",
+        "description": "The sale's credits: its charged lines, the money still refundable, and\nthe notes already issued.",
         "required": [
           "sale_id",
           "sale_total",
           "refunded_total",
+          "refundable_total",
           "items",
           "credit_notes"
         ],
@@ -2797,6 +2798,10 @@
             "items": {
               "$ref": "#/components/schemas/CreditableLineResponse"
             }
+          },
+          "refundable_total": {
+            "type": "string",
+            "description": "The money allowance create still enforces: `sale_total` minus\n`refunded_total`. Once it reaches zero, further notes are refused\neven if units remain."
           },
           "refunded_total": {
             "type": "string"

@@ -315,7 +315,11 @@ export interface paths {
         /**
          * The credits of a sale: what was charged, what came back and where the money
          *     of each note went. A draft has no stored total, so the charged lines decide
-         *     it; the refunded total is the sum of the notes already issued.
+         *     it; the refunded total is the sum of the notes already issued, and
+         *     `refundable_total` is the money allowance create still enforces
+         *     (`sale_total − refunded_total`). Quantities and money can run out together:
+         *     once the allowance reaches zero, further notes are refused even if units
+         *     remain.
          */
         get: operations["get_credit_notes_doc"];
         put?: never;
@@ -753,10 +757,19 @@ export interface components {
         };
         /** @enum {string} */
         Role: "owner" | "manager";
-        /** @description The sale's credits: its charged lines and the notes already issued. */
+        /**
+         * @description The sale's credits: its charged lines, the money still refundable, and
+         *     the notes already issued.
+         */
         SaleCreditNotesResponse: {
             credit_notes: components["schemas"]["CreditNoteResponse"][];
             items: components["schemas"]["CreditableLineResponse"][];
+            /**
+             * @description The money allowance create still enforces: `sale_total` minus
+             *     `refunded_total`. Once it reaches zero, further notes are refused
+             *     even if units remain.
+             */
+            refundable_total: string;
             refunded_total: string;
             /** Format: uuid */
             sale_id: string;
@@ -1819,7 +1832,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Sale not completed, more than what can still be returned, or refunds above the sale total */
+            /** @description Sale not completed, more than what can still be returned, or refunds that would cross what the sale charged; the detail names the money allowance left */
             409: {
                 headers: {
                     [name: string]: unknown;

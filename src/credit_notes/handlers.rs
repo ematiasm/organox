@@ -95,12 +95,17 @@ pub struct CreditableLineResponse {
     pub returnable_quantity: String,
 }
 
-/// The sale's credits: its charged lines and the notes already issued.
+/// The sale's credits: its charged lines, the money still refundable, and
+/// the notes already issued.
 #[derive(Serialize, ToSchema)]
 pub struct SaleCreditNotesResponse {
     pub sale_id: Uuid,
     pub sale_total: String,
     pub refunded_total: String,
+    /// The money allowance create still enforces: `sale_total` minus
+    /// `refunded_total`. Once it reaches zero, further notes are refused
+    /// even if units remain.
+    pub refundable_total: String,
     pub items: Vec<CreditableLineResponse>,
     pub credit_notes: Vec<CreditNoteResponse>,
 }
@@ -153,6 +158,7 @@ async fn sale_credit_notes(
         sale_id: summary.sale_id,
         sale_total: format_money(summary.sale_total),
         refunded_total: format_money(summary.refunded_total),
+        refundable_total: format_money(summary.refundable_total),
         items: summary
             .lines
             .into_iter()
@@ -272,7 +278,7 @@ impl From<CreditNotesError> for AppError {
          content_type = "application/problem+json"),
         (status = 404, description = "Sale not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "Sale not completed, more than what can still be returned, or refunds above the sale total",
+        (status = 409, description = "Sale not completed, more than what can still be returned, or refunds that would cross what the sale charged; the detail names the money allowance left",
          body = crate::openapi::Problem, content_type = "application/problem+json"),
         (status = 422, description = "Invalid reason, key, line or quantity",
          body = crate::openapi::Problem, content_type = "application/problem+json"),
@@ -283,7 +289,11 @@ fn create_credit_note_doc() {}
 
 /// The credits of a sale: what was charged, what came back and where the money
 /// of each note went. A draft has no stored total, so the charged lines decide
-/// it; the refunded total is the sum of the notes already issued.
+/// it; the refunded total is the sum of the notes already issued, and
+/// `refundable_total` is the money allowance create still enforces
+/// (`sale_total − refunded_total`). Quantities and money can run out together:
+/// once the allowance reaches zero, further notes are refused even if units
+/// remain.
 #[utoipa::path(
     get,
     path = "/api/v1/sales/{id}/credit-notes",

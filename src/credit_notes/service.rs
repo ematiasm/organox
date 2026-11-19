@@ -58,9 +58,10 @@ pub enum CreditNotesError {
     },
 
     #[error(
-        "the returns add up to {:.2} for a sale of {:.2}: a credit note cannot refund more than the sale charged",
+        "the returns add up to {:.2} for a sale of {:.2}: only {:.2} is left to refund",
         already_refunded + requested,
-        sale_total
+        sale_total,
+        sale_total - already_refunded
     )]
     RefundExceedsSale {
         sale_total: Decimal,
