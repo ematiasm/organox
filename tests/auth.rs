@@ -793,6 +793,35 @@ async fn self_password_change_revokes_other_sessions_and_keeps_the_current_one(p
 }
 
 #[sqlx::test]
+async fn anonymous_cannot_change_password(pool: sqlx::PgPool) {
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let users_before = count_rows(&pool, "users").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    // No cookie at all: the route sits behind `AuthUser`, which rejects before
+    // the body is read, so neither password can matter.
+    let body = json!({
+        "current_password": test_password(),
+        "new_password": test_password(),
+    });
+    let response = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/password")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(count_rows(&pool, "users").await, users_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+}
+
+#[sqlx::test]
 async fn manager_cannot_reset_password(pool: sqlx::PgPool) {
     let manager_password = seed_user(&pool, "manager@pyme.com", Role::Manager).await;
     let target_password = seed_user(&pool, "target@pyme.com", Role::Manager).await;
@@ -887,6 +916,10 @@ async fn owner_reset_rejects_forbidden_password_without_effects(pool: sqlx::PgPo
     let hash_before = password_hash(&pool, "target@pyme.com").await;
     let sessions_before = count_rows(&pool, "sessions").await;
 
+    // `"123456789012"` is on `FORBIDDEN_PASSWORDS` (`src/auth/validation.rs:28`),
+    // which is private, so the test cannot take the value from there. It is the
+    // subject of the test, not a credential: generating it would delete what
+    // this proves. If a scanner flags it, the disposition is `used in tests`.
     let response = app(pool.clone())
         .oneshot(reset_password_request(&cookie, target, "123456789012"))
         .await
@@ -906,6 +939,34 @@ async fn owner_reset_rejects_forbidden_password_without_effects(pool: sqlx::PgPo
             .unwrap()
             .status(),
         StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn reset_validates_the_password_before_checking_whether_the_user_exists(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+
+    // Both fields are already wrong: an id that does not exist and a password
+    // the rule forbids. The answer pins the deliberate order — validate first,
+    // because the rule is public and the lookup is not.
+    let response = app(pool.clone())
+        .oneshot(reset_password_request(
+            &cookie,
+            Uuid::now_v7(),
+            &short_password(),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await["detail"],
+        "the password must contain at least 12 characters"
     );
 }
 
