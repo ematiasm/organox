@@ -160,10 +160,10 @@ movements and the `sale_refund` wallet movements, and commits once.
 - **T3** — S7 — the read endpoint and its tests — worker — done in `70fa313`
   (`feat(credit-notes): read a sale's credits and trace each refund to its note`).
 - **T4** — S8 — `docs/credit-notes.md`, `docs/sales.md`, `docs/payments.md`, README and
-  `make fe-schema` — worker — done in this commit
-  (`docs(credit-notes): document returns and refunds`).
+  `make fe-schema` — worker — done in `4b5eaf5`
+  (`docs(credit-notes): document returns, refunds and the new endpoints`).
 - **T5** — S9 — frontend completed-sales list, credit-note form, client methods, e2e proof —
-  worker — commit `feat(ui): issue credit notes from a completed sale`.
+  worker — done in `0461da5` (`feat(ui): issue credit notes from a completed sale`).
 - **T6** — S1–S9 — independent verification and native review — parent.
 
 Slices are committed in this order, each one reviewable on its own: plan and
@@ -189,3 +189,10 @@ L4 — docs slice: `docs/credit-notes.md` plus the sales, payments and README up
 and the regenerated OpenAPI artifacts. `make check` reports 204 tests. The branch is
 past one review slice, so delivery will be chained PRs rather than one branch-wide
 review.
+
+L5 — UI slice: `/operations/sales` and its credit-note form, typed client methods, the
+rail entry and the nav assertion that now matches the rail. Proof: `frontend/e2e/sales.cjs`
+22/22, `nav-shell.cjs` 19/19, `make fe-check` 0 errors, `make fe-build` ok. `payments.cjs`
+P6 fails for an environmental reason, not this change: the dev database already holds an
+active method named `Efectivo` that no probe created, so the POS still offers a method
+after the probe deactivates its own; the script and that data were left untouched.
