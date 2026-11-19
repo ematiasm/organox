@@ -132,6 +132,15 @@ insufficient-stock conflict), `422` for an empty line list, a product that is no
 the sale, a quantity of zero or less, and a blank or over-long reason. `500` for internal
 errors, logged not serialized.
 
+### Refund linkage
+
+A `sale_refund` row names three things: the sale it reverses, the payment
+method that collected the money, and — added in `0011` — the `credit_note_id`
+that caused it. The first two already exist on `sale_payment`; the third is what
+lets the read endpoint show, per note, where its money actually went instead of
+re-deriving a split that may no longer match. A refund without its note is
+rejected by CHECK, and no other kind may carry a note id.
+
 ### Module layout
 
 `src/credit_notes/{mod.rs, model.rs, repository.rs, service.rs, handlers.rs}`, merged in
@@ -143,18 +152,25 @@ movements and the `sale_refund` wallet movements, and commits once.
 ## Tasks
 
 - **T1** — S1–S8 — migrations `0009` + `0010`, `return` reason, `sale_refund` kind, model
-  (types + allocation) with unit tests — worker — commit
-  `feat(credit-notes): add the ledger kinds and schema`.
+  (types + allocation) with unit tests — worker — done in `c7672cd`
+  (`feat(credit-notes): add the ledger kinds and schema`).
 - **T2** — S1–S8 — repository + service + handlers + routes + OpenAPI + `.sqlx` cache, with
-  `tests/credit_notes.rs` — worker — commit
-  `feat(credit-notes): issue a credit note and refund the payment wallets`.
-- **T3** — S7 — the read endpoint and its tests — worker — commit
-  `feat(credit-notes): report the credits of a sale`.
+  `tests/credit_notes.rs` — worker — done in `f3ea60f`
+  (`feat(credit-notes): issue a credit note and refund the payment wallets`).
+- **T3** — S7 — the read endpoint and its tests — worker — done in `70fa313`
+  (`feat(credit-notes): read a sale's credits and trace each refund to its note`).
 - **T4** — S8 — `docs/credit-notes.md`, `docs/sales.md`, `docs/payments.md`, README and
-  `make fe-schema` — worker — commit `docs(credit-notes): document returns and refunds`.
+  `make fe-schema` — worker — done in this commit
+  (`docs(credit-notes): document returns and refunds`).
 - **T5** — S9 — frontend completed-sales list, credit-note form, client methods, e2e proof —
   worker — commit `feat(ui): issue credit notes from a completed sale`.
 - **T6** — S1–S9 — independent verification and native review — parent.
+
+Slices are committed in this order, each one reviewable on its own: plan and
+spec (1 commit); ledger kinds and schema; the create endpoint with its tests;
+the read endpoint and the refund link; docs plus regenerated artifacts; the UI.
+Past ~400 authored lines per slice, publish as chained PRs rather than one
+delivery.
 
 ## Log
 
@@ -164,3 +180,12 @@ devuelve una venta."
 L2 — questionnaire answers (verbatim option labels): "Por ítem y cantidad (devolución
 parcial)"; "Sale de la misma wallet en que entró"; "Documento propio vinculado a la venta";
 "Sí, siempre vuelven al stock".
+
+L3 — architect decision (not a user request): a `sale_refund` movement also names its
+credit note through `wallet_movements.credit_note_id` (migration `0011`), so the read
+endpoint can report each note's refunds instead of re-deriving the split from the sale.
+
+L4 — docs slice: `docs/credit-notes.md` plus the sales, payments and README updates,
+and the regenerated OpenAPI artifacts. `make check` reports 204 tests. The branch is
+past one review slice, so delivery will be chained PRs rather than one branch-wide
+review.

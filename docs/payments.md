@@ -61,6 +61,7 @@ matching the drawer.
 | kind | direction | who writes it |
 |---|---|---|
 | `sale_payment` | inflow | charging a sale, never by hand |
+| `sale_refund` | outflow | issuing a credit note, never by hand |
 | `expense` | outflow | the operator, from the wallet |
 | `adjustment_in` | inflow | the operator, correcting a mistake |
 | `adjustment_out` | outflow | the operator, correcting a mistake |
@@ -93,6 +94,16 @@ transaction** as the stock deduction and the status update, it writes one
 and a rejected payment leaves the sale as a draft with no stock movement and no
 money movement.
 
+## Refunding a sale
+
+A charged sale is not reversed or edited: a return is a credit note. Each
+refund writes a `sale_refund` movement — an outflow, never written by hand —
+that names the sale it reverses, the payment method that collected the money
+and the credit note that caused it. Money leaves the wallets that received the
+payment, split in proportion to it in cents, with the last payment absorbing
+the remainder. The note reports the refunds it produced; see
+`docs/credit-notes.md`.
+
 ## API
 
 | Method | Route | What it does |
@@ -114,8 +125,9 @@ row back. The POS never asks for inactive rows.
 
 - **Transfers between wallets**: moving cash to the bank. The ledger can express
   it (two movements, one per wallet) but there is no endpoint yet.
-- **Refunds and credit notes**: a charged sale is not reversed. See
-  `docs/sales.md`.
+- **Fiscal numbering and customer credit balance**: refunds are recorded, but
+  there is no numbered fiscal note and no balance in favor of the customer. See
+  `docs/credit-notes.md`.
 - **Cash shift / register close**: there is no opening count, closing count or
   expected-vs-counted reconciliation per shift.
 - **Multi-currency**: one implicit currency, no exchange rates.

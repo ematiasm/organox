@@ -85,17 +85,15 @@ payment methods and their ledger have their own document: `docs/payments.md`.
 ## Why a charged sale cannot be corrected
 
 `completed` is neither edited nor cancelled. Correcting a charged sale is a
-**credit note**: a new sale in the opposite direction, with its own stock
-movement. Allowing an `UPDATE` on a closed sale would make the stock ledger and
-the accounting stop matching, with no trace.
+**credit note**: its own document, linked to the sale, with its own stock and
+wallet movements. Allowing an `UPDATE` on a closed sale would make the stock
+ledger and the accounting stop matching, with no trace.
 
-The credit note is not implemented. It is the next step if returns become
-necessary.
+Credit notes are implemented; see `docs/credit-notes.md` for the rules, the
+routes and the refund ledger.
 
 ## What is missing
 
-- **Credit note / return**: does not exist. It is the correction mechanism for a
-  charged sale, and it will need its own movement kinds in the wallet ledger.
 - **Cash shift / register close**: there is no shift opening or closing, so cash
   counts are not reconciled against the wallets of `docs/payments.md`.
 - **VAT**: the sale stores the total; the tax is not broken out.

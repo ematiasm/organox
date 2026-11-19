@@ -305,6 +305,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sales/{id}/credit-notes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The credits of a sale: what was charged, what came back and where the money
+         *     of each note went. A draft has no stored total, so the charged lines decide
+         *     it; the refunded total is the sum of the notes already issued.
+         */
+        get: operations["get_credit_notes_doc"];
+        put?: never;
+        /**
+         * Return part or all of a charged sale.
+         * @description Creates a credit note: the goods rejoin stock and the money leaves the
+         *     wallets that received the payment, in proportion to it. The sale is never
+         *     edited; a sale can be returned in several notes, and the total returned per
+         *     product can never exceed what was sold.
+         */
+        post: operations["create_credit_note_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sales/{id}/items": {
         parameters: {
             query?: never;
@@ -474,6 +502,12 @@ export interface components {
             sale_id: string;
             total: string;
         };
+        /** @description A return. The total is not sent: the server calculates it. */
+        CreateCreditNoteRequest: {
+            items: components["schemas"]["CreditNoteLineRequest"][];
+            /** @description Why the goods came back. Required, and kept on the document. */
+            reason: string;
+        };
         CreatePaymentMethodRequest: {
             name: string;
             /** Format: uuid */
@@ -505,6 +539,60 @@ export interface components {
         };
         CreateWalletRequest: {
             name: string;
+        };
+        CreditNoteItemResponse: {
+            /** Format: uuid */
+            product_id: string;
+            product_name: string;
+            quantity: string;
+            subtotal: string;
+            unit_price: string;
+        };
+        /** @description One line to return. The price is not sent: it is the one charged on the sale. */
+        CreditNoteLineRequest: {
+            /** Format: uuid */
+            product_id: string;
+            /** @example 1 */
+            quantity: string;
+        };
+        /** @description Where the money went back. */
+        CreditNoteRefundResponse: {
+            amount: string;
+            /** Format: uuid */
+            payment_method_id: string;
+            payment_method_name: string;
+            /** Format: uuid */
+            wallet_id: string;
+            wallet_name: string;
+        };
+        CreditNoteResponse: {
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            items: components["schemas"]["CreditNoteItemResponse"][];
+            reason: string;
+            refunds: components["schemas"]["CreditNoteRefundResponse"][];
+            /**
+             * Format: uuid
+             * @description The sale being corrected. The sale itself never changes.
+             */
+            sale_id: string;
+            /** @description Calculated by the server from the returned quantities. */
+            total: string;
+        };
+        /**
+         * @description A charged line, with the quantity already credited and what can still come
+         *     back.
+         */
+        CreditableLineResponse: {
+            credited_quantity: string;
+            /** Format: uuid */
+            product_id: string;
+            product_name: string;
+            quantity: string;
+            returnable_quantity: string;
+            unit_price: string;
         };
         DraftResponse: {
             /** Format: uuid */
@@ -539,7 +627,7 @@ export interface components {
          * @description Why stock was moved.
          * @enum {string}
          */
-        MovementReason: "purchase" | "sale" | "adjustment" | "loss";
+        MovementReason: "purchase" | "sale" | "return" | "adjustment" | "loss";
         MovementResponse: {
             /** Format: date-time */
             created_at: string;
@@ -658,6 +746,15 @@ export interface components {
         };
         /** @enum {string} */
         Role: "owner" | "manager";
+        /** @description The sale's credits: its charged lines and the notes already issued. */
+        SaleCreditNotesResponse: {
+            credit_notes: components["schemas"]["CreditNoteResponse"][];
+            items: components["schemas"]["CreditableLineResponse"][];
+            refunded_total: string;
+            /** Format: uuid */
+            sale_id: string;
+            sale_total: string;
+        };
         SaleItemResponse: {
             /** Format: uuid */
             product_id: string;
@@ -738,7 +835,7 @@ export interface components {
          *     always arrives with a writer, a validation and a screen — that is, with code.
          * @enum {string}
          */
-        WalletMovementKind: "sale_payment" | "expense" | "adjustment_in" | "adjustment_out";
+        WalletMovementKind: "sale_payment" | "sale_refund" | "expense" | "adjustment_in" | "adjustment_out";
         WalletMovementResponse: {
             /** @description Always positive; the kind carries the sign. */
             amount: string;
@@ -1612,6 +1709,110 @@ export interface operations {
                 };
             };
             /** @description Sale empty, payments missing, wrong sum or unusable method */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_credit_notes_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Sale ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credits of the sale */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SaleCreditNotesResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Sale not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_credit_note_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Sale ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCreditNoteRequest"];
+            };
+        };
+        responses: {
+            /** @description Credit note issued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreditNoteResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Sale not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Sale not completed, or more than what can still be returned */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid reason, line or quantity */
             422: {
                 headers: {
                     [name: string]: unknown;

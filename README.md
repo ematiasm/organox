@@ -81,6 +81,11 @@ src/
     repository.rs sales SQL and transactional checkout
     service.rs    rules: one draft per cashier, non-saleable service
     handlers.rs   sales endpoints
+  credit_notes/
+    model.rs      CreditNote, frozen lines, refund allocation
+    repository.rs credit notes SQL and transactional writes
+    service.rs    rules: returnable quantity and atomicity
+    handlers.rs   credit-note endpoints
   ratelimit/
     account.rs    failed attempts per account (Postgres)
     ip.rs         requests per IP (memory)
@@ -165,6 +170,8 @@ Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 | POST | `/sales/{id}/complete` | session | Completes checkout and deducts stock |
 | POST | `/sales/{id}/cancel` | session | Cancels the draft |
 | GET | `/sales` | session | Completed sales |
+| POST | `/sales/{id}/credit-notes` | session | Returns part or all of a charged sale; refunds its wallets |
+| GET | `/sales/{id}/credit-notes` | session | Credits of a sale, with what is still returnable |
 | GET | `/wallets` | session | Wallets with their balance |
 | POST | `/wallets` | session | Create a wallet |
 | GET | `/wallets/{id}` | session | One wallet |
@@ -196,7 +203,10 @@ Slices 1–3: skeleton, authentication, and catalog with a stock ledger.
 - **Login rate limiting**: per-account lockout (survives restarts) and per-IP
   limit (blocks before spending time on argon2), with `429` + `Retry-After`.
 - **Sales**: server-persisted cart with transactional checkout.
-- **124 tests** (unit + integration against real Postgres).
+- **Credit notes**: a completed sale can be returned in several notes without
+  editing it; returned goods rejoin stock and the money goes back to the
+  wallets that collected the payment.
+- **204 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
   navigation rail** (expandable, with groups and user menu), product list,
   movements, and **point of sale with barcode scanner** at `/operations/pos`.
@@ -204,7 +214,8 @@ Slices 1–3: skeleton, authentication, and catalog with a stock ledger.
   spec (`make fe-schema`).
 
 See `docs/auth.md`, `docs/catalog.md`, `docs/ratelimit.md`, `docs/sales.md`,
-`docs/payments.md` and `docs/backup.md` for the reasoning and what is missing.
+`docs/credit-notes.md`, `docs/payments.md` and `docs/backup.md` for the
+reasoning and what is missing.
 
 ## Frontend
 
