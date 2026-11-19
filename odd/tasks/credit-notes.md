@@ -301,3 +301,17 @@ published as six stacked PRs, each linked to it and labelled `type:feature`: #53
 the RDD delivery guard ("native assessment reports a due review") while the only unreviewed
 delta was one passive docs commit; after assessing that delta as passive the push went
 through unchanged.
+
+L15 — native review of slice 3 (`3370ba3` vs `c66f0ec`, tier high, lenses risk +
+reliability): **approved**, authority burned. Five non-blocking advisories, two of them about
+the same migration: `R1-refund-constraint-no-backfill` / `R3-refund-link-check-not-additive`
+(0011 adds `credit_note_id` and validates a CHECK requiring it at once, so it would fail on a
+database that had already written `sale_refund` rows before 0011 — a window that exists only
+if an intermediate state between slices was ever deployed, which never happened here; a
+`NOT VALID` + later `VALIDATE` would make it strictly additive). `R3-draft-total-midpoint-rounding`
+(the draft fallback rounds with banker's rounding while the column rounds half away from zero,
+so an exact half-cent draft can report one cent less than completion freezes),
+`R3-credit-read-torn-snapshot` (the read is several autocommit statements, so a note committed
+mid-read can appear in the totals but not in the returnable quantities) and
+`R1-refund-note-sale-link-unchecked` (nothing ties the refund's sale to its note's sale; the
+create transaction keeps them equal, a composite FK would make the ledger self-consistent).
