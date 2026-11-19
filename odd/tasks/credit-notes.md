@@ -40,9 +40,9 @@ S8 — Existing invariants hold: both ledgers stay append-only, a completed sale
 immutable, decimals travel as strings, every money total is computed by the server, and the
 client never dictates a total.
 
-S9 — UI: a completed-sales screen lists charged sales with their credited total; each sale
-opens a credit-note form (per-line quantities, reason, live totals from the server) and shows
-the notes already issued. UI copy is English.
+S9 — UI: a completed-sales screen lists charged sales; each sale opens a credit-note
+form (per-line quantities, reason, live totals from the server) and shows the notes
+already issued, including how much of the sale has been refunded. UI copy is English.
 
 ## Design
 
@@ -196,3 +196,11 @@ rail entry and the nav assertion that now matches the rail. Proof: `frontend/e2e
 P6 fails for an environmental reason, not this change: the dev database already holds an
 active method named `Efectivo` that no probe created, so the POS still offers a method
 after the probe deactivates its own; the script and that data were left untouched.
+
+L6 — requirement correction after independent verification (architect, not the human):
+S9 asked the sales list to show each sale's credited total; the reviewed design shows the
+charged total in the list and the credited total on the return screen, because
+`GET /sales` does not expose credits and a per-row request would be an N+1. S9 now says
+that. Same verification round: `docs/credit-notes.md` named a `409 sale_not_creditable`
+identifier that never exists on the wire, which the doc no longer claims; errors are RFC
+7807 with a status and a `detail`.

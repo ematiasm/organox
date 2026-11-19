@@ -29,12 +29,14 @@ Why:
    stores it. The client sends only a reason and `{product_id, quantity}`
    lines: no price, no total, no way to decide what the customer is owed.
 5. **Only a `completed` sale can be credited.** A draft or a cancelled sale is
-   `409 sale_not_creditable`; an unknown sale is `404`. An empty line list, a
-   product that is not on the sale, a non-positive quantity, a quantity above
-   what is still returnable, or a blank or over-long reason is rejected with
-   `422`/`409`. A rejected note writes nothing: no note, no stock movement, no
-   wallet movement. The create transaction locks the sale, re-checks what is
-   left to return and commits once.
+   a `409` whose detail says the sale is not completed; an unknown sale is
+   `404`. An empty line list, a product that is not on the sale, a
+   non-positive quantity, a blank or over-long reason is `422`; a quantity
+   above what is still returnable is a `409` whose detail names what is left.
+   Errors are RFC 7807 documents: a client matches the status and shows the
+   `detail`, never a machine code. A rejected note writes nothing: no note, no
+   stock movement, no wallet movement. The create transaction locks the sale,
+   re-checks what is left to return and commits once.
 
 The sale's own total, lines and status stay untouched throughout. The note is
 the evidence of what came back and where the money went.
