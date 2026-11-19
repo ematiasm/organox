@@ -33,9 +33,9 @@ The Users screen renders "the user list is not available yet" and the only user 
 | T3 | Repository: delete sessions by user, optionally keeping one token; `.sqlx` cache | S5, S7, S10 | writer | 3153f34 |
 | T4 | `POST /api/v1/auth/password`: current password check, revoke the others, `204` | S4, S5, S8, S9 | writer | 3153f34 |
 | T5 | `PUT /api/v1/users/{id}/password`: owner reset, revoke the target's sessions | S6, S7, S8, S9 | writer | 3153f34 |
-| T6 | Frontend: owner reset from the users table, self change from the account menu | S3, S4, S6 | writer | |
-| T7 | Docs: `docs/auth.md` gaps, README index, this log | S10 | inline | |
-| T8 | `frontend/e2e/users.cjs`, full check and close | S11 | writer | |
+| T6 | Frontend: owner reset from the users table, self change from the account menu | S3, S4, S6 | writer | d3ae96e |
+| T7 | Docs: `docs/auth.md` gaps, README index, this log | S10 | inline | cd4d361 |
+| T8 | `frontend/e2e/users.cjs`, full check and close | S11 | writer | b44a73d |
 
 Slices, each its own PR so review stays small: T1+T2 · T3+T4+T5 · T6 · T7+T8.
 
@@ -54,3 +54,7 @@ L3. Decisions taken while planning, from the exploration of the tree (`src/auth/
 - One uniform revocation rule instead of two: every session of the target user dies except the caller's, when the caller is that user. It makes S5 and S7 the same statement with the same parameter.
 - No `DELETE`/deactivate for users, no password history, no forced rotation on first login: none was asked for, and each is its own decision.
 - A new route must also be added to the expected-route list in `src/openapi.rs:199-206`, or `every_documented_route_is_registered` fails; `make fe-schema` regenerates `openapi.json` and `schema.d.ts` and both are committed.
+
+L6. Slices 3 and 4. T6 (`d3ae96e`) is the frontend: the account menu dialog and the owner reset from a table row, with `skipAuthRedirect` on the self change so a wrong current password does not send the operator to `/login`. T7 (`cd4d361`) rewrites `docs/auth.md` and fills the README's API table, which was missing `GET /users` and every wallet and payment-method route since #37. T8 (`b44a73d`) is `frontend/e2e/users.cjs`, run against `cargo run` + `npm run dev`: 16/16 checks, including a real second browser context losing its session to a reset and to another self change.
+
+Delivery notes worth keeping: `gh pr merge --delete-branch` **closes** a chained PR whose base branch disappears, and such a PR can be neither reopened nor retargeted (it happened to #48; the same commits continued as #49). And a branch cut from `main` before a slice merges will not contain that slice, so the probe had to merge the frontend branch in before it could test the dialogs.
