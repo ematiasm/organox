@@ -443,6 +443,7 @@ pub async fn complete(
             SELECT COALESCE(SUM(
                 CASE reason
                     WHEN 'purchase'   THEN quantity
+                    WHEN 'return'     THEN quantity
                     WHEN 'adjustment' THEN quantity
                     WHEN 'sale'       THEN -quantity
                     WHEN 'loss'       THEN -quantity

@@ -110,6 +110,7 @@ pub async fn list_wallets(
                COALESCE(SUM(
                    CASE m.kind
                        WHEN 'sale_payment' THEN m.amount
+                       WHEN 'sale_refund'  THEN -m.amount
                        WHEN 'adjustment_in' THEN m.amount
                        WHEN 'expense' THEN -m.amount
                        WHEN 'adjustment_out' THEN -m.amount
@@ -153,6 +154,7 @@ pub async fn get_wallet(pool: &PgPool, id: Uuid) -> Result<WalletWithBalance, Re
                COALESCE(SUM(
                    CASE m.kind
                        WHEN 'sale_payment' THEN m.amount
+                       WHEN 'sale_refund'  THEN -m.amount
                        WHEN 'adjustment_in' THEN m.amount
                        WHEN 'expense' THEN -m.amount
                        WHEN 'adjustment_out' THEN -m.amount

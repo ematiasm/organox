@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            p.id,\n            p.kind AS \"kind: ProductKind\",\n            p.sku,\n            p.name,\n            p.description,\n            p.price,\n            p.min_stock,\n            p.is_active,\n            p.created_at,\n            p.updated_at,\n            s.stock,\n            -- Window function, not a second query: the count of every matching\n            -- row is computed in the same pass as the page. `COUNT(*) OVER ()`\n            -- is evaluated after the WHERE clause and before LIMIT/OFFSET, so it\n            -- is the total, and it survives an empty page because the row set\n            -- it counts is the filtered one.\n            COUNT(*) OVER () AS \"total!\"\n        FROM products p\n        LEFT JOIN LATERAL (\n            SELECT COALESCE(SUM(\n                CASE m.reason\n                    WHEN 'purchase'   THEN m.quantity\n                    WHEN 'adjustment' THEN m.quantity\n                    WHEN 'sale'       THEN -m.quantity\n                    WHEN 'loss'       THEN -m.quantity\n                END\n            ), 0) AS stock\n            FROM stock_movements m\n            WHERE m.product_id = p.id\n        ) s ON true\n        WHERE ($1::product_kind IS NULL OR p.kind = $1::product_kind)\n          AND ($2::bool OR p.is_active)\n          AND ($3::text IS NULL OR p.name ILIKE '%' || $3::text || '%')\n        ORDER BY p.name, p.id\n        LIMIT $4 OFFSET $5\n        ",
+  "query": "\n        SELECT\n            p.id,\n            p.kind AS \"kind: ProductKind\",\n            p.sku,\n            p.name,\n            p.description,\n            p.price,\n            p.min_stock,\n            p.is_active,\n            p.created_at,\n            p.updated_at,\n            s.stock\n        FROM products p\n        LEFT JOIN LATERAL (\n            SELECT COALESCE(SUM(\n                CASE m.reason\n                    WHEN 'purchase'   THEN m.quantity\n                    WHEN 'return'     THEN m.quantity\n                    WHEN 'adjustment' THEN m.quantity\n                    WHEN 'sale'       THEN -m.quantity\n                    WHEN 'loss'       THEN -m.quantity\n                END\n            ), 0) AS stock\n            FROM stock_movements m\n            WHERE m.product_id = p.id\n        ) s ON true\n        WHERE p.id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -128,31 +128,11 @@
         "name": "stock",
         "type_info": "Numeric",
         "origin": "Expression"
-      },
-      {
-        "ordinal": 11,
-        "name": "total!",
-        "type_info": "Int8",
-        "origin": "Expression"
       }
     ],
     "parameters": {
       "Left": [
-        {
-          "Custom": {
-            "name": "product_kind",
-            "kind": {
-              "Enum": [
-                "product",
-                "service"
-              ]
-            }
-          }
-        },
-        "Bool",
-        "Text",
-        "Int8",
-        "Int8"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -166,9 +146,8 @@
       false,
       false,
       false,
-      null,
       null
     ]
   },
-  "hash": "c7b48ce3c58c2f1468b4644b55a8160514c90c7625eae9ef70bbd9abe74df434"
+  "hash": "2c371d3d6fbaad1c278d06bebca9dde0a47377d639d256dde9f5e60e887629bc"
 }

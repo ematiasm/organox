@@ -552,9 +552,10 @@ async fn an_amount_with_more_than_two_decimals_is_rejected(pool: PgPool) {
 /// time, which is the only way to notice that the SQL `CASE` needs it too.
 #[sqlx::test]
 async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
-    fn all_kinds() -> [WalletMovementKind; 4] {
+    fn all_kinds() -> [WalletMovementKind; 5] {
         let kinds = [
             WalletMovementKind::SalePayment,
+            WalletMovementKind::SaleRefund,
             WalletMovementKind::Expense,
             WalletMovementKind::AdjustmentIn,
             WalletMovementKind::AdjustmentOut,
@@ -562,6 +563,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
         for kind in kinds {
             match kind {
                 WalletMovementKind::SalePayment
+                | WalletMovementKind::SaleRefund
                 | WalletMovementKind::Expense
                 | WalletMovementKind::AdjustmentIn
                 | WalletMovementKind::AdjustmentOut => {}
@@ -603,7 +605,13 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
             let wallet = ledger::create_wallet(&pool, &format!("Wallet {index}"))
                 .await
                 .unwrap();
-            (wallet, None, None)
+            // A sale refund carries the sale and the method it reverses, like
+            // the payment it mirrors; the other kinds carry neither.
+            if kind == WalletMovementKind::SaleRefund {
+                (wallet, Some(sale), Some(method))
+            } else {
+                (wallet, None, None)
+            }
         };
 
         ledger::insert_movement(
