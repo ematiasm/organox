@@ -16,6 +16,9 @@ use uuid::Uuid;
 /// Longest accepted reason, in characters after trimming.
 pub const MAX_REASON_LEN: usize = 200;
 
+/// Longest accepted idempotency key, in characters after trimming.
+pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 100;
+
 /// A credit note as stored.
 ///
 /// The total is the amount computed when the note was issued; it is not
@@ -43,8 +46,13 @@ pub struct CreditNoteItem {
 }
 
 impl CreditNoteItem {
+    /// The line's money, rounded to the cent like the note total it feeds.
+    ///
+    /// A fractional quantity can produce more than two decimals (0.333 x
+    /// 3.00 = 0.999); showing 0.99 next to a note total of 1.00 would make
+    /// the document contradict itself.
     pub fn subtotal(&self) -> Decimal {
-        self.quantity * self.unit_price
+        (self.quantity * self.unit_price).round_dp(2)
     }
 }
 
@@ -66,6 +74,24 @@ pub struct CreditNoteDetail {
     pub note: CreditNote,
     pub items: Vec<CreditNoteItem>,
     pub refunds: Vec<CreditNoteRefund>,
+}
+
+/// What create returns: the document plus whether the request was a replay.
+///
+/// The flag describes the request, not the stored note, so it is kept out of
+/// `CreditNoteDetail`, which reads and writes use everywhere else.
+#[derive(Debug, Clone)]
+pub struct CreatedCreditNote {
+    pub detail: CreditNoteDetail,
+    pub replayed: bool,
+}
+
+impl std::ops::Deref for CreatedCreditNote {
+    type Target = CreditNoteDetail;
+
+    fn deref(&self) -> &Self::Target {
+        &self.detail
+    }
 }
 
 /// A line of the charged sale as the return screen needs it: what was sold,

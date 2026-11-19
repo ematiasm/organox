@@ -45,6 +45,10 @@ pub struct CreateCreditNoteRequest {
     /// Why the goods came back. Required, and kept on the document.
     pub reason: String,
     pub items: Vec<CreditNoteLineRequest>,
+    /// Optional retry key. A repeated create with the same key and sale
+    /// returns the first note instead of issuing another one.
+    #[schema(max_length = 100)]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -118,9 +122,24 @@ async fn create_credit_note(
         })
         .collect();
 
-    let note = service::create(&state.pool, sale_id, user.id(), &body.reason, &lines).await?;
+    let note = service::create_with_idempotency(
+        &state.pool,
+        sale_id,
+        user.id(),
+        &body.reason,
+        &lines,
+        body.idempotency_key.as_deref(),
+    )
+    .await?;
 
-    Ok((StatusCode::CREATED, Json(to_response(note))))
+    // A replay did not create a document, so reporting 201 would make a client
+    // count the same return twice.
+    let status = if note.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(to_response(note.detail))))
 }
 
 async fn sale_credit_notes(
@@ -220,7 +239,10 @@ impl From<CreditNotesError> for AppError {
             | CreditNotesError::DuplicateProduct
             | CreditNotesError::ReasonMissing
             | CreditNotesError::ReasonTooLong
+            | CreditNotesError::IdempotencyKeyMissing
+            | CreditNotesError::IdempotencyKeyTooLong
             | CreditNotesError::ProductNotInSale => AppError::Validation(err.to_string()),
+            CreditNotesError::RefundExceedsSale { .. } => AppError::Conflict(err.to_string()),
             CreditNotesError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
     }
@@ -232,8 +254,10 @@ impl From<CreditNotesError> for AppError {
 ///
 /// Creates a credit note: the goods rejoin stock and the money leaves the
 /// wallets that received the payment, in proportion to it. The sale is never
-/// edited; a sale can be returned in several notes, and the total returned per
-/// product can never exceed what was sold.
+/// edited; a sale can be returned in several notes, but the total returned per
+/// product can never exceed what was sold and the refunds can never exceed
+/// what the sale charged. An optional idempotency key makes a retry return the
+/// original note with 200 instead of issuing a duplicate.
 #[utoipa::path(
     post,
     path = "/api/v1/sales/{id}/credit-notes",
@@ -242,13 +266,15 @@ impl From<CreditNotesError> for AppError {
     request_body = CreateCreditNoteRequest,
     responses(
         (status = 201, description = "Credit note issued", body = CreditNoteResponse),
+        (status = 200, description = "Existing credit note returned for a repeated idempotency key",
+         body = CreditNoteResponse),
         (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 404, description = "Sale not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "Sale not completed, or more than what can still be returned",
+        (status = 409, description = "Sale not completed, more than what can still be returned, or refunds above the sale total",
          body = crate::openapi::Problem, content_type = "application/problem+json"),
-        (status = 422, description = "Invalid reason, line or quantity",
+        (status = 422, description = "Invalid reason, key, line or quantity",
          body = crate::openapi::Problem, content_type = "application/problem+json"),
     )
 )]

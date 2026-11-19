@@ -1150,7 +1150,7 @@
           "credit_notes"
         ],
         "summary": "Return part or all of a charged sale.",
-        "description": "Creates a credit note: the goods rejoin stock and the money leaves the\nwallets that received the payment, in proportion to it. The sale is never\nedited; a sale can be returned in several notes, and the total returned per\nproduct can never exceed what was sold.",
+        "description": "Creates a credit note: the goods rejoin stock and the money leaves the\nwallets that received the payment, in proportion to it. The sale is never\nedited; a sale can be returned in several notes, but the total returned per\nproduct can never exceed what was sold and the refunds can never exceed\nwhat the sale charged. An optional idempotency key makes a retry return the\noriginal note with 200 instead of issuing a duplicate.",
         "operationId": "create_credit_note_doc",
         "parameters": [
           {
@@ -1175,6 +1175,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "description": "Existing credit note returned for a repeated idempotency key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditNoteResponse"
+                }
+              }
+            }
+          },
           "201": {
             "description": "Credit note issued",
             "content": {
@@ -1206,7 +1216,7 @@
             }
           },
           "409": {
-            "description": "Sale not completed, or more than what can still be returned",
+            "description": "Sale not completed, more than what can still be returned, or refunds above the sale total",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1216,7 +1226,7 @@
             }
           },
           "422": {
-            "description": "Invalid reason, line or quantity",
+            "description": "Invalid reason, key, line or quantity",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2113,6 +2123,14 @@
           "items"
         ],
         "properties": {
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional retry key. A repeated create with the same key and sale\nreturns the first note instead of issuing another one.",
+            "maxLength": 100
+          },
           "items": {
             "type": "array",
             "items": {

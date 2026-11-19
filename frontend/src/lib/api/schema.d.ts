@@ -323,8 +323,10 @@ export interface paths {
          * Return part or all of a charged sale.
          * @description Creates a credit note: the goods rejoin stock and the money leaves the
          *     wallets that received the payment, in proportion to it. The sale is never
-         *     edited; a sale can be returned in several notes, and the total returned per
-         *     product can never exceed what was sold.
+         *     edited; a sale can be returned in several notes, but the total returned per
+         *     product can never exceed what was sold and the refunds can never exceed
+         *     what the sale charged. An optional idempotency key makes a retry return the
+         *     original note with 200 instead of issuing a duplicate.
          */
         post: operations["create_credit_note_doc"];
         delete?: never;
@@ -504,6 +506,11 @@ export interface components {
         };
         /** @description A return. The total is not sent: the server calculates it. */
         CreateCreditNoteRequest: {
+            /**
+             * @description Optional retry key. A repeated create with the same key and sale
+             *     returns the first note instead of issuing another one.
+             */
+            idempotency_key?: string | null;
             items: components["schemas"]["CreditNoteLineRequest"][];
             /** @description Why the goods came back. Required, and kept on the document. */
             reason: string;
@@ -1776,6 +1783,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Existing credit note returned for a repeated idempotency key */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreditNoteResponse"];
+                };
+            };
             /** @description Credit note issued */
             201: {
                 headers: {
@@ -1803,7 +1819,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Sale not completed, or more than what can still be returned */
+            /** @description Sale not completed, more than what can still be returned, or refunds above the sale total */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1812,7 +1828,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Invalid reason, line or quantity */
+            /** @description Invalid reason, key, line or quantity */
             422: {
                 headers: {
                     [name: string]: unknown;

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT status AS \"status: SaleStatus\"\n        FROM sales\n        WHERE id = $1\n        FOR UPDATE\n        ",
+  "query": "\n        SELECT status AS \"status: SaleStatus\", total\n        FROM sales\n        WHERE id = $1\n        FOR UPDATE\n        ",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "status"
           }
         }
+      },
+      {
+        "ordinal": 1,
+        "name": "total",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "total"
+          }
+        }
       }
     ],
     "parameters": {
@@ -32,8 +43,9 @@
       ]
     },
     "nullable": [
-      false
+      false,
+      true
     ]
   },
-  "hash": "76a3f8226443adee1254d6c520c51d02380b6e1a5d6baa07d2422013337c3882"
+  "hash": "9305f135803da4690f68db468891bed22ad6dd98fe991afcfa69245f857580de"
 }

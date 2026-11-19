@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO credit_notes (id, sale_id, total, reason, created_by)\n        VALUES ($1, $2, $3, $4, $5)\n        RETURNING created_at AS \"created_at!\"\n        ",
+  "query": "\n        INSERT INTO credit_notes (id, sale_id, total, reason, created_by, idempotency_key)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        RETURNING created_at AS \"created_at!\"\n        ",
   "describe": {
     "columns": [
       {
@@ -21,12 +21,13 @@
         "Uuid",
         "Numeric",
         "Text",
-        "Uuid"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "3caf70c13c063c8a282a064ed4b059b75c9582d58a8bf2b227fc69a12181d8b9"
+  "hash": "0b0ecc4f51fb7e215d55b8ff77971f10de77f5ac6b5327c978040616943aab47"
 }

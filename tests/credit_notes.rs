@@ -1044,3 +1044,348 @@ async fn http_get_credit_notes_returns_the_sale_credit_summary(pool: PgPool) {
         .unwrap();
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
+
+// --- Review follow-ups --------------------------------------------------
+
+#[sqlx::test]
+async fn concurrent_creates_for_the_last_unit_commit_exactly_once(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let (sale, method, _) = charged_sale(&pool, actor, product, dec!(1)).await;
+    let wallet = wallet_of(&pool, method).await;
+
+    let first_line = [line(product, dec!(1))];
+    let second_line = [line(product, dec!(1))];
+    let first = credit_notes::create(&pool, sale, actor, "First cashier", &first_line);
+    let second = credit_notes::create(&pool, sale, actor, "Second cashier", &second_line);
+    let (first, second) = tokio::join!(first, second);
+
+    let mut issued = Vec::new();
+    for result in [first, second] {
+        match result {
+            Ok(note) => issued.push(note),
+            Err(CreditNotesError::ExceedsReturnable { available, .. }) => {
+                assert_eq!(available, Decimal::ZERO);
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+    assert_eq!(issued.len(), 1);
+
+    assert_eq!(note_count(&pool, sale).await, 1);
+    assert_eq!(return_movement_count(&pool, product).await, 1);
+    let refunds: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wallet_movements WHERE kind = 'sale_refund' AND sale_id = $1",
+    )
+    .bind(sale)
+    .fetch_one(&pool)
+    .await
+    .expect("refund count");
+    assert_eq!(refunds, 1);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(balance(&pool, wallet).await, Decimal::ZERO);
+}
+
+#[sqlx::test]
+async fn a_fractional_quantity_returns_a_consistent_amount(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(3.00)).await;
+    stock(&pool, actor, product, dec!(1)).await;
+
+    // 0.333 * 3.00 = 0.999, rounded to the cent the sale charges 1.00.
+    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    sales::add_item(&pool, sale, product, dec!(0.333))
+        .await
+        .expect("item");
+    sales::complete(
+        &pool,
+        sale,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: cash(&pool).await,
+            amount: dec!(1.00),
+        }],
+    )
+    .await
+    .expect("charge");
+
+    let note = credit_notes::create(
+        &pool,
+        sale,
+        actor,
+        "Fractional return",
+        &[line(product, dec!(0.333))],
+    )
+    .await
+    .expect("credit note");
+
+    let refunded = note
+        .refunds
+        .iter()
+        .map(|refund| refund.amount)
+        .sum::<Decimal>();
+    assert_eq!(refunded, note.note.total);
+    assert_eq!(format!("{:.2}", note.note.total), "1.00");
+    assert_eq!(format!("{:.2}", refunded), "1.00");
+    assert_eq!(format!("{:.2}", note.items[0].subtotal()), "1.00");
+    assert_eq!(current_stock(&pool, product).await, dec!(1));
+}
+
+#[sqlx::test]
+async fn http_credit_note_reports_not_found_and_unprocessable(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(5)).await;
+    let (sale, _, _) = charged_sale(&pool, actor, product, dec!(2)).await;
+    let cookie = login_cookie(&pool, &password).await;
+
+    let valid_line = serde_json::json!({ "product_id": product, "quantity": "1" });
+    let cases = [
+        (
+            format!("/api/v1/sales/{}/credit-notes", Uuid::now_v7()),
+            serde_json::json!({ "reason": "Broken", "items": [valid_line.clone()] }),
+            axum::http::StatusCode::NOT_FOUND,
+        ),
+        (
+            format!("/api/v1/sales/{sale}/credit-notes"),
+            serde_json::json!({ "reason": "   ", "items": [valid_line] }),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!("/api/v1/sales/{sale}/credit-notes"),
+            serde_json::json!({
+                "reason": "Broken",
+                "items": [{ "product_id": product, "quantity": "0" }]
+            }),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ];
+
+    for (uri, body, expected) in cases {
+        let response = app(pool.clone())
+            .oneshot(
+                with_session("POST", &uri, &cookie)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{uri} -> {body}");
+    }
+    assert_eq!(note_count(&pool, sale).await, 0);
+}
+
+#[sqlx::test]
+async fn the_cumulative_refund_cannot_exceed_the_sale_total(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(33.33)).await;
+    stock(&pool, actor, product, dec!(1)).await;
+
+    // 0.02 * 33.33 = 0.6666, rounded to the cent the sale charges 0.67.
+    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    sales::add_item(&pool, sale, product, dec!(0.02))
+        .await
+        .expect("item");
+    let method = cash(&pool).await;
+    sales::complete(
+        &pool,
+        sale,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: method,
+            amount: dec!(0.67),
+        }],
+    )
+    .await
+    .expect("charge");
+    let wallet = wallet_of(&pool, method).await;
+    let starting_balance = balance(&pool, wallet).await;
+
+    // Each 0.002-unit note is worth 0.07 after rounding: per-note rounding
+    // could push the refunds past what the sale charged, and the cap must be
+    // the wall. Nine notes refund 0.63; a tenth would reach 0.70 on a 0.67
+    // sale. The loop stays bounded no matter what the numbers become.
+    let mut refunded = Decimal::ZERO;
+    let mut accepted = 0;
+    while refunded + dec!(0.07) <= dec!(0.67) && accepted < 10 {
+        let note = credit_notes::create(
+            &pool,
+            sale,
+            actor,
+            "Piece by piece",
+            &[line(product, dec!(0.002))],
+        )
+        .await
+        .expect("still under the sale total");
+        refunded += note.note.total;
+        accepted += 1;
+    }
+    assert_eq!(accepted, 9);
+    assert_eq!(refunded, dec!(0.63));
+
+    let stock_before_rejection = current_stock(&pool, product).await;
+
+    // The note that would cross the line is refused by name.
+    let err = credit_notes::create(
+        &pool,
+        sale,
+        actor,
+        "One too many",
+        &[line(product, dec!(0.002))],
+    )
+    .await
+    .expect_err("over the sale total");
+    assert!(
+        matches!(err, CreditNotesError::RefundExceedsSale { .. }),
+        "unexpected error: {err}"
+    );
+
+    // Over HTTP the same rejection is a 409 whose detail names the amounts.
+    let cookie = login_cookie(&pool, &password).await;
+    let response = app(pool.clone())
+        .oneshot(
+            with_session(
+                "POST",
+                &format!("/api/v1/sales/{sale}/credit-notes"),
+                &cookie,
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "reason": "One too many",
+                    "items": [{ "product_id": product, "quantity": "0.002" }],
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        problem["detail"],
+        "the returns add up to 0.70 for a sale of 0.67: \
+         a credit note cannot refund more than the sale charged"
+    );
+
+    // The rejection wrote nothing, and the wallet never went below zero.
+    assert_eq!(note_count(&pool, sale).await, 9);
+    assert_eq!(current_stock(&pool, product).await, stock_before_rejection);
+    assert_eq!(balance(&pool, wallet).await, starting_balance - refunded);
+    assert!(balance(&pool, wallet).await >= Decimal::ZERO);
+}
+
+#[sqlx::test]
+async fn repeating_the_idempotency_key_returns_the_same_note(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(5)).await;
+    let (sale, method, _) = charged_sale(&pool, actor, product, dec!(2)).await;
+    let wallet = wallet_of(&pool, method).await;
+    let charged = balance(&pool, wallet).await;
+
+    let first = credit_notes::create_with_idempotency(
+        &pool,
+        sale,
+        actor,
+        "Customer changed their mind",
+        &[line(product, dec!(1))],
+        Some("retry-1"),
+    )
+    .await
+    .expect("first note");
+    assert!(!first.replayed);
+
+    // The retry is not a second return: the first note comes back untouched.
+    let second = credit_notes::create_with_idempotency(
+        &pool,
+        sale,
+        actor,
+        "Customer changed their mind",
+        &[line(product, dec!(1))],
+        Some("retry-1"),
+    )
+    .await
+    .expect("the same note");
+    assert!(second.replayed);
+    assert_eq!(second.note.id, first.note.id);
+    assert_eq!(second.note.total, first.note.total);
+
+    assert_eq!(note_count(&pool, sale).await, 1);
+    assert_eq!(return_movement_count(&pool, product).await, 1);
+    let refunds: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wallet_movements WHERE kind = 'sale_refund' AND sale_id = $1",
+    )
+    .bind(sale)
+    .fetch_one(&pool)
+    .await
+    .expect("refund count");
+    assert_eq!(refunds, 1);
+    assert_eq!(balance(&pool, wallet).await, charged - first.note.total);
+
+    // A different key is a different request: a fresh note.
+    let third = credit_notes::create_with_idempotency(
+        &pool,
+        sale,
+        actor,
+        "Damaged after all",
+        &[line(product, dec!(1))],
+        Some("retry-2"),
+    )
+    .await
+    .expect("second note");
+    assert!(!third.replayed);
+    assert_ne!(third.note.id, first.note.id);
+    assert_eq!(note_count(&pool, sale).await, 2);
+
+    // A blank key is not an identity: rejected before anything is written.
+    let blank = credit_notes::create_with_idempotency(
+        &pool,
+        sale,
+        actor,
+        "Blank",
+        &[line(product, dec!(1))],
+        Some("   "),
+    )
+    .await
+    .expect_err("blank key");
+    assert!(matches!(blank, CreditNotesError::IdempotencyKeyMissing));
+
+    let cookie = login_cookie(&pool, &password).await;
+    let response = app(pool.clone())
+        .oneshot(
+            with_session(
+                "POST",
+                &format!("/api/v1/sales/{sale}/credit-notes"),
+                &cookie,
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "reason": "Blank",
+                    "items": [{ "product_id": product, "quantity": "1" }],
+                    "idempotency_key": "   "
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+}

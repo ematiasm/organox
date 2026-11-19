@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::model::{
-    CreditNote, CreditNoteDetail, CreditNoteItem, CreditNoteRefund, CreditableLine, ReturnLine,
-    allocate_refund,
+    CreatedCreditNote, CreditNote, CreditNoteDetail, CreditNoteItem, CreditNoteRefund,
+    CreditableLine, ReturnLine, allocate_refund,
 };
 use crate::catalog::model::MovementReason;
 use crate::payments::model::WalletMovementKind;
@@ -37,6 +37,27 @@ pub enum RepoError {
         requested: Decimal,
     },
 
+    /// A completed sale always has a frozen total. A NULL here would turn
+    /// `already_refunded > NULL` into a silent no-op and let money escape.
+    #[error("a completed sale has no stored total")]
+    SaleTotalMissing,
+
+    #[error(
+        "the returns add up to {:.2} for a sale of {:.2}: a credit note cannot refund more than the sale charged",
+        already_refunded + requested,
+        sale_total
+    )]
+    RefundExceedsSale {
+        sale_total: Decimal,
+        already_refunded: Decimal,
+        requested: Decimal,
+    },
+
+    /// The concurrent insert won, but its note is gone. No delete path exists;
+    /// reaching this is a broken invariant, not a client error.
+    #[error("the note from a concurrent create is no longer available")]
+    ConcurrentReplayMissing,
+
     /// The refund split must add up to the note total to the cent. It is
     /// computed, never trusted, so a mismatch is a bug and must not reach the
     /// ledger.
@@ -55,7 +76,20 @@ pub struct NewCreditNote<'a> {
     pub reason: &'a str,
     pub lines: &'a [ReturnLine],
     pub created_by: Uuid,
+    /// Trimmed by the service. A replay with the same key returns the first
+    /// note instead of writing a second one.
+    pub idempotency_key: Option<&'a str>,
 }
+
+/// The constraint that rejected the row, when the error came from the database.
+fn violated_constraint(err: &sqlx::Error) -> Option<&str> {
+    match err {
+        sqlx::Error::Database(db_err) => db_err.constraint(),
+        _ => None,
+    }
+}
+
+const IDEMPOTENCY_KEY_UNIQUE: &str = "credit_notes_sale_idempotency_key_unique";
 
 /// The sale's lines with what each one has already given back.
 ///
@@ -143,28 +177,97 @@ pub async fn for_sale(
             .round_dp(2)
     });
 
-    let notes = sqlx::query!(
-        r#"
-        SELECT cn.id,
-               cn.sale_id,
-               cn.reason,
-               cn.total,
-               cn.created_by,
-               cn.created_at AS "created_at!"
-        FROM credit_notes cn
-        WHERE cn.sale_id = $1
-        ORDER BY cn.created_at, cn.id
-        "#,
-        sale_id
-    )
-    .fetch_all(pool)
-    .await?;
+    let notes = load_notes(pool, sale_id, None).await?;
+    let refunded_total = notes.iter().map(|note| note.note.total).sum::<Decimal>();
 
-    let refunded_total = notes.iter().map(|note| note.total).sum::<Decimal>();
+    Ok(Some(SaleCreditSummary {
+        sale_id,
+        sale_total,
+        refunded_total,
+        lines,
+        notes,
+    }))
+}
+
+/// Notes of a sale with their lines and actual refunds, optionally narrowed
+/// to one idempotency key.
+///
+/// The read endpoint and a create replay go through the same loader, so a
+/// replayed note is exactly the document a later GET would return. Children
+/// are batched: one query each, whatever the number of notes. Rows arrive in
+/// display order, so grouping only has to append them.
+async fn load_notes(
+    pool: &PgPool,
+    sale_id: Uuid,
+    idempotency_key: Option<&str>,
+) -> Result<Vec<CreditNoteDetail>, RepoError> {
+    struct StoredNote {
+        id: Uuid,
+        sale_id: Uuid,
+        reason: String,
+        total: Decimal,
+        created_by: Uuid,
+        created_at: DateTime<Utc>,
+    }
+
+    let notes: Vec<StoredNote> = if let Some(key) = idempotency_key {
+        sqlx::query!(
+            r#"
+            SELECT cn.id,
+                   cn.sale_id,
+                   cn.reason,
+                   cn.total,
+                   cn.created_by,
+                   cn.created_at AS "created_at!"
+            FROM credit_notes cn
+            WHERE cn.sale_id = $1 AND cn.idempotency_key = $2
+            ORDER BY cn.created_at, cn.id
+            "#,
+            sale_id,
+            key
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| StoredNote {
+            id: row.id,
+            sale_id: row.sale_id,
+            reason: row.reason,
+            total: row.total,
+            created_by: row.created_by,
+            created_at: row.created_at,
+        })
+        .collect()
+    } else {
+        sqlx::query!(
+            r#"
+            SELECT cn.id,
+                   cn.sale_id,
+                   cn.reason,
+                   cn.total,
+                   cn.created_by,
+                   cn.created_at AS "created_at!"
+            FROM credit_notes cn
+            WHERE cn.sale_id = $1
+            ORDER BY cn.created_at, cn.id
+            "#,
+            sale_id
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| StoredNote {
+            id: row.id,
+            sale_id: row.sale_id,
+            reason: row.reason,
+            total: row.total,
+            created_by: row.created_by,
+            created_at: row.created_at,
+        })
+        .collect()
+    };
+
     let note_ids: Vec<Uuid> = notes.iter().map(|note| note.id).collect();
-
-    // Batch the children: one query each, whatever the number of notes. Rows
-    // arrive in display order, so grouping only has to append them.
     let mut items: HashMap<Uuid, Vec<CreditNoteItem>> = HashMap::new();
     let mut refunds: HashMap<Uuid, Vec<CreditNoteRefund>> = HashMap::new();
 
@@ -233,7 +336,7 @@ pub async fn for_sale(
         }
     }
 
-    let notes = notes
+    Ok(notes
         .into_iter()
         .map(|note| CreditNoteDetail {
             note: CreditNote {
@@ -247,15 +350,7 @@ pub async fn for_sale(
             items: items.remove(&note.id).unwrap_or_default(),
             refunds: refunds.remove(&note.id).unwrap_or_default(),
         })
-        .collect();
-
-    Ok(Some(SaleCreditSummary {
-        sale_id,
-        sale_total,
-        refunded_total,
-        lines,
-        notes,
-    }))
+        .collect())
 }
 
 /// Issue a credit note: validate against the sale, then write both ledgers.
@@ -267,12 +362,12 @@ pub async fn for_sale(
 ///
 /// The products are NOT locked: a return adds stock, so it can never leave the
 /// catalog negative and needs no availability check.
-pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreditNoteDetail, RepoError> {
+pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCreditNote, RepoError> {
     let mut tx = pool.begin().await?;
 
     let sale = sqlx::query!(
         r#"
-        SELECT status AS "status: SaleStatus"
+        SELECT status AS "status: SaleStatus", total
         FROM sales
         WHERE id = $1
         FOR UPDATE
@@ -286,6 +381,33 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreditNoteD
     if sale.status != SaleStatus::Completed {
         return Err(RepoError::SaleNotCreditable);
     }
+
+    // A retry returns the first note, whatever the rest of the request says:
+    // the caller did not get its answer, not a new return to record.
+    if let Some(key) = new.idempotency_key
+        && let Some(detail) = load_notes(pool, new.sale_id, Some(key))
+            .await?
+            .into_iter()
+            .next()
+    {
+        tx.rollback().await?;
+        return Ok(CreatedCreditNote {
+            detail,
+            replayed: true,
+        });
+    }
+
+    let sale_total = sale.total.ok_or(RepoError::SaleTotalMissing)?;
+    let already_refunded = sqlx::query!(
+        r#"
+        SELECT COALESCE(SUM(total), 0) AS "already_refunded!: Decimal"
+        FROM credit_notes WHERE sale_id = $1
+        "#,
+        new.sale_id
+    )
+    .fetch_one(&mut *tx)
+    .await?
+    .already_refunded;
 
     let creditable = creditable_lines(&mut *tx, new.sale_id).await?;
 
@@ -318,12 +440,23 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreditNoteD
     // `numeric(14,2)`: rounded on save, not truncated.
     let total = total.round_dp(2);
 
+    // The per-product limit is not enough: rounding many small notes up can
+    // return more money than the sale charged. The sale row is locked, so no
+    // other note can move this sum between the read and the commit.
+    if already_refunded + total > sale_total {
+        return Err(RepoError::RefundExceedsSale {
+            sale_total,
+            already_refunded,
+            requested: total,
+        });
+    }
+
     // Pass 2: the document.
     let note_id = Uuid::now_v7();
-    let created_at: DateTime<Utc> = sqlx::query_scalar!(
+    let insert = sqlx::query_scalar!(
         r#"
-        INSERT INTO credit_notes (id, sale_id, total, reason, created_by)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO credit_notes (id, sale_id, total, reason, created_by, idempotency_key)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING created_at AS "created_at!"
         "#,
         note_id,
@@ -331,9 +464,30 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreditNoteD
         total,
         new.reason,
         new.created_by,
+        new.idempotency_key,
     )
     .fetch_one(&mut *tx)
-    .await?;
+    .await;
+
+    let created_at: DateTime<Utc> = match insert {
+        Ok(created_at) => created_at,
+        Err(err) if violated_constraint(&err) == Some(IDEMPOTENCY_KEY_UNIQUE) => {
+            // Two callers with the same key both found no note. The loser's
+            // transaction is aborted by the unique index, so it must roll back
+            // before reading the note the winner committed.
+            tx.rollback().await?;
+            let detail = load_notes(pool, new.sale_id, new.idempotency_key)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or(RepoError::ConcurrentReplayMissing)?;
+            return Ok(CreatedCreditNote {
+                detail,
+                replayed: true,
+            });
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     // The ledger rows point at the document by id, so a reader can always tell
     // why the stock or the money moved.
@@ -447,16 +601,19 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreditNoteD
 
     tx.commit().await?;
 
-    Ok(CreditNoteDetail {
-        note: CreditNote {
-            id: note_id,
-            sale_id: new.sale_id,
-            reason: new.reason.to_string(),
-            total,
-            created_by: new.created_by,
-            created_at,
+    Ok(CreatedCreditNote {
+        detail: CreditNoteDetail {
+            note: CreditNote {
+                id: note_id,
+                sale_id: new.sale_id,
+                reason: new.reason.to_string(),
+                total,
+                created_by: new.created_by,
+                created_at,
+            },
+            items,
+            refunds,
         },
-        items,
-        refunds,
+        replayed: false,
     })
 }

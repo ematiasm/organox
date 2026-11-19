@@ -12,7 +12,7 @@ use sqlx::PgPool;
 use std::collections::HashSet;
 use uuid::Uuid;
 
-use super::model::{CreditNoteDetail, MAX_REASON_LEN, ReturnLine};
+use super::model::{CreatedCreditNote, MAX_IDEMPOTENCY_KEY_LEN, MAX_REASON_LEN, ReturnLine};
 use super::repository::{self, NewCreditNote, RepoError, SaleCreditSummary};
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +41,12 @@ pub enum CreditNotesError {
     #[error("the reason is longer than {MAX_REASON_LEN} characters")]
     ReasonTooLong,
 
+    #[error("an idempotency key cannot be blank")]
+    IdempotencyKeyMissing,
+
+    #[error("the idempotency key is longer than {MAX_IDEMPOTENCY_KEY_LEN} characters")]
+    IdempotencyKeyTooLong,
+
     #[error("the product is not a line of this sale")]
     ProductNotInSale,
 
@@ -48,6 +54,17 @@ pub enum CreditNotesError {
     ExceedsReturnable {
         product_name: String,
         available: Decimal,
+        requested: Decimal,
+    },
+
+    #[error(
+        "the returns add up to {:.2} for a sale of {:.2}: a credit note cannot refund more than the sale charged",
+        already_refunded + requested,
+        sale_total
+    )]
+    RefundExceedsSale {
+        sale_total: Decimal,
+        already_refunded: Decimal,
         requested: Decimal,
     },
 
@@ -67,6 +84,15 @@ fn map_repo_error(err: RepoError) -> CreditNotesError {
         } => CreditNotesError::ExceedsReturnable {
             product_name,
             available,
+            requested,
+        },
+        RepoError::RefundExceedsSale {
+            sale_total,
+            already_refunded,
+            requested,
+        } => CreditNotesError::RefundExceedsSale {
+            sale_total,
+            already_refunded,
             requested,
         },
         other => CreditNotesError::Internal(other),
@@ -93,14 +119,38 @@ pub async fn create(
     actor: Uuid,
     reason: &str,
     lines: &[ReturnLine],
-) -> Result<CreditNoteDetail, CreditNotesError> {
+) -> Result<CreatedCreditNote, CreditNotesError> {
+    create_with_idempotency(pool, sale_id, actor, reason, lines, None).await
+}
+
+/// The same use case, with a caller-supplied key for safe retries.
+///
+/// The key is trimmed like the reason: whitespace is not an identity. A blank
+/// key would make every retry collide on the same empty string.
+pub async fn create_with_idempotency(
+    pool: &PgPool,
+    sale_id: Uuid,
+    actor: Uuid,
+    reason: &str,
+    lines: &[ReturnLine],
+    idempotency_key: Option<&str>,
+) -> Result<CreatedCreditNote, CreditNotesError> {
     let reason = reason.trim();
+    let idempotency_key = idempotency_key.map(str::trim);
 
     if reason.is_empty() {
         return Err(CreditNotesError::ReasonMissing);
     }
     if reason.chars().count() > MAX_REASON_LEN {
         return Err(CreditNotesError::ReasonTooLong);
+    }
+    if let Some(key) = idempotency_key {
+        if key.is_empty() {
+            return Err(CreditNotesError::IdempotencyKeyMissing);
+        }
+        if key.chars().count() > MAX_IDEMPOTENCY_KEY_LEN {
+            return Err(CreditNotesError::IdempotencyKeyTooLong);
+        }
     }
     if lines.is_empty() {
         return Err(CreditNotesError::Empty);
@@ -128,6 +178,7 @@ pub async fn create(
             reason,
             lines,
             created_by: actor,
+            idempotency_key,
         },
     )
     .await
