@@ -127,19 +127,47 @@ Implemented, with its own document: `docs/ratelimit.md`. Two layers, applied to
 restart, and a per-IP fixed window in memory, which rejects before argon2 is
 paid. Both answer `429` with `Retry-After`.
 
+## Password rotation
+
+Two routes, both answering `204` on success:
+
+- `POST /api/v1/auth/password` — the caller changes their own password. Body
+  `{current_password, new_password}`. A wrong current password answers `401`
+  with the same `invalid credentials` detail as login, so the route cannot be
+  used to tell a wrong password from anything else.
+- `PUT /api/v1/users/{id}/password` — an `owner` resets anyone's password. Body
+  `{new_password}` only: an owner cannot know another user's password, so asking
+  for it would be theatre. A `manager` gets `403`, an unknown id `404`.
+
+Both apply `validation::validate_password` to the new password and answer `422`
+with that detail when it fails. The new password is validated **before** the
+current one is verified: the rule is public, so checking it first reveals nothing
+and saves an argon2 round on a request that cannot succeed.
+
+## Sessions die with the password they belonged to
+
+A password change that leaves the other sessions alive is theatre: a stolen
+cookie keeps working. Both routes revoke inside the same transaction that writes
+the new hash, with one rule — every session of the target ends except the
+caller's, when the caller is that user.
+
+So changing your own password signs the other devices out and keeps this one, and
+an owner resetting their own password is not logged out by it. An owner resetting
+someone else ends every session of that account, including the one the target is
+holding at that moment.
+
+The statement that does it, `DELETE FROM sessions WHERE user_id = $1 AND
+($2::bytea IS NULL OR token_hash <> $2)`, is the query `sessions_user_id_idx`
+(`migrations/0002_auth.sql:51`) exists for. Until these routes, no statement
+filtered sessions by user.
+
 ## What is missing
 
-- **Password change** (`POST /auth/password`). There is no such route: the auth
-  router serves only `/auth/login`, `/auth/logout`, `/auth/me` and `/users`, and
-  no `UPDATE users` statement exists anywhere in the codebase. A password can be
-  set once, by `create-user`, and never rotated.
-- **Revoking every session of one user.** `POST /auth/logout` deletes the row of
-  the token that made the request (`src/auth/repository.rs:181`). No statement
-  filters `sessions` by `user_id`: the other two touch `token_hash` and
-  `expires_at`, so `sessions_user_id_idx` (`migrations/0002_auth.sql:51`) currently
-  serves nothing. The gap is revocation, not lookup: a session token stolen and
-  replayed on another device keeps working until it expires, and changing a
-  password is precisely when a user expects the other devices to be kicked out.
+- **Rate limiting on `POST /auth/password`.** `POST /auth/login` is limited by
+  account and by IP (`docs/ratelimit.md`); the password change is not. Someone
+  holding a stolen session could use it to guess the current password. The
+  per-account machinery does not transfer as it stands: it keys on the email in a
+  login body, and this route already knows who the caller is.
 - **Manual unlock.** None, and none is wanted: the per-account lockout is soft on
   purpose and expires on its own (`APP_LOGIN_BLOCK_MINUTES`, 5 by default). A
   hard lockout would let anyone who knows the owner's email lock them out of

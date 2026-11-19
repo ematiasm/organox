@@ -146,7 +146,10 @@ Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 | POST | `/auth/login` | — | `{email, password}` → user + session cookie |
 | POST | `/auth/logout` | session | Deletes the session in the DB |
 | GET | `/auth/me` | session | Current user |
+| POST | `/auth/password` | session | `{current_password, new_password}`; ends the other sessions |
 | POST | `/users` | `owner` | `{email, password, role}` → 201 with id |
+| GET | `/users` | `owner` | Every user, ordered by email |
+| PUT | `/users/{id}/password` | `owner` | `{new_password}`; ends every session of that user |
 | GET | `/products` | session | List with calculated stock (`?kind=&search=&include_inactive=`) |
 | POST | `/products` | session | Create a product or service |
 | GET | `/products/{id}` | session | Details with stock |
@@ -162,6 +165,15 @@ Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 | POST | `/sales/{id}/complete` | session | Completes checkout and deducts stock |
 | POST | `/sales/{id}/cancel` | session | Cancels the draft |
 | GET | `/sales` | session | Completed sales |
+| GET | `/wallets` | session | Wallets with their balance |
+| POST | `/wallets` | session | Create a wallet |
+| GET | `/wallets/{id}` | session | One wallet |
+| PATCH | `/wallets/{id}` | session | Updates only the fields supplied |
+| GET | `/wallets/{id}/movements` | session | Wallet movements, newest first |
+| POST | `/wallets/{id}/movements` | session | Records a manual movement |
+| GET | `/payment-methods` | session | Payment methods and the wallet each one credits |
+| POST | `/payment-methods` | session | Create a payment method |
+| PATCH | `/payment-methods/{id}` | session | Updates only the fields supplied |
 
 ```bash
 # log in and save the cookie
