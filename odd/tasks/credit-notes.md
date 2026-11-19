@@ -315,3 +315,13 @@ so an exact half-cent draft can report one cent less than completion freezes),
 mid-read can appear in the totals but not in the returnable quantities) and
 `R1-refund-note-sale-link-unchecked` (nothing ties the refund's sale to its note's sale; the
 create transaction keeps them equal, a composite FK would make the ledger self-consistent).
+
+L16 — closing the two s3 advisories. The snapshot one was real and is fixed: `for_sale` now
+reads the sale, its lines, the notes and the refunds inside one REPEATABLE READ transaction, so
+a note committed mid-read can no longer appear in the totals while the returnable quantities
+come from an older view. The rounding one does not hold: `complete` rounds with `round_dp(2)`
+in Rust before the value reaches `numeric(14,2)` (`src/sales/repository.rs`), so the column's
+half-away-from-zero rule never applies, and the draft fallback uses the same `round_dp(2)`;
+both paths agree by construction, which the comment now says. No behavior changed for that
+second one, so it carries no test; the snapshot fix is not deterministically testable without a
+hook between its queries and is documented in place.

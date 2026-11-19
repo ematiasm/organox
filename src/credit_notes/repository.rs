@@ -161,19 +161,32 @@ pub async fn for_sale(
     pool: &PgPool,
     sale_id: Uuid,
 ) -> Result<Option<SaleCreditSummary>, RepoError> {
+    // One snapshot for the whole answer. The sale, its lines, the notes and the
+    // refunds are separate queries; at the default isolation a note committed
+    // between them would appear in the totals but not in the returnable
+    // quantities, and a caller would read a document that never existed.
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *tx)
+        .await?;
+
     let sale = sqlx::query!(
         r#"
         SELECT total FROM sales WHERE id = $1
         "#,
         sale_id
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
-    let Some(sale) = sale else { return Ok(None) };
+    let Some(sale) = sale else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
 
-    let lines = creditable_lines(pool, sale_id).await?;
-    // A draft need not have a frozen total. Round the lines like the
-    // `numeric(14,2)` column would, so both paths report cents.
+    let lines = creditable_lines(&mut *tx, sale_id).await?;
+    // A draft need not have a frozen total. Round exactly like checkout does
+    // (`round_dp(2)` before the value reaches `numeric(14,2)`), so a draft and
+    // the sale it becomes never disagree by a cent.
     let sale_total = sale.total.unwrap_or_else(|| {
         lines
             .iter()
@@ -182,9 +195,11 @@ pub async fn for_sale(
             .round_dp(2)
     });
 
-    let notes = load_notes(pool, sale_id, None).await?;
+    let notes = load_notes_in(&mut tx, sale_id, None).await?;
     let refunded_total = notes.iter().map(|note| note.note.total).sum::<Decimal>();
     let refundable_total = sale_total - refunded_total;
+
+    tx.commit().await?;
 
     Ok(Some(SaleCreditSummary {
         sale_id,
@@ -403,6 +418,25 @@ fn attach_children(
 /// would return. Children are batched: one query each, whatever the number of
 /// notes. The pool is enough here: a replay inside `create` reads through its
 /// own transaction instead, so it never waits on a second checkout.
+/// Same document assembly as `load_notes`, on a connection the caller already
+/// owns: `for_sale` runs it inside one repeatable-read transaction, and the
+/// create transaction uses `note_rows` directly for its replay pre-check.
+async fn load_notes_in(
+    conn: &mut sqlx::PgConnection,
+    sale_id: Uuid,
+    idempotency_key: Option<&str>,
+) -> Result<Vec<CreditNoteDetail>, RepoError> {
+    let notes = note_rows(&mut *conn, sale_id, idempotency_key).await?;
+    let note_ids: Vec<Uuid> = notes.iter().map(|note| note.id).collect();
+    let mut items = item_rows(&mut *conn, &note_ids).await?;
+    let mut refunds = refund_rows(&mut *conn, &note_ids).await?;
+
+    Ok(notes
+        .into_iter()
+        .map(|note| attach_children(note, &mut items, &mut refunds))
+        .collect())
+}
+
 async fn load_notes(
     pool: &PgPool,
     sale_id: Uuid,
