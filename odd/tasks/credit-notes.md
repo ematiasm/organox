@@ -165,6 +165,11 @@ movements and the `sale_refund` wallet movements, and commits once.
 - **T5** — S9 — frontend completed-sales list, credit-note form, client methods, e2e proof —
   worker — done in `0461da5` (`feat(ui): issue credit notes from a completed sale`).
 - **T6** — S1–S9 — independent verification and native review — parent.
+- **T7** — S2, S3, S6, S7 — the slice-2 review advisories worth acting on: cap the cumulative
+  refund of a sale at what it charged, accept an optional idempotency key on create (a retry
+  returns the same note), and add the missing tests (concurrent last unit, fractional
+  quantities, HTTP 404/422) — worker — commit `fix(credit-notes): cap the cumulative refund
+  and make create idempotent`.
 
 Slices are committed in this order, each one reviewable on its own: plan and
 spec (1 commit); ledger kinds and schema; the create endpoint with its tests;
@@ -239,3 +244,8 @@ negative and the claim does not hold), `R3-fractional-quantity-rounding`,
 `R3-http-status-coverage` (404/422 unasserted over HTTP), `R4-concurrency-guard-untested` (the
 committed suite has no concurrent-create test; the independent verifier proved it out of
 tree), `R4-create-retry-duplicates-note` (no idempotency key on create).
+
+L9 — user decision after the slice-2 approval (verbatim): "ok, segui con 1", which is the
+follow-up slice: `R1-uncapped-refund-rounding`, `R4-create-retry-duplicates-note` and the three
+missing tests. `R1-wallet-rounding-drift` stays accepted as documented design (the per-note
+allocation is what the spec asked for) and `R3-refund-share-drop` is refuted, not worked.
