@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT status AS \"status: SaleStatus\"\n        FROM sales\n        WHERE id = $1\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status: SaleStatus",
+        "type_info": {
+          "Custom": {
+            "name": "sale_status",
+            "kind": {
+              "Enum": [
+                "draft",
+                "completed",
+                "cancelled"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "76a3f8226443adee1254d6c520c51d02380b6e1a5d6baa07d2422013337c3882"
+}

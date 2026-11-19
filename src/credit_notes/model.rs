@@ -85,6 +85,14 @@ impl CreditableLine {
     }
 }
 
+/// A line the caller asks to return: which product and how many units.
+/// The price is not part of it; the sale's own price decides the money.
+#[derive(Debug, Clone, Copy)]
+pub struct ReturnLine {
+    pub product_id: Uuid,
+    pub quantity: Decimal,
+}
+
 /// Split `total` across the original payments, in proportion to each one.
 ///
 /// The result is aligned one-to-one with `payments`, so the caller knows which

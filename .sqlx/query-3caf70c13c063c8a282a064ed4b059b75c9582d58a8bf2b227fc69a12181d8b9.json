@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO credit_notes (id, sale_id, total, reason, created_by)\n        VALUES ($1, $2, $3, $4, $5)\n        RETURNING created_at AS \"created_at!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "credit_notes",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Numeric",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3caf70c13c063c8a282a064ed4b059b75c9582d58a8bf2b227fc69a12181d8b9"
+}

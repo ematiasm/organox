@@ -83,6 +83,7 @@ pub struct Problem {
         crate::sales::handlers::complete_sale_doc,
         crate::sales::handlers::cancel_sale_doc,
         crate::sales::handlers::list_sales_doc,
+        crate::credit_notes::handlers::create_credit_note_doc,
         crate::payments::handlers::list_wallets_doc,
         crate::payments::handlers::create_wallet_doc,
         crate::payments::handlers::get_wallet_doc,
@@ -130,12 +131,18 @@ pub struct Problem {
         crate::payments::handlers::UpdatePaymentMethodRequest,
         crate::payments::handlers::ManualMovementRequest,
         crate::payments::model::WalletMovementKind,
+        crate::credit_notes::handlers::CreateCreditNoteRequest,
+        crate::credit_notes::handlers::CreditNoteLineRequest,
+        crate::credit_notes::handlers::CreditNoteResponse,
+        crate::credit_notes::handlers::CreditNoteItemResponse,
+        crate::credit_notes::handlers::CreditNoteRefundResponse,
     )),
     tags(
         (name = "auth", description = "Sessions and users"),
         (name = "catalog", description = "Products, services and stock ledger"),
         (name = "sales", description = "Persisted cart and checkout"),
         (name = "payments", description = "Wallets, payment methods and the money ledger"),
+        (name = "credit_notes", description = "Returns of a charged sale"),
     )
 )]
 pub struct ApiDoc;

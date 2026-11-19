@@ -6,4 +6,7 @@
 //! returning goods gets a document of its own, with its own stock movements and
 //! its own money movements.
 
+pub mod handlers;
 pub mod model;
+pub mod repository;
+pub mod service;
