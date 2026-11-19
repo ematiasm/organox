@@ -325,3 +325,10 @@ half-away-from-zero rule never applies, and the draft fallback uses the same `ro
 both paths agree by construction, which the comment now says. No behavior changed for that
 second one, so it carries no test; the snapshot fix is not deterministically testable without a
 hook between its queries and is documented in place.
+
+L17 — native review of the snapshot fix (`77558dd` vs `90bebab`, tier medium, lens
+resilience): **approved**, authority burned. One SUGGESTION, `R4-one-snapshot-unpinned`: the
+one-snapshot guarantee rests on argument discipline, since the read helpers still accept a pool
+and a later revert of one call site would compile and pass; pinning them to
+`&mut PgConnection` would make that regression fail to compile. Left as later work — the
+advisory chain has to end, and the merge of the chain is the user's decision.
