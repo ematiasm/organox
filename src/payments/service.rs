@@ -236,6 +236,7 @@ pub async fn record_manual_movement(
             amount,
             sale_id: None,
             payment_method_id: None,
+            credit_note_id: None,
             note: note.as_deref(),
             created_by: Some(input.actor_id),
         },

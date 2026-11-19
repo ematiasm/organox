@@ -338,6 +338,8 @@ pub struct NewWalletMovement<'a> {
     pub amount: Decimal,
     pub sale_id: Option<Uuid>,
     pub payment_method_id: Option<Uuid>,
+    /// The credit note that caused a `sale_refund`; `None` for every other kind.
+    pub credit_note_id: Option<Uuid>,
     pub note: Option<&'a str>,
     pub created_by: Option<Uuid>,
 }
@@ -359,8 +361,8 @@ where
     sqlx::query!(
         r#"
         INSERT INTO wallet_movements
-            (id, wallet_id, kind, amount, sale_id, payment_method_id, note, created_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            (id, wallet_id, kind, amount, sale_id, payment_method_id, credit_note_id, note, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         "#,
         id,
         new.wallet_id,
@@ -368,6 +370,7 @@ where
         new.amount,
         new.sale_id,
         new.payment_method_id,
+        new.credit_note_id,
         new.note,
         new.created_by,
     )

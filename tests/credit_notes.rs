@@ -266,6 +266,159 @@ async fn a_partial_return_moves_only_what_came_back(pool: PgPool) {
     assert_eq!(balance(&pool, wallet).await, dec!(3001.00));
 }
 
+// --- Reading a sale's credits ------------------------------------------
+
+#[sqlx::test]
+async fn a_charged_sale_with_no_returns_has_every_line_returnable(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let (sale, _, total) = charged_sale(&pool, actor, product, dec!(3)).await;
+
+    let summary = credit_notes::for_sale(&pool, sale)
+        .await
+        .expect("credit summary");
+
+    assert_eq!(summary.sale_id, sale);
+    assert_eq!(summary.sale_total, total);
+    assert_eq!(summary.refunded_total, Decimal::ZERO);
+    assert!(summary.notes.is_empty());
+    assert_eq!(summary.lines.len(), 1);
+    assert_eq!(summary.lines[0].product_id, product);
+    assert_eq!(summary.lines[0].product_name, "Flour");
+    assert_eq!(summary.lines[0].quantity, dec!(3));
+    assert_eq!(summary.lines[0].unit_price, dec!(1500.50));
+    assert_eq!(summary.lines[0].credited_quantity, Decimal::ZERO);
+    assert_eq!(summary.lines[0].returnable_quantity(), dec!(3));
+}
+
+#[sqlx::test]
+async fn reading_a_sale_after_a_partial_note_shows_the_note_its_refund_and_what_is_left(
+    pool: PgPool,
+) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let (sale, method, total) = charged_sale(&pool, actor, product, dec!(3)).await;
+    let wallet = wallet_of(&pool, method).await;
+
+    let note = credit_notes::create(
+        &pool,
+        sale,
+        actor,
+        "One was damaged",
+        &[line(product, dec!(1))],
+    )
+    .await
+    .expect("credit note");
+
+    let summary = credit_notes::for_sale(&pool, sale)
+        .await
+        .expect("credit summary");
+
+    assert_eq!(summary.sale_total, total);
+    assert_eq!(summary.refunded_total, note.note.total);
+    assert_eq!(summary.lines[0].credited_quantity, dec!(1));
+    assert_eq!(summary.lines[0].returnable_quantity(), dec!(2));
+
+    assert_eq!(summary.notes.len(), 1);
+    let detail = &summary.notes[0];
+    assert_eq!(detail.note.id, note.note.id);
+    assert_eq!(detail.note.reason, "One was damaged");
+    assert_eq!(detail.note.total, dec!(1500.50));
+    assert_eq!(detail.items.len(), 1);
+    assert_eq!(detail.items[0].product_name, "Flour");
+    assert_eq!(detail.items[0].quantity, dec!(1));
+    assert_eq!(detail.items[0].unit_price, dec!(1500.50));
+    assert_eq!(detail.refunds.len(), 1);
+    assert_eq!(detail.refunds[0].wallet_id, wallet);
+    assert_eq!(detail.refunds[0].wallet_name, "Caja");
+    assert_eq!(detail.refunds[0].payment_method_name, "Cash");
+    assert_eq!(detail.refunds[0].amount, dec!(1500.50));
+}
+
+#[sqlx::test]
+async fn notes_and_their_items_are_read_in_a_stable_order(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let zucchini = seed_product(&pool, "Zucchini", dec!(10)).await;
+    let apple = seed_product(&pool, "Apple", dec!(20)).await;
+    stock(&pool, actor, zucchini, dec!(10)).await;
+    stock(&pool, actor, apple, dec!(10)).await;
+
+    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    sales::add_item(&pool, sale, zucchini, dec!(2))
+        .await
+        .expect("zucchini");
+    sales::add_item(&pool, sale, apple, dec!(2))
+        .await
+        .expect("apple");
+    let total = sales::get(&pool, sale).await.expect("sale").total();
+    sales::complete(
+        &pool,
+        sale,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: cash(&pool).await,
+            amount: total,
+        }],
+    )
+    .await
+    .expect("charge");
+
+    for reason in ["First visit", "Second visit"] {
+        credit_notes::create(
+            &pool,
+            sale,
+            actor,
+            reason,
+            &[line(zucchini, dec!(1)), line(apple, dec!(1))],
+        )
+        .await
+        .expect("credit note");
+    }
+
+    let summary = credit_notes::for_sale(&pool, sale)
+        .await
+        .expect("credit summary");
+    let reasons: Vec<&str> = summary
+        .notes
+        .iter()
+        .map(|detail| detail.note.reason.as_str())
+        .collect();
+    assert_eq!(reasons, vec!["First visit", "Second visit"]);
+    // `credit_note_items` has no timestamp: product name is the stable order.
+    for detail in &summary.notes {
+        let names: Vec<&str> = detail
+            .items
+            .iter()
+            .map(|item| item.product_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Apple", "Zucchini"]);
+    }
+    assert_eq!(summary.refunded_total, dec!(60.00));
+}
+
+#[sqlx::test]
+async fn a_sale_without_a_stored_total_reports_the_computed_lines_total(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
+    let draft = sales::open_draft(&pool, actor).await.expect("draft");
+    sales::add_item(&pool, draft, product, dec!(2.5))
+        .await
+        .expect("item");
+    // A draft need not have a frozen total yet.
+    sqlx::query("UPDATE sales SET total = NULL WHERE id = $1")
+        .bind(draft)
+        .execute(&pool)
+        .await
+        .expect("clear the stored total");
+
+    let summary = credit_notes::for_sale(&pool, draft)
+        .await
+        .expect("credit summary");
+    assert_eq!(summary.sale_total, dec!(3751.25));
+}
+
 #[sqlx::test]
 async fn a_sale_can_be_returned_in_two_notes_until_nothing_is_left(pool: PgPool) {
     let actor = seed_user(&pool).await;
@@ -379,6 +532,14 @@ async fn an_unknown_sale_is_not_found(pool: PgPool) {
     )
     .await
     .expect_err("unknown sale");
+    assert!(matches!(err, CreditNotesError::SaleNotFound));
+}
+
+#[sqlx::test]
+async fn reading_an_unknown_sale_is_not_found(pool: PgPool) {
+    let err = credit_notes::for_sale(&pool, Uuid::now_v7())
+        .await
+        .expect_err("unknown sale");
     assert!(matches!(err, CreditNotesError::SaleNotFound));
 }
 
@@ -604,6 +765,146 @@ async fn login_cookie(pool: &PgPool, password: &str) -> String {
         .to_string()
 }
 
+// --- The refund link ----------------------------------------------------
+
+#[sqlx::test]
+async fn every_refund_movement_names_the_note_that_caused_it(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let cash_method = cash(&pool).await;
+    let card_wallet = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Bank".to_string(),
+        },
+    )
+    .await
+    .expect("wallet");
+    let card_method = payments::create_method(
+        &pool,
+        CreateMethodInput {
+            name: "Card".to_string(),
+            wallet_id: card_wallet,
+        },
+    )
+    .await
+    .expect("method");
+
+    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    sales::add_item(&pool, sale, product, dec!(2))
+        .await
+        .expect("item");
+    sales::complete(
+        &pool,
+        sale,
+        actor,
+        &[
+            SalePaymentInput {
+                payment_method_id: cash_method,
+                amount: dec!(50),
+            },
+            SalePaymentInput {
+                payment_method_id: card_method,
+                amount: dec!(150),
+            },
+        ],
+    )
+    .await
+    .expect("charge");
+
+    let note = credit_notes::create(
+        &pool,
+        sale,
+        actor,
+        "One returned",
+        &[line(product, dec!(1))],
+    )
+    .await
+    .expect("credit note");
+
+    let links: Vec<Option<Uuid>> = sqlx::query_scalar(
+        "SELECT credit_note_id FROM wallet_movements WHERE kind = 'sale_refund'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("refund links");
+    assert_eq!(links, vec![Some(note.note.id), Some(note.note.id)]);
+
+    let payments_with_a_note: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM wallet_movements
+         WHERE kind = 'sale_payment' AND credit_note_id IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(payments_with_a_note, 0);
+}
+
+#[sqlx::test]
+async fn a_sale_refund_without_a_note_is_rejected_by_the_database(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(2)).await;
+    let (sale, method, _) = charged_sale(&pool, actor, product, dec!(1)).await;
+    let wallet = wallet_of(&pool, method).await;
+
+    // Raw SQL on purpose: no repository layer may add the link for us.
+    let err = sqlx::query(
+        "INSERT INTO wallet_movements
+            (id, wallet_id, kind, amount, sale_id, payment_method_id)
+         VALUES ($1, $2, 'sale_refund', $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(wallet)
+    .bind(dec!(10.00))
+    .bind(sale)
+    .bind(method)
+    .execute(&pool)
+    .await
+    .expect_err("a refund without a note");
+
+    let db_err = err.as_database_error().expect("database error");
+    assert_eq!(
+        db_err.constraint(),
+        Some("wallet_movements_sale_refund_names_its_note")
+    );
+}
+
+#[sqlx::test]
+async fn only_a_sale_refund_may_name_a_credit_note(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(2)).await;
+    let (sale, method, _) = charged_sale(&pool, actor, product, dec!(1)).await;
+    let wallet = wallet_of(&pool, method).await;
+    let note = credit_notes::create(&pool, sale, actor, "Returned", &[line(product, dec!(1))])
+        .await
+        .expect("credit note");
+
+    let err = sqlx::query(
+        "INSERT INTO wallet_movements
+            (id, wallet_id, kind, amount, credit_note_id)
+         VALUES ($1, $2, 'expense', $3, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(wallet)
+    .bind(dec!(10.00))
+    .bind(note.note.id)
+    .execute(&pool)
+    .await
+    .expect_err("an expense naming a note");
+
+    let db_err = err.as_database_error().expect("database error");
+    assert_eq!(
+        db_err.constraint(),
+        Some("wallet_movements_credit_note_only_for_sale_refunds")
+    );
+}
+
+// --- HTTP ---------------------------------------------------------------
+
 #[sqlx::test]
 async fn http_credit_note_returns_the_document(pool: PgPool) {
     use tower::ServiceExt;
@@ -671,4 +972,75 @@ async fn http_credit_note_returns_the_document(pool: PgPool) {
         .unwrap();
 
     assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+}
+
+#[sqlx::test]
+async fn http_get_credit_notes_returns_the_sale_credit_summary(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let (sale, _, _) = charged_sale(&pool, actor, product, dec!(3)).await;
+    let cookie = login_cookie(&pool, &password).await;
+    let note = credit_notes::create(
+        &pool,
+        sale,
+        actor,
+        "Broken on arrival",
+        &[line(product, dec!(1))],
+    )
+    .await
+    .expect("credit note");
+
+    let response = app(pool.clone())
+        .oneshot(
+            with_session(
+                "GET",
+                &format!("/api/v1/sales/{sale}/credit-notes"),
+                &cookie,
+            )
+            .body(axum::body::Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["sale_id"], sale.to_string());
+    assert_eq!(json["sale_total"], "4501.50");
+    assert_eq!(json["refunded_total"], "1500.50");
+    assert_eq!(json["items"][0]["product_id"], product.to_string());
+    assert_eq!(json["items"][0]["product_name"], "Flour");
+    assert_eq!(json["items"][0]["quantity"], "3");
+    assert_eq!(json["items"][0]["unit_price"], "1500.50");
+    assert_eq!(json["items"][0]["credited_quantity"], "1");
+    assert_eq!(json["items"][0]["returnable_quantity"], "2");
+    assert_eq!(json["credit_notes"].as_array().unwrap().len(), 1);
+    assert_eq!(json["credit_notes"][0]["id"], note.note.id.to_string());
+    assert_eq!(json["credit_notes"][0]["reason"], "Broken on arrival");
+    assert_eq!(json["credit_notes"][0]["total"], "1500.50");
+    assert!(json["credit_notes"][0]["created_at"].is_string());
+    assert_eq!(json["credit_notes"][0]["items"][0]["quantity"], "1");
+    assert_eq!(json["credit_notes"][0]["refunds"][0]["wallet_name"], "Caja");
+    assert_eq!(json["credit_notes"][0]["refunds"][0]["amount"], "1500.50");
+
+    let response = app(pool.clone())
+        .oneshot(
+            with_session(
+                "GET",
+                &format!("/api/v1/sales/{}/credit-notes", Uuid::now_v7()),
+                &cookie,
+            )
+            .body(axum::body::Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }

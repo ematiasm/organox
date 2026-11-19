@@ -597,21 +597,28 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
+    // A refund must name the note that caused it; the other kinds name none.
+    let note: Uuid = sqlx::query_scalar(
+        "INSERT INTO credit_notes (id, sale_id, total, reason, created_by)
+         VALUES ($1, $2, 10.00, 'Refund proof', $3) RETURNING id",
+    )
+    .bind(Uuid::now_v7())
+    .bind(sale)
+    .bind(owner)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     for (index, kind) in all_kinds().into_iter().enumerate() {
-        // The ledger's linkage, spelled out once per kind. A sale payment and a
-        // sale refund name the sale and the method they belong to; every manual
-        // kind names neither. Written as a flat match, not nested branches, so
-        // that which kinds carry the link is read directly instead of being
-        // reconstructed from the order of an `if`.
-        let (wallet, sale_id, payment_method_id) = match kind {
-            WalletMovementKind::SalePayment => (sale_wallet, Some(sale), Some(method)),
+        let (wallet, sale_id, payment_method_id, credit_note_id) = match kind {
+            WalletMovementKind::SalePayment => (sale_wallet, Some(sale), Some(method), None),
             WalletMovementKind::SaleRefund => (
                 ledger::create_wallet(&pool, &format!("Wallet {index}"))
                     .await
                     .unwrap(),
                 Some(sale),
                 Some(method),
+                Some(note),
             ),
             WalletMovementKind::Expense
             | WalletMovementKind::AdjustmentIn
@@ -619,6 +626,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 ledger::create_wallet(&pool, &format!("Wallet {index}"))
                     .await
                     .unwrap(),
+                None,
                 None,
                 None,
             ),
@@ -632,6 +640,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 amount: dec!(10.00),
                 sale_id,
                 payment_method_id,
+                credit_note_id,
                 note: None,
                 created_by: Some(owner),
             },

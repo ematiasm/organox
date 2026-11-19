@@ -84,6 +84,7 @@ pub struct Problem {
         crate::sales::handlers::cancel_sale_doc,
         crate::sales::handlers::list_sales_doc,
         crate::credit_notes::handlers::create_credit_note_doc,
+        crate::credit_notes::handlers::get_credit_notes_doc,
         crate::payments::handlers::list_wallets_doc,
         crate::payments::handlers::create_wallet_doc,
         crate::payments::handlers::get_wallet_doc,
@@ -136,6 +137,8 @@ pub struct Problem {
         crate::credit_notes::handlers::CreditNoteResponse,
         crate::credit_notes::handlers::CreditNoteItemResponse,
         crate::credit_notes::handlers::CreditNoteRefundResponse,
+        crate::credit_notes::handlers::CreditableLineResponse,
+        crate::credit_notes::handlers::SaleCreditNotesResponse,
     )),
     tags(
         (name = "auth", description = "Sessions and users"),

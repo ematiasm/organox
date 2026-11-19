@@ -7,6 +7,7 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::model::{
@@ -99,6 +100,162 @@ where
             credited_quantity: row.credited_quantity,
         })
         .collect())
+}
+
+/// What the return screen needs for one sale: the charged lines with what is
+/// left to return, and every note with its own lines and actual refunds.
+#[derive(Debug)]
+pub struct SaleCreditSummary {
+    pub sale_id: Uuid,
+    pub sale_total: Decimal,
+    pub refunded_total: Decimal,
+    pub lines: Vec<CreditableLine>,
+    pub notes: Vec<CreditNoteDetail>,
+}
+
+/// Read a sale's credits.
+///
+/// The refunds come from the ledger rows that name each note, not from a
+/// freshly computed split: the money that actually left the wallets is what
+/// the customer was told, even if the original payment method changed.
+pub async fn for_sale(
+    pool: &PgPool,
+    sale_id: Uuid,
+) -> Result<Option<SaleCreditSummary>, RepoError> {
+    let sale = sqlx::query!(
+        r#"
+        SELECT total FROM sales WHERE id = $1
+        "#,
+        sale_id
+    )
+    .fetch_optional(pool)
+    .await?;
+    let Some(sale) = sale else { return Ok(None) };
+
+    let lines = creditable_lines(pool, sale_id).await?;
+    // A draft need not have a frozen total. Round the lines like the
+    // `numeric(14,2)` column would, so both paths report cents.
+    let sale_total = sale.total.unwrap_or_else(|| {
+        lines
+            .iter()
+            .map(|line| line.quantity * line.unit_price)
+            .sum::<Decimal>()
+            .round_dp(2)
+    });
+
+    let notes = sqlx::query!(
+        r#"
+        SELECT cn.id,
+               cn.sale_id,
+               cn.reason,
+               cn.total,
+               cn.created_by,
+               cn.created_at AS "created_at!"
+        FROM credit_notes cn
+        WHERE cn.sale_id = $1
+        ORDER BY cn.created_at, cn.id
+        "#,
+        sale_id
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let refunded_total = notes.iter().map(|note| note.total).sum::<Decimal>();
+    let note_ids: Vec<Uuid> = notes.iter().map(|note| note.id).collect();
+
+    // Batch the children: one query each, whatever the number of notes. Rows
+    // arrive in display order, so grouping only has to append them.
+    let mut items: HashMap<Uuid, Vec<CreditNoteItem>> = HashMap::new();
+    let mut refunds: HashMap<Uuid, Vec<CreditNoteRefund>> = HashMap::new();
+
+    if !note_ids.is_empty() {
+        let rows = sqlx::query!(
+            r#"
+            SELECT cni.id,
+                   cni.credit_note_id,
+                   cni.product_id,
+                   p.name AS "product_name!",
+                   cni.quantity,
+                   cni.unit_price
+            FROM credit_note_items cni
+            JOIN products p ON p.id = cni.product_id
+            WHERE cni.credit_note_id = ANY($1)
+            ORDER BY p.name, cni.id
+            "#,
+            &note_ids
+        )
+        .fetch_all(pool)
+        .await?;
+
+        for row in rows {
+            items
+                .entry(row.credit_note_id)
+                .or_default()
+                .push(CreditNoteItem {
+                    id: row.id,
+                    product_id: row.product_id,
+                    product_name: row.product_name,
+                    quantity: row.quantity,
+                    unit_price: row.unit_price,
+                });
+        }
+
+        let rows = sqlx::query!(
+            r#"
+            SELECT m.credit_note_id AS "credit_note_id!",
+                   m.wallet_id,
+                   w.name AS "wallet_name!",
+                   m.payment_method_id AS "payment_method_id!",
+                   pm.name AS "payment_method_name!",
+                   m.amount
+            FROM wallet_movements m
+            JOIN wallets w ON w.id = m.wallet_id
+            JOIN payment_methods pm ON pm.id = m.payment_method_id
+            WHERE m.kind = 'sale_refund' AND m.credit_note_id = ANY($1)
+            ORDER BY m.created_at, m.id
+            "#,
+            &note_ids
+        )
+        .fetch_all(pool)
+        .await?;
+
+        for row in rows {
+            refunds
+                .entry(row.credit_note_id)
+                .or_default()
+                .push(CreditNoteRefund {
+                    wallet_id: row.wallet_id,
+                    wallet_name: row.wallet_name,
+                    payment_method_id: row.payment_method_id,
+                    payment_method_name: row.payment_method_name,
+                    amount: row.amount,
+                });
+        }
+    }
+
+    let notes = notes
+        .into_iter()
+        .map(|note| CreditNoteDetail {
+            note: CreditNote {
+                id: note.id,
+                sale_id: note.sale_id,
+                reason: note.reason,
+                total: note.total,
+                created_by: note.created_by,
+                created_at: note.created_at,
+            },
+            items: items.remove(&note.id).unwrap_or_default(),
+            refunds: refunds.remove(&note.id).unwrap_or_default(),
+        })
+        .collect();
+
+    Ok(Some(SaleCreditSummary {
+        sale_id,
+        sale_total,
+        refunded_total,
+        lines,
+        notes,
+    }))
 }
 
 /// Issue a credit note: validate against the sale, then write both ledgers.
@@ -272,6 +429,7 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreditNoteD
                 amount: share,
                 sale_id: Some(new.sale_id),
                 payment_method_id: Some(payment.payment_method_id),
+                credit_note_id: Some(note_id),
                 note: Some(&label),
                 created_by: Some(new.created_by),
             },

@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 use super::model::{CreditNoteDetail, MAX_REASON_LEN, ReturnLine};
-use super::repository::{self, NewCreditNote, RepoError};
+use super::repository::{self, NewCreditNote, RepoError, SaleCreditSummary};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CreditNotesError {
@@ -71,6 +71,14 @@ fn map_repo_error(err: RepoError) -> CreditNotesError {
         },
         other => CreditNotesError::Internal(other),
     }
+}
+
+/// What has already been credited on a sale, for the return screen.
+pub async fn for_sale(pool: &PgPool, sale_id: Uuid) -> Result<SaleCreditSummary, CreditNotesError> {
+    repository::for_sale(pool, sale_id)
+        .await
+        .map_err(map_repo_error)?
+        .ok_or(CreditNotesError::SaleNotFound)
 }
 
 /// Issue a credit note for a charged sale.

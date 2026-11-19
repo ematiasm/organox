@@ -2,13 +2,14 @@
 //!
 //! Creating a note returns the full document: its lines, its total and the
 //! refunds, so the client follows the money into its wallets without a second
-//! request.
+//! request. Reading the same route reports what is left to return on the sale
+//! and every note already issued against it.
 
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::get;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,10 @@ use crate::credit_notes::service::{self, CreditNotesError};
 use crate::error::AppError;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/sales/{id}/credit-notes", post(create_credit_note))
+    Router::new().route(
+        "/sales/{id}/credit-notes",
+        get(sale_credit_notes).post(create_credit_note),
+    )
 }
 
 // --- DTOs ---------------------------------------------------------------
@@ -75,6 +79,28 @@ pub struct CreditNoteResponse {
     pub created_at: DateTime<Utc>,
 }
 
+/// A charged line, with the quantity already credited and what can still come
+/// back.
+#[derive(Serialize, ToSchema)]
+pub struct CreditableLineResponse {
+    pub product_id: Uuid,
+    pub product_name: String,
+    pub quantity: String,
+    pub unit_price: String,
+    pub credited_quantity: String,
+    pub returnable_quantity: String,
+}
+
+/// The sale's credits: its charged lines and the notes already issued.
+#[derive(Serialize, ToSchema)]
+pub struct SaleCreditNotesResponse {
+    pub sale_id: Uuid,
+    pub sale_total: String,
+    pub refunded_total: String,
+    pub items: Vec<CreditableLineResponse>,
+    pub credit_notes: Vec<CreditNoteResponse>,
+}
+
 // --- Handlers -----------------------------------------------------------
 
 async fn create_credit_note(
@@ -95,6 +121,36 @@ async fn create_credit_note(
     let note = service::create(&state.pool, sale_id, user.id(), &body.reason, &lines).await?;
 
     Ok((StatusCode::CREATED, Json(to_response(note))))
+}
+
+async fn sale_credit_notes(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(sale_id): Path<Uuid>,
+) -> Result<Json<SaleCreditNotesResponse>, AppError> {
+    let summary = service::for_sale(&state.pool, sale_id).await?;
+
+    Ok(Json(SaleCreditNotesResponse {
+        sale_id: summary.sale_id,
+        sale_total: format_money(summary.sale_total),
+        refunded_total: format_money(summary.refunded_total),
+        items: summary
+            .lines
+            .into_iter()
+            .map(|line| {
+                let returnable = format_quantity(line.returnable_quantity());
+                CreditableLineResponse {
+                    product_id: line.product_id,
+                    product_name: line.product_name,
+                    quantity: format_quantity(line.quantity),
+                    unit_price: format_money(line.unit_price),
+                    credited_quantity: format_quantity(line.credited_quantity),
+                    returnable_quantity: returnable,
+                }
+            })
+            .collect(),
+        credit_notes: summary.notes.into_iter().map(to_response).collect(),
+    }))
 }
 
 // --- Mapping ------------------------------------------------------------
@@ -198,3 +254,22 @@ impl From<CreditNotesError> for AppError {
 )]
 #[allow(dead_code)]
 fn create_credit_note_doc() {}
+
+/// The credits of a sale: what was charged, what came back and where the money
+/// of each note went. A draft has no stored total, so the charged lines decide
+/// it; the refunded total is the sum of the notes already issued.
+#[utoipa::path(
+    get,
+    path = "/api/v1/sales/{id}/credit-notes",
+    tag = "credit_notes",
+    params(("id" = Uuid, Path, description = "Sale ID")),
+    responses(
+        (status = 200, description = "Credits of the sale", body = SaleCreditNotesResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Sale not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn get_credit_notes_doc() {}
