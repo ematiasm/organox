@@ -611,3 +611,460 @@ async fn owner_lists_all_users_ordered_by_email(pool: sqlx::PgPool) {
         assert!(fields.contains_key("role"));
     }
 }
+
+// --- Password rotation -------------------------------------------------
+
+fn change_password_request(cookie: &str, current: &str, new: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/password")
+        .header("content-type", "application/json")
+        .header("cookie", format!("session={cookie}"))
+        .body(Body::from(
+            json!({ "current_password": current, "new_password": new }).to_string(),
+        ))
+        .unwrap()
+}
+
+fn reset_password_request(cookie: &str, id: Uuid, new: &str) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(format!("/api/v1/users/{id}/password"))
+        .header("content-type", "application/json")
+        .header("cookie", format!("session={cookie}"))
+        .body(Body::from(json!({ "new_password": new }).to_string()))
+        .unwrap()
+}
+
+async fn password_hash(pool: &sqlx::PgPool, email: &str) -> String {
+    sqlx::query_scalar("SELECT password_hash FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn user_id(pool: &sqlx::PgPool, email: &str) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn me_status(app: axum::Router, cookie: &str) -> StatusCode {
+    app.oneshot(
+        Request::builder()
+            .uri("/api/v1/auth/me")
+            .header("cookie", format!("session={cookie}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+#[sqlx::test]
+async fn self_password_change_rejects_wrong_current_password_without_effects(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+    let wrong = test_password();
+    let new = test_password();
+    let hash_before = password_hash(&pool, "owner@pyme.com").await;
+    let users_before = count_rows(&pool, "users").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    let response = app(pool.clone())
+        .oneshot(change_password_request(&cookie, &wrong, &new))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body_json(response).await["detail"],
+        "Invalid credentials or expired session."
+    );
+    assert_eq!(password_hash(&pool, "owner@pyme.com").await, hash_before);
+    assert_eq!(count_rows(&pool, "users").await, users_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+    // The old password still works and the proposed one was never stored.
+    assert_eq!(
+        app(pool.clone())
+            .oneshot(login_request("owner@pyme.com", &password))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app(pool)
+            .oneshot(login_request("owner@pyme.com", &new))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// The public rule is checked before the expensive credential check: with a
+/// wrong current password AND a weak new one, the answer is 422.
+#[sqlx::test]
+async fn self_password_change_validates_new_password_before_current_password(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+    let hash_before = password_hash(&pool, "owner@pyme.com").await;
+    let users_before = count_rows(&pool, "users").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    let response = app(pool.clone())
+        .oneshot(change_password_request(
+            &cookie,
+            &test_password(),
+            &short_password(),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await["detail"],
+        "the password must contain at least 12 characters"
+    );
+    assert_eq!(password_hash(&pool, "owner@pyme.com").await, hash_before);
+    assert_eq!(count_rows(&pool, "users").await, users_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+}
+
+#[sqlx::test]
+async fn self_password_change_revokes_other_sessions_and_keeps_the_current_one(pool: sqlx::PgPool) {
+    let old = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let first = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &old))
+        .await
+        .unwrap();
+    let current = session_cookie(&first);
+    let second = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &old))
+        .await
+        .unwrap();
+    let other = session_cookie(&second);
+    let new = test_password();
+    let hash_before = password_hash(&pool, "owner@pyme.com").await;
+    assert_eq!(count_rows(&pool, "sessions").await, 2);
+
+    let response = app(pool.clone())
+        .oneshot(change_password_request(&current, &old, &new))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_ne!(password_hash(&pool, "owner@pyme.com").await, hash_before);
+    assert_eq!(count_rows(&pool, "sessions").await, 1);
+    assert_eq!(me_status(app(pool.clone()), &current).await, StatusCode::OK);
+    assert_eq!(
+        me_status(app(pool.clone()), &other).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app(pool.clone())
+            .oneshot(login_request("owner@pyme.com", &old))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app(pool)
+            .oneshot(login_request("owner@pyme.com", &new))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn anonymous_cannot_change_password(pool: sqlx::PgPool) {
+    seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let users_before = count_rows(&pool, "users").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    // No cookie at all: the route sits behind `AuthUser`, which rejects before
+    // the body is read, so neither password can matter.
+    let body = json!({
+        "current_password": test_password(),
+        "new_password": test_password(),
+    });
+    let response = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/password")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(count_rows(&pool, "users").await, users_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+}
+
+#[sqlx::test]
+async fn manager_cannot_reset_password(pool: sqlx::PgPool) {
+    let manager_password = seed_user(&pool, "manager@pyme.com", Role::Manager).await;
+    let target_password = seed_user(&pool, "target@pyme.com", Role::Manager).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("manager@pyme.com", &manager_password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+    let target_login = app(pool.clone())
+        .oneshot(login_request("target@pyme.com", &target_password))
+        .await
+        .unwrap();
+    let target_cookie = session_cookie(&target_login);
+    let target = user_id(&pool, "target@pyme.com").await;
+    let hash_before = password_hash(&pool, "target@pyme.com").await;
+    let users_before = count_rows(&pool, "users").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    let response = app(pool.clone())
+        .oneshot(reset_password_request(&cookie, target, &test_password()))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        body_json(response).await["detail"],
+        "You do not have permission to perform this operation."
+    );
+    assert_eq!(password_hash(&pool, "target@pyme.com").await, hash_before);
+    assert_eq!(count_rows(&pool, "users").await, users_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+    assert_eq!(
+        me_status(app(pool.clone()), &target_cookie).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        app(pool)
+            .oneshot(login_request("target@pyme.com", &target_password))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn owner_reset_of_unknown_user_returns_404_without_effects(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    seed_user(&pool, "target@pyme.com", Role::Manager).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+    let target = user_id(&pool, "target@pyme.com").await;
+    // Prove the route exists: an unregistered path also returns 404.
+    let known = app(pool.clone())
+        .oneshot(reset_password_request(&cookie, target, &test_password()))
+        .await
+        .unwrap();
+    assert_eq!(known.status(), StatusCode::NO_CONTENT);
+
+    let hash_before = password_hash(&pool, "target@pyme.com").await;
+    let users_before = count_rows(&pool, "users").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    let response = app(pool.clone())
+        .oneshot(reset_password_request(
+            &cookie,
+            Uuid::new_v4(),
+            &test_password(),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(password_hash(&pool, "target@pyme.com").await, hash_before);
+    assert_eq!(count_rows(&pool, "users").await, users_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+}
+
+#[sqlx::test]
+async fn owner_reset_rejects_forbidden_password_without_effects(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let target_password = seed_user(&pool, "target@pyme.com", Role::Manager).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+    let target = user_id(&pool, "target@pyme.com").await;
+    let hash_before = password_hash(&pool, "target@pyme.com").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    // `"123456789012"` is on `FORBIDDEN_PASSWORDS` (`src/auth/validation.rs:28`),
+    // which is private, so the test cannot take the value from there. It is the
+    // subject of the test, not a credential: generating it would delete what
+    // this proves. If a scanner flags it, the disposition is `used in tests`.
+    let response = app(pool.clone())
+        .oneshot(reset_password_request(&cookie, target, "123456789012"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await["detail"],
+        "the password is too common"
+    );
+    assert_eq!(password_hash(&pool, "target@pyme.com").await, hash_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+    assert_eq!(
+        app(pool)
+            .oneshot(login_request("target@pyme.com", &target_password))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn reset_validates_the_password_before_checking_whether_the_user_exists(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+
+    // Both fields are already wrong: an id that does not exist and a password
+    // the rule forbids. The answer pins the deliberate order — validate first,
+    // because the rule is public and the lookup is not.
+    let response = app(pool.clone())
+        .oneshot(reset_password_request(
+            &cookie,
+            Uuid::now_v7(),
+            &short_password(),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(response).await["detail"],
+        "the password must contain at least 12 characters"
+    );
+}
+
+#[sqlx::test]
+async fn owner_reset_revokes_target_sessions_and_allows_new_password(pool: sqlx::PgPool) {
+    let owner_password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let target_password = seed_user(&pool, "target@pyme.com", Role::Manager).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &owner_password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+    let target_login = app(pool.clone())
+        .oneshot(login_request("target@pyme.com", &target_password))
+        .await
+        .unwrap();
+    let target_cookie = session_cookie(&target_login);
+    let target = user_id(&pool, "target@pyme.com").await;
+    let hash_before = password_hash(&pool, "target@pyme.com").await;
+    let new = test_password();
+    assert_eq!(count_rows(&pool, "sessions").await, 2);
+
+    let response = app(pool.clone())
+        .oneshot(reset_password_request(&cookie, target, &new))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_ne!(password_hash(&pool, "target@pyme.com").await, hash_before);
+    // Only the caller's session survives; the caller is not the target.
+    assert_eq!(count_rows(&pool, "sessions").await, 1);
+    assert_eq!(me_status(app(pool.clone()), &cookie).await, StatusCode::OK);
+    assert_eq!(
+        me_status(app(pool.clone()), &target_cookie).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app(pool.clone())
+            .oneshot(login_request("target@pyme.com", &target_password))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app(pool)
+            .oneshot(login_request("target@pyme.com", &new))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test]
+async fn owner_reset_of_own_password_keeps_current_session(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let first = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    let current = session_cookie(&first);
+    let second = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    let other = session_cookie(&second);
+    let id = user_id(&pool, "owner@pyme.com").await;
+    let hash_before = password_hash(&pool, "owner@pyme.com").await;
+    let new = test_password();
+
+    let response = app(pool.clone())
+        .oneshot(reset_password_request(&current, id, &new))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_ne!(password_hash(&pool, "owner@pyme.com").await, hash_before);
+    assert_eq!(count_rows(&pool, "sessions").await, 1);
+    assert_eq!(me_status(app(pool.clone()), &current).await, StatusCode::OK);
+    assert_eq!(
+        me_status(app(pool.clone()), &other).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app(pool.clone())
+            .oneshot(login_request("owner@pyme.com", &password))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app(pool)
+            .oneshot(login_request("owner@pyme.com", &new))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}

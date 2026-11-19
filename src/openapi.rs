@@ -66,6 +66,8 @@ pub struct Problem {
         crate::auth::handlers::me_doc,
         crate::auth::handlers::list_users_doc,
         crate::auth::handlers::create_user_doc,
+        crate::auth::handlers::change_password_doc,
+        crate::auth::handlers::reset_password_doc,
         crate::catalog::handlers::list_products_doc,
         crate::catalog::handlers::create_product_doc,
         crate::catalog::handlers::get_product_doc,
@@ -98,6 +100,8 @@ pub struct Problem {
         crate::auth::handlers::LoginResponse,
         crate::auth::handlers::CreateUserRequest,
         crate::auth::handlers::CreateUserResponse,
+        crate::auth::handlers::ChangePasswordRequest,
+        crate::auth::handlers::ResetPasswordRequest,
         crate::auth::model::Role,
         crate::catalog::handlers::ProductResponse,
         crate::catalog::handlers::ProductListResponse,
@@ -195,12 +199,14 @@ mod tests {
             );
         }
 
-        // The eleven real backend routes.
+        // Every registered backend route.
         for expected in [
             "/api/v1/auth/login",
             "/api/v1/auth/logout",
+            "/api/v1/auth/password",
             "/api/v1/auth/me",
             "/api/v1/users",
+            "/api/v1/users/{id}/password",
             "/api/v1/products",
             "/api/v1/products/{id}",
             "/api/v1/products/{id}/deactivate",
