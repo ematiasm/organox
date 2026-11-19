@@ -73,7 +73,9 @@ async function login(page) {
 		check('R1', `${path}: one sidebar`, navs.length === 1, `found ${navs.length}: ${JSON.stringify(navs)}`);
 		if (navs.length === 1) {
 			const links = navs[0].links.join(', ');
-			const expected = 'Sale, Products, Movements, Users';
+			// The list of charged sales is where credit notes are issued, so it sits
+			// next to the point of sale in the rail.
+			const expected = 'Sale, Sales, Products, Movements, Payments, Users';
 			check('R1', `${path}: canonical navigation`, links === expected, `"${links}" != "${expected}"`);
 		}
 	}
