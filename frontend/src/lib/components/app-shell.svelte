@@ -12,6 +12,7 @@
 		DropdownMenuTrigger
 	} from '$lib/components/ui/dropdown-menu';
 	import ThemeToggle from '$lib/components/theme-toggle.svelte';
+	import ChangePasswordDialog from './change-password-dialog.svelte';
 	import CartIcon from '@lucide/svelte/icons/shopping-cart';
 	import ListIcon from '@lucide/svelte/icons/list';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
@@ -20,6 +21,7 @@
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import ChevronUpIcon from '@lucide/svelte/icons/chevron-up';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
+	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 
 	/**
 	 * Shell for private screens with a single navigation system. Session data is
@@ -103,6 +105,7 @@
 	// Without `localStorage` (SSR), the rail starts collapsed.
 	const EXPANDED_KEY = 'organox:rail-expanded';
 	let expanded = $state(false);
+	let changePasswordOpen = $state(false);
 
 	$effect(() => {
 		try {
@@ -193,6 +196,10 @@
 					<DropdownMenuSeparator />
 					<div class="py-1"><ThemeToggle class="justify-start" /></div>
 					<DropdownMenuSeparator />
+					<DropdownMenuItem onSelect={() => (changePasswordOpen = true)}>
+						<KeyRoundIcon />
+						Change password
+					</DropdownMenuItem>
 					<DropdownMenuItem variant="destructive" onSelect={logout}>
 						<LogOutIcon />
 						Sign out
@@ -206,6 +213,8 @@
 		{@render children?.()}
 	</main>
 </div>
+
+<ChangePasswordDialog open={changePasswordOpen} onClose={() => (changePasswordOpen = false)} />
 
 
 <style>

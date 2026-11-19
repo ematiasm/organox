@@ -1,5 +1,9 @@
 <script lang="ts">
+	import type { User } from '$lib/api/client';
+	import UserPasswordResetDialog from '$lib/components/user-password-reset-dialog.svelte';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
+	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import {
 		Table,
 		TableBody,
@@ -15,6 +19,14 @@
 		const count = data.users.length;
 		return `${count} ${count === 1 ? 'user' : 'users'}`;
 	});
+
+	let resetTarget = $state<User | null>(null);
+	let resetOpen = $state(false);
+
+	function openReset(user: User) {
+		resetTarget = user;
+		resetOpen = true;
+	}
 </script>
 
 <h1>Users</h1>
@@ -35,6 +47,7 @@
 					<TableRow>
 						<TableHead>Email</TableHead>
 						<TableHead>Role</TableHead>
+						<TableHead>Actions</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
@@ -46,6 +59,17 @@
 									{user.role === 'owner' ? 'Owner' : 'Manager'}
 								</Badge>
 							</TableCell>
+							<TableCell class="text-right">
+								<Button
+									variant="outline"
+									size="sm"
+									aria-label={`Reset password for ${user.email}`}
+									onclick={() => openReset(user)}
+								>
+									<KeyRoundIcon />
+									Reset password
+								</Button>
+							</TableCell>
 						</TableRow>
 					{/each}
 				</TableBody>
@@ -54,4 +78,6 @@
 	{/if}
 
 	<div class="mt-3 text-sm text-muted-foreground">{counter}</div>
+
+	<UserPasswordResetDialog open={resetOpen} user={resetTarget} onClose={() => (resetOpen = false)} />
 {/if}
