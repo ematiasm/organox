@@ -71,6 +71,24 @@ pub enum RepoError {
 
     #[error("the receipt records {receipt} but the wallet movement carries {movement}")]
     ReceiptDoesNotMatchMovement { movement: Decimal, receipt: Decimal },
+
+    #[error("the refund of {requested} exceeds the {available} the customer holds in credit")]
+    CreditRefundExceedsCredit {
+        requested: Decimal,
+        available: Decimal,
+    },
+
+    #[error("an adjustment cannot cross zero: the balance is {balance}")]
+    AdjustmentCrossesZero { balance: Decimal },
+
+    #[error("that kind is not an adjustment")]
+    NotAnAdjustment,
+
+    #[error("an adjustment needs a reason")]
+    AdjustmentNoteRequired,
+
+    #[error("that document is already recorded in the ledger")]
+    AlreadyRecorded,
 }
 
 /// The customer's account as of now: balance, usable credit, what is owed.
@@ -563,4 +581,216 @@ pub async fn allocate(
     .await?;
 
     Ok(())
+}
+
+/// Cancel part of a sale's debt with a credit note. The note is the document,
+/// the entry is the ledger's copy of it: one note writes one entry, once, and
+/// the unique index on `credit_note_id` is what keeps that true.
+///
+/// The note's own ceiling — that notes never exceed the sale's total, and how
+/// the remainder is refunded in cash — belongs to the credit-note slice that
+/// writes the note document. This writer refuses only what the ledger itself
+/// forbids: cancelling debt that does not exist.
+pub async fn record_credit_note(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    sale_id: Uuid,
+    credit_note_id: Uuid,
+    amount: Decimal,
+    created_by: Uuid,
+) -> Result<Uuid, RepoError> {
+    ensure_cents(amount)?;
+    lock_customer(conn, customer_id).await?;
+    ensure_chargeable_sale(conn, customer_id, sale_id).await?;
+
+    let outstanding = outstanding_for_sale_in(conn, sale_id).await?;
+    if amount > outstanding {
+        return Err(RepoError::OutstandingExceeded {
+            requested: amount,
+            outstanding,
+        });
+    }
+
+    let id = Uuid::now_v7();
+    sqlx::query!(
+        r#"
+        INSERT INTO customer_account_entries
+            (id, customer_id, kind, amount, sale_id, credit_note_id, created_by)
+        VALUES ($1, $2, 'credit_note', $3, $4, $5, $6)
+        "#,
+        id,
+        customer_id,
+        -amount,
+        sale_id,
+        credit_note_id,
+        created_by,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| {
+        if violated_constraint(&err) == Some("customer_account_entries_one_entry_per_note") {
+            RepoError::AlreadyRecorded
+        } else {
+            RepoError::Database(err)
+        }
+    })?;
+
+    Ok(id)
+}
+
+/// Hand collected money back to a customer who holds credit. The wallet
+/// movement is the money actually leaving; the entry is the ledger's copy,
+/// stored positive because a refund moves the balance toward zero.
+///
+/// Which wallet kind carried the money out is deliberately not this writer's
+/// business: the movement's amount is the contract, and the kind that refunds
+/// credit does not exist yet (it arrives with the slice that writes the
+/// movement).
+pub async fn record_credit_refund(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    wallet_movement_id: Uuid,
+    amount: Decimal,
+    note: Option<&str>,
+    created_by: Uuid,
+) -> Result<Uuid, RepoError> {
+    ensure_cents(amount)?;
+    lock_customer(conn, customer_id).await?;
+
+    // The same check the receipt makes, for the same reason: the foreign key
+    // proves the movement exists, only this comparison proves the two books
+    // agree on how much money moved.
+    let carried: Decimal = sqlx::query_scalar!(
+        "SELECT amount FROM wallet_movements WHERE id = $1",
+        wallet_movement_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(RepoError::MovementNotFound)?;
+
+    if carried != amount {
+        return Err(RepoError::ReceiptDoesNotMatchMovement {
+            movement: carried,
+            receipt: amount,
+        });
+    }
+
+    // A replay answers by identity, not by re-running the numbers: the first
+    // refund already consumed the credit this one claims, so affordability
+    // alone could not tell a replay from a fresh refund that happens to be
+    // unaffordable. The lock makes the lookup race-free; the unique index
+    // stays as the backstop.
+    let already = sqlx::query_scalar!(
+        r#"
+        SELECT id FROM customer_account_entries
+        WHERE wallet_movement_id = $1
+        "#,
+        wallet_movement_id,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if already.is_some() {
+        return Err(RepoError::AlreadyRecorded);
+    }
+
+    let position = account_position_in(conn, customer_id).await?;
+
+    // Money is only handed back against money the shop actually holds: the
+    // unapplied credit says it was collected, the negative balance says it was
+    // never spent on debt. Either alone could lie — unapplied credit next to
+    // a debt, or a negative balance with the credit already refunded — so the
+    // refund sees the smaller of the two, floored at zero because a customer
+    // who owes has nothing to claim back at all.
+    let available = position
+        .unapplied_credit
+        .min(-position.balance)
+        .max(Decimal::ZERO);
+    if amount > available {
+        return Err(RepoError::CreditRefundExceedsCredit {
+            requested: amount,
+            available,
+        });
+    }
+
+    let id = Uuid::now_v7();
+    sqlx::query!(
+        r#"
+        INSERT INTO customer_account_entries
+            (id, customer_id, kind, amount, wallet_movement_id, note, created_by)
+        VALUES ($1, $2, 'credit_refund', $3, $4, $5, $6)
+        "#,
+        id,
+        customer_id,
+        amount,
+        wallet_movement_id,
+        note,
+        created_by,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| {
+        if violated_constraint(&err) == Some("customer_account_entries_one_entry_per_movement") {
+            RepoError::AlreadyRecorded
+        } else {
+            RepoError::Database(err)
+        }
+    })?;
+
+    Ok(id)
+}
+
+/// Record a manual adjustment: the only way to load an opening balance or
+/// correct the books by hand. It moves the balance without touching any sale,
+/// so it must never create or destroy an available credit — that credit is
+/// backed by receipts, and only receipts and refunds may move it.
+pub async fn record_adjustment(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    kind: CustomerAccountEntryKind,
+    amount: Decimal,
+    note: &str,
+    created_by: Uuid,
+) -> Result<Uuid, RepoError> {
+    // The kind is checked before anything is read: an operator cannot smuggle
+    // a charge or a receipt through the adjustment form.
+    if !kind.is_manual() {
+        return Err(RepoError::NotAnAdjustment);
+    }
+    if note.trim().is_empty() {
+        return Err(RepoError::AdjustmentNoteRequired);
+    }
+
+    ensure_cents(amount)?;
+    lock_customer(conn, customer_id).await?;
+
+    let position = account_position_in(conn, customer_id).await?;
+
+    // An adjustment operates on a debt, so it may only run while the balance is
+    // a debt: entering more than is owed would mint credit out of nothing, and
+    // adjusting while the customer holds credit would bury it under debt.
+    if position.balance < Decimal::ZERO
+        || (kind == CustomerAccountEntryKind::AdjustmentOut && amount > position.balance)
+    {
+        return Err(RepoError::AdjustmentCrossesZero {
+            balance: position.balance,
+        });
+    }
+
+    let id = Uuid::now_v7();
+    sqlx::query!(
+        r#"
+        INSERT INTO customer_account_entries (id, customer_id, kind, amount, note, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+        id,
+        customer_id,
+        kind as CustomerAccountEntryKind,
+        amount * Decimal::from(kind.sign()),
+        note,
+        created_by,
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    Ok(id)
 }

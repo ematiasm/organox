@@ -18,6 +18,7 @@
 
 use std::time::Duration;
 
+use organox::customer_accounts::model::CustomerAccountEntryKind;
 use organox::customer_accounts::repository;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -1098,4 +1099,460 @@ async fn a_receipt_cannot_disagree_with_its_wallet_movement(pool: PgPool) {
         .await
         .expect("count");
     assert_eq!(entries, 0, "the rejected receipt left an entry behind");
+}
+
+// --- Credit notes -------------------------------------------------------
+
+/// A note document the ledger can point at. The ledger only needs the note to
+/// exist for this sale; how its total splits between debt and cash belongs to
+/// the credit-note slice that writes it.
+async fn seed_credit_note(pool: &PgPool, sale_id: Uuid, total: Decimal) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO credit_notes (id, sale_id, total, reason, created_by) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(sale_id)
+    .bind(total)
+    .bind("wrong price charged")
+    .bind(Uuid::now_v7())
+    .execute(pool)
+    .await
+    .expect("credit note");
+    id
+}
+
+#[sqlx::test]
+async fn a_credit_note_cancels_debt_and_lowers_the_outstanding(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    let note = seed_credit_note(&pool, sale, dec!(30.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    repository::record_credit_note(&mut tx, customer, sale, note, dec!(30.00), Uuid::now_v7())
+        .await
+        .expect("credit note");
+    tx.commit().await.expect("commit");
+
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, dec!(70.00));
+    assert_eq!(position.unapplied_credit, Decimal::ZERO);
+    assert_eq!(position.outstanding_total, dec!(70.00));
+    assert!(position.is_consistent());
+
+    let debts = repository::outstanding_by_sale(&pool, customer)
+        .await
+        .expect("debts");
+    assert_eq!(debts.len(), 1);
+    assert_eq!(debts[0].cancelled, dec!(30.00));
+    assert_eq!(debts[0].outstanding, dec!(70.00));
+}
+
+#[sqlx::test]
+async fn a_credit_note_cannot_cancel_more_than_the_sale_owes(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    let note = seed_credit_note(&pool, sale, dec!(150.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    let result =
+        repository::record_credit_note(&mut tx, customer, sale, note, dec!(150.00), Uuid::now_v7())
+            .await;
+    assert!(matches!(
+        result,
+        Err(repository::RepoError::OutstandingExceeded {
+            requested,
+            outstanding
+        }) if requested == dec!(150.00) && outstanding == dec!(100.00)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    // Cancelling debt that does not exist must leave no entry behind.
+    let notes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customer_account_entries WHERE customer_id = $1 AND kind = 'credit_note'",
+    )
+    .bind(customer)
+    .fetch_one(&pool)
+    .await
+    .expect("note count");
+    assert_eq!(notes, 0);
+}
+
+#[sqlx::test]
+async fn a_credit_note_cannot_cancel_another_customers_debt(pool: PgPool) {
+    let ana = seed_customer(&pool, "Ana").await;
+    let beto = seed_customer(&pool, "Beto").await;
+    let beto_sale = seed_completed_sale(&pool, beto, dec!(100.00)).await;
+    let note = seed_credit_note(&pool, beto_sale, dec!(30.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    let result =
+        repository::record_credit_note(&mut tx, ana, beto_sale, note, dec!(30.00), Uuid::now_v7())
+            .await;
+    assert!(matches!(
+        result,
+        Err(repository::RepoError::SaleOfAnotherCustomer)
+    ));
+    tx.rollback().await.expect("rollback");
+}
+
+#[sqlx::test]
+async fn a_credit_note_is_recorded_once(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    let note = seed_credit_note(&pool, sale, dec!(30.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    repository::record_credit_note(&mut tx, customer, sale, note, dec!(30.00), Uuid::now_v7())
+        .await
+        .expect("first record");
+    tx.commit().await.expect("commit");
+
+    // The replay asks for less than the sale still owes, so only the note's
+    // own identity can refuse it.
+    let mut tx = pool.begin().await.expect("transaction");
+    let second =
+        repository::record_credit_note(&mut tx, customer, sale, note, dec!(10.00), Uuid::now_v7())
+            .await;
+    assert!(matches!(
+        second,
+        Err(repository::RepoError::AlreadyRecorded)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    let notes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customer_account_entries WHERE customer_id = $1 AND kind = 'credit_note'",
+    )
+    .bind(customer)
+    .fetch_one(&pool)
+    .await
+    .expect("note count");
+    assert_eq!(notes, 1);
+}
+
+// --- Credit refunds -----------------------------------------------------
+
+#[sqlx::test]
+async fn a_credit_refund_returns_money_and_clears_the_credit(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    let collected = seed_movement(&pool, dec!(150.00)).await;
+    let refunded = seed_movement(&pool, dec!(50.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: customer,
+            wallet_movement_id: collected,
+            amount: dec!(150.00),
+            allocations: &[(sale, dec!(100.00))],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await
+    .expect("receipt");
+    repository::record_credit_refund(
+        &mut tx,
+        customer,
+        refunded,
+        dec!(50.00),
+        Some("customer asked for the credit back"),
+        Uuid::now_v7(),
+    )
+    .await
+    .expect("refund");
+    tx.commit().await.expect("commit");
+
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, Decimal::ZERO);
+    assert_eq!(position.unapplied_credit, Decimal::ZERO);
+    assert!(position.is_consistent());
+}
+
+#[sqlx::test]
+async fn a_credit_refund_cannot_exceed_the_usable_credit(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    let movement = seed_movement(&pool, dec!(10.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    tx.commit().await.expect("commit");
+
+    // The customer owes 100 and holds nothing: debt is not money the shop can
+    // hand back.
+    let mut tx = pool.begin().await.expect("transaction");
+    let result = repository::record_credit_refund(
+        &mut tx,
+        customer,
+        movement,
+        dec!(10.00),
+        None,
+        Uuid::now_v7(),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(repository::RepoError::CreditRefundExceedsCredit {
+            available,
+            ..
+        }) if available == Decimal::ZERO
+    ));
+    tx.rollback().await.expect("rollback");
+
+    let refunds: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customer_account_entries WHERE customer_id = $1 AND kind = 'credit_refund'",
+    )
+    .bind(customer)
+    .fetch_one(&pool)
+    .await
+    .expect("refund count");
+    assert_eq!(refunds, 0);
+}
+
+#[sqlx::test]
+async fn a_credit_refund_is_recorded_once_per_movement(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    let collected = seed_movement(&pool, dec!(150.00)).await;
+    let refunded = seed_movement(&pool, dec!(30.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: customer,
+            wallet_movement_id: collected,
+            amount: dec!(150.00),
+            allocations: &[(sale, dec!(100.00))],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await
+    .expect("receipt");
+    repository::record_credit_refund(
+        &mut tx,
+        customer,
+        refunded,
+        dec!(30.00),
+        None,
+        Uuid::now_v7(),
+    )
+    .await
+    .expect("first refund");
+    tx.commit().await.expect("commit");
+
+    // The first refund consumed part of the credit, so affordability alone
+    // could no longer tell this apart from a fresh refund: the movement is
+    // what identifies the replay.
+    let mut tx = pool.begin().await.expect("transaction");
+    let second = repository::record_credit_refund(
+        &mut tx,
+        customer,
+        refunded,
+        dec!(30.00),
+        None,
+        Uuid::now_v7(),
+    )
+    .await;
+    assert!(matches!(
+        second,
+        Err(repository::RepoError::AlreadyRecorded)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    let refunds: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customer_account_entries WHERE customer_id = $1 AND kind = 'credit_refund'",
+    )
+    .bind(customer)
+    .fetch_one(&pool)
+    .await
+    .expect("refund count");
+    assert_eq!(refunds, 1);
+}
+
+// --- Adjustments --------------------------------------------------------
+
+#[sqlx::test]
+async fn an_opening_balance_can_be_loaded_with_an_adjustment(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_adjustment(
+        &mut tx,
+        customer,
+        CustomerAccountEntryKind::AdjustmentIn,
+        dec!(500.00),
+        "opening balance carried over from the previous books",
+        Uuid::now_v7(),
+    )
+    .await
+    .expect("adjustment");
+    tx.commit().await.expect("commit");
+
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, dec!(500.00));
+    assert_eq!(position.adjustments, dec!(500.00));
+    assert_eq!(position.outstanding_total, Decimal::ZERO);
+    assert!(position.is_consistent());
+}
+
+#[sqlx::test]
+async fn an_adjustment_cannot_cross_zero(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    let movement = seed_movement(&pool, dec!(150.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    tx.commit().await.expect("commit");
+
+    // Taking out more than the customer owes would flip the balance negative
+    // and invent credit no receipt ever backed.
+    let mut tx = pool.begin().await.expect("transaction");
+    let out = repository::record_adjustment(
+        &mut tx,
+        customer,
+        CustomerAccountEntryKind::AdjustmentOut,
+        dec!(150.00),
+        "correction",
+        Uuid::now_v7(),
+    )
+    .await;
+    assert!(matches!(
+        out,
+        Err(repository::RepoError::AdjustmentCrossesZero { balance })
+            if balance == dec!(100.00)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    // And once the customer holds credit, no adjustment may add debt on top of
+    // it: the balance would cross zero in the other direction.
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: customer,
+            wallet_movement_id: movement,
+            amount: dec!(150.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await
+    .expect("receipt");
+    tx.commit().await.expect("commit");
+
+    let mut tx = pool.begin().await.expect("transaction");
+    let into_debt = repository::record_adjustment(
+        &mut tx,
+        customer,
+        CustomerAccountEntryKind::AdjustmentIn,
+        dec!(10.00),
+        "correction",
+        Uuid::now_v7(),
+    )
+    .await;
+    assert!(matches!(
+        into_debt,
+        Err(repository::RepoError::AdjustmentCrossesZero { balance })
+            if balance == dec!(-50.00)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    // Both rejections left nothing: the account still says one charge and one
+    // receipt, and no adjustment at all.
+    let adjustments: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*) FROM customer_account_entries
+        WHERE customer_id = $1 AND kind IN ('adjustment_in', 'adjustment_out')
+        "#,
+    )
+    .bind(customer)
+    .fetch_one(&pool)
+    .await
+    .expect("adjustment count");
+    assert_eq!(adjustments, 0);
+}
+
+#[sqlx::test]
+async fn an_adjustment_needs_a_reason(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    let blank = repository::record_adjustment(
+        &mut tx,
+        customer,
+        CustomerAccountEntryKind::AdjustmentIn,
+        dec!(10.00),
+        "   ",
+        Uuid::now_v7(),
+    )
+    .await;
+    assert!(matches!(
+        blank,
+        Err(repository::RepoError::AdjustmentNoteRequired)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    // A charge is never typed by hand: it belongs to the sale that produced it.
+    let mut tx = pool.begin().await.expect("transaction");
+    let not_manual = repository::record_adjustment(
+        &mut tx,
+        customer,
+        CustomerAccountEntryKind::SaleCharge,
+        dec!(10.00),
+        "reason",
+        Uuid::now_v7(),
+    )
+    .await;
+    assert!(matches!(
+        not_manual,
+        Err(repository::RepoError::NotAnAdjustment)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    let adjustments: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*) FROM customer_account_entries
+        WHERE customer_id = $1 AND kind IN ('adjustment_in', 'adjustment_out')
+        "#,
+    )
+    .bind(customer)
+    .fetch_one(&pool)
+    .await
+    .expect("adjustment count");
+    assert_eq!(adjustments, 0);
 }
