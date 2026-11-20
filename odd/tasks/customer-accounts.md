@@ -233,3 +233,13 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   because a label added to a *pre-existing* enum cannot be used in the transaction that adds it;
   a brand-new type can be created and used in the same migration. `created_by` carries no foreign
   key to `users`, matching `wallet_movements`.
+- L6 — T1 landed in three commits, past the 400-line guidance for a single review slice:
+  `e230572` the book and its read model (1472 lines, migration plus tests), `5f5f4f7` charges,
+  receipts and allocations (1239 lines), and a third for the note/refund/adjustment writers.
+  The size is the table contract: the migration, its triggers and the tests that prove the
+  engine rejects a bad row are one indivisible unit. Delivery shape when publishing: three
+  chained commits, or three stacked PRs if a reviewer prefers one behavior each. Recorded here
+  so the slice boundary is not discovered at merge time.
+- L7 — one hole closed while reviewing B1: `record_receipt` compares the receipt amount with the
+  money the wallet movement carried. The foreign key proves the movement exists, never that the
+  two books agree, and a silent disagreement between them is the failure nobody notices.
