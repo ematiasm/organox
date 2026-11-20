@@ -120,6 +120,39 @@ printf '%s' "$ADMIN_PW" | docker compose exec -T app create-user \
 The password is never passed as an argument: it would be visible in `ps aux` to
 any system user.
 
+### A fixed account for development
+
+Running `create-user` by hand every session is friction with no safety value on a
+local database. `make dev-user` creates the account once and, on later runs,
+**resets its password** and revokes its sessions:
+
+```bash
+make dev-user    # reads the variables below from .env, like every other target
+```
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DEV_PASSWORD` | none, required | The only accepted home for a literal; the file is gitignored. The same 12-character minimum the tool always enforced applies. Avoid `#` and `$`: that file is parsed as make syntax before the tool sees it, so `#` starts a comment and `$` expands |
+| `DEV_EMAIL` | `owner@pyme.com` | Not a secret |
+| `DEV_ROLE` | `owner` | Applied on creation only; a reset keeps the existing role |
+
+This does **not** reopen the decision in the table above. Nothing here runs at
+startup: `make dev-user` is a command a person types, so it cannot resurrect a
+deleted user between deploys or overwrite a password nobody asked it to touch.
+
+The password reaches `create-user --password-stdin` through the **environment**
+of the recipe, never through a command line. That distinction is the whole point
+of the `$$` in the target: make expands `$(VAR)` into the text it hands to the
+shell as its `-c` argument, which would put the plaintext password in `ps` for
+the whole pipeline — including the seconds argon2 spends hashing. With `$$VAR`
+the shell expands it itself, the recipe text only ever contains the variable
+name, and `make -n` prints a dry run that is safe to paste into a log. A process
+environment is readable by its own user and by root, not by every local user the
+way a command line is.
+
+Never point it at a deployment database: the target reads `DATABASE_URL` from the
+same file, so the two travel together and the mistake would be a conscious one.
+
 ## Login rate limiting
 
 Implemented, with its own document: `docs/ratelimit.md`. Two layers, applied to

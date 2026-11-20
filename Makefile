@@ -4,7 +4,7 @@
 -include .env
 export
 
-.PHONY: help db-up db-down db-reset migrate new-migration run create-user prepare test fmt lint check fe-install fe-dev fe-build fe-check fe-schema dev backup backup-check backup-install
+.PHONY: help db-up db-down db-reset migrate new-migration run create-user dev-user prepare test fmt lint check fe-install fe-dev fe-build fe-check fe-schema dev backup backup-check backup-install
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -58,6 +58,19 @@ create-user: ## Create a user: make create-user EMAIL=x@y.com ROLE=owner
 	@test -n "$(EMAIL)" || (echo "missing EMAIL=..." && exit 1)
 	@test -n "$(ROLE)" || (echo "missing ROLE=owner|manager" && exit 1)
 	cargo run --bin create-user -- --email $(EMAIL) --role $(ROLE)
+
+# The development credentials are exported so the recipe can read them from the
+# environment instead of from its own text: make expands `$(VAR)` into the
+# command line it hands to the shell, which would put the password in `ps` for
+# the whole pipeline. `$$VAR` leaves the shell to expand it.
+export DEV_PASSWORD
+
+dev-user: ## Create or reset the dev user from .env: DEV_PASSWORD, DEV_EMAIL, DEV_ROLE
+	@test -n "$$DEV_PASSWORD" || (echo "missing DEV_PASSWORD in .env (see docs/auth.md)" && exit 1)
+	@printf '%s' "$$DEV_PASSWORD" | cargo run --quiet --bin create-user -- \
+		--email $(or $(DEV_EMAIL),owner@pyme.com) \
+		--role $(or $(DEV_ROLE),owner) \
+		--password-stdin --upsert
 
 prepare: ## Regenerate the sqlx query cache (commit .sqlx/)
 	cargo sqlx prepare --workspace

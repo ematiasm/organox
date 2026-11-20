@@ -7,6 +7,12 @@
 //! Usage:
 //!   create-user --email yo@pyme.com --role owner
 //!   printf '%s' "$PW" | create-user --email yo@pyme.com --role owner --password-stdin
+//!   printf '%s' "$PW" | create-user --email yo@pyme.com --role owner --password-stdin --upsert
+//!
+//! `--upsert` creates the user, or resets the password of one who already
+//! exists (revoking its sessions, keeping its role). It is what `make dev-user`
+//! uses so a development database can carry one known account. It is a command
+//! someone runs, not a boot seed: the reasoning above still holds.
 //!
 //! The password is never passed as an argument: it would be visible in `ps aux`.
 
@@ -14,6 +20,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use organox::auth::model::Role;
+use organox::auth::service as auth_service;
 use organox::auth::{password, repository, validation};
 use sqlx::postgres::PgPoolOptions;
 
@@ -36,6 +43,12 @@ struct Args {
     /// Required in Docker (`docker compose exec -T`).
     #[arg(long)]
     password_stdin: bool,
+
+    /// Create the user, or reset the password of an existing one.
+    ///
+    /// A reset revokes that user's sessions and leaves the role untouched.
+    #[arg(long)]
+    upsert: bool,
 
     /// Connection URL. If omitted, DATABASE_URL from the environment is used.
     #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
@@ -65,15 +78,34 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let email = validation::ValidatedEmail::parse(&args.email)?;
     let plain = read_password(args.password_stdin)?;
 
+    // `--upsert` goes through the service, which hashes on a blocking thread and
+    // owns the transaction that also revokes sessions. Hashing here as well
+    // would pay for argon2 twice and drop the second result.
+    if args.upsert {
+        let pool = connect(&args.database_url).await?;
+        let outcome = auth_service::create_or_reset_user(&pool, &args.email, args.role, &plain)
+            .await
+            .map_err(|err| err.to_string())?;
+        drop(plain);
+
+        match outcome {
+            auth_service::UpsertOutcome::Created(_) => {
+                println!("user created: {} (role {})", email.as_str(), args.role)
+            }
+            auth_service::UpsertOutcome::PasswordReset(_) => println!(
+                "password reset: {} (role unchanged, sessions revoked)",
+                email.as_str()
+            ),
+        }
+        return Ok(());
+    }
+
     // Hash before connecting: this is the expensive part and does not depend on the DB.
     eprintln!("generating hash (argon2id, this may take a second)...");
     let hash = password::hash(&plain)?;
     drop(plain);
 
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&args.database_url)
-        .await?;
+    let pool = connect(&args.database_url).await?;
 
     let id = repository::create_user(
         &pool,
@@ -98,6 +130,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         args.role
     );
     Ok(())
+}
+
+async fn connect(database_url: &str) -> Result<sqlx::PgPool, Box<dyn std::error::Error>> {
+    Ok(PgPoolOptions::new()
+        .max_connections(1)
+        .connect(database_url)
+        .await?)
 }
 
 /// Read the password from stdin or prompt on the console without echo.

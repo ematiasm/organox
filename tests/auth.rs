@@ -8,9 +8,12 @@ use axum::http::{Request, StatusCode};
 use organox::AppState;
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
+use organox::auth::service::{self, LoginOutcome, UpsertOutcome};
 use organox::auth::{password, validation};
+use organox::ratelimit::{AccountLimiter, AccountPolicy};
 use organox::routes::router;
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
@@ -1066,5 +1069,94 @@ async fn owner_reset_of_own_password_keeps_current_session(pool: sqlx::PgPool) {
             .unwrap()
             .status(),
         StatusCode::OK
+    );
+}
+
+// --- The terminal tool: create, and reset ---------------------------------
+
+/// `create-user --upsert` is the terminal counterpart of creating a user, and it
+/// exists so a development database can carry one known account instead of a new
+/// one per session. Creating is the old path; resetting replaces the hash and
+/// revokes every session of that user, because a password that no longer exists
+/// must not keep a live login alive.
+#[sqlx::test]
+async fn create_or_reset_creates_a_missing_user(pool: PgPool) {
+    // Generated per run: a literal here is a CodeQL hard-coded-credential alert.
+    let first = test_password();
+    let outcome = service::create_or_reset_user(&pool, "dev@pyme.com", Role::Owner, &first)
+        .await
+        .expect("upsert creates");
+    assert!(matches!(outcome, UpsertOutcome::Created(_)));
+
+    let limiter = AccountLimiter::new(pool.clone(), AccountPolicy::default());
+    match service::login(&pool, &limiter, "dev@pyme.com", &first, None)
+        .await
+        .expect("login")
+    {
+        LoginOutcome::Authenticated { user, .. } => assert_eq!(user.role, Role::Owner),
+        LoginOutcome::InvalidCredentials => panic!("the new account must log in"),
+        LoginOutcome::Locked { .. } => panic!("the new account must not be locked"),
+    }
+}
+
+#[sqlx::test]
+async fn create_or_reset_replaces_the_password_and_revokes_sessions(pool: PgPool) {
+    let first = test_password();
+    let second = test_password();
+    let id = service::create_user(&pool, Role::Owner, "dev@pyme.com", &first, Role::Owner)
+        .await
+        .expect("user");
+
+    // A live session for the old password, which the reset must invalidate.
+    let limiter = AccountLimiter::new(pool.clone(), AccountPolicy::default());
+    let old_session = match service::login(&pool, &limiter, "dev@pyme.com", &first, None)
+        .await
+        .expect("login")
+    {
+        LoginOutcome::Authenticated { session, .. } => session,
+        LoginOutcome::InvalidCredentials => panic!("login must succeed"),
+        LoginOutcome::Locked { .. } => panic!("the account must not be locked"),
+    };
+
+    // Reset with a DIFFERENT role: with Owner in and Owner out, the assertion
+    // below would pass even if the reset overwrote the stored role.
+    let outcome = service::create_or_reset_user(&pool, "dev@pyme.com", Role::Manager, &second)
+        .await
+        .expect("upsert resets");
+    assert!(matches!(outcome, UpsertOutcome::PasswordReset(uid) if uid == id));
+
+    // The old password is gone, the new one works.
+    assert!(matches!(
+        service::login(&pool, &limiter, "dev@pyme.com", &first, None)
+            .await
+            .expect("login is evaluated"),
+        LoginOutcome::InvalidCredentials
+    ));
+    assert!(matches!(
+        service::login(&pool, &limiter, "dev@pyme.com", &second, None)
+            .await
+            .expect("login"),
+        LoginOutcome::Authenticated { .. }
+    ));
+
+    // And the session minted before the reset is dead.
+    let still_valid = service::authenticate(&pool, &old_session.token)
+        .await
+        .expect("authenticate");
+    assert!(
+        still_valid.is_none(),
+        "a reset must revoke the sessions the old password opened"
+    );
+
+    // The role is left alone: a password reset is not a promotion.
+    let parsed = validation::ValidatedEmail::parse("dev@pyme.com").expect("email");
+    let stored = repository::find_user_by_email(&pool, &parsed)
+        .await
+        .expect("user")
+        .expect("exists");
+    assert_eq!(
+        stored.role,
+        Role::Owner,
+        "a password reset must not change the role: it was called with Manager"
     );
 }
