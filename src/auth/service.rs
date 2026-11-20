@@ -119,12 +119,6 @@ pub async fn create_user(
     Ok(id)
 }
 
-/// Change the calling user's password after checking the current one.
-///
-/// The new password is validated first: the rule is public, so there is no
-/// reason to spend an argon2 round on a request that cannot succeed. The
-/// session making the change is spared; the others are revoked in the same
-/// transaction as the hash update.
 /// What the terminal tool did: the account is new, or its password replaced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpsertOutcome {
@@ -150,6 +144,9 @@ pub async fn create_or_reset_user(
     password_plain: &str,
 ) -> Result<UpsertOutcome, AuthError> {
     let email = ValidatedEmail::parse(email)?;
+    // The policy belongs to the service, not to whoever calls it: a documented
+    // minimum that only the CLI enforces is a minimum the next caller forgets.
+    validation::validate_password(password_plain)?;
     let new_hash = hash_off_thread(password_plain.to_string()).await?;
 
     let Some(existing) = repository::find_user_by_email(pool, &email).await? else {
@@ -179,6 +176,12 @@ pub async fn create_or_reset_user(
     Ok(UpsertOutcome::PasswordReset(existing.id))
 }
 
+/// Change the calling user's password after checking the current one.
+///
+/// The new password is validated first: the rule is public, so there is no
+/// reason to spend an argon2 round on a request that cannot succeed. The
+/// session making the change is spared; the others are revoked in the same
+/// transaction as the hash update.
 pub async fn change_password(
     pool: &PgPool,
     user_id: Uuid,

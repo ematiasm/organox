@@ -132,7 +132,7 @@ make dev-user    # reads the variables below from .env, like every other target
 
 | Variable | Default | Notes |
 |---|---|---|
-| `DEV_PASSWORD` | none, required | The only accepted home for a literal; the file is gitignored. The same 12-character minimum the tool always enforced applies |
+| `DEV_PASSWORD` | none, required | The only accepted home for a literal; the file is gitignored. The same 12-character minimum the tool always enforced applies. Avoid `#` and `$`: that file is parsed as make syntax before the tool sees it, so `#` starts a comment and `$` expands |
 | `DEV_EMAIL` | `owner@pyme.com` | Not a secret |
 | `DEV_ROLE` | `owner` | Applied on creation only; a reset keeps the existing role |
 

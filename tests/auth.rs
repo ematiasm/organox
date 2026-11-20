@@ -1121,8 +1121,10 @@ async fn create_or_reset_replaces_the_password_and_revokes_sessions(pool: PgPool
         LoginOutcome::Locked { .. } => panic!("the account must not be locked"),
     };
 
+    // Reset with a DIFFERENT role: with Owner in and Owner out, the assertion
+    // below would pass even if the reset overwrote the stored role.
     let outcome =
-        service::create_or_reset_user(&pool, "dev@pyme.com", Role::Owner, "second-secret-2")
+        service::create_or_reset_user(&pool, "dev@pyme.com", Role::Manager, "second-secret-2")
             .await
             .expect("upsert resets");
     assert!(matches!(outcome, UpsertOutcome::PasswordReset(uid) if uid == id));
@@ -1156,5 +1158,9 @@ async fn create_or_reset_replaces_the_password_and_revokes_sessions(pool: PgPool
         .await
         .expect("user")
         .expect("exists");
-    assert_eq!(stored.role, Role::Owner);
+    assert_eq!(
+        stored.role,
+        Role::Owner,
+        "a password reset must not change the role: it was called with Manager"
+    );
 }
