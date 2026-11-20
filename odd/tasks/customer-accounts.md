@@ -206,7 +206,7 @@ and the new `on_account = 0` sibling.
 
 | id | spec | route | commit |
 |---|---|---|---|
-| T1 | S1, S2 | migrations 0015 (enum labels and new type only) and 0016 (tables, trigger, `wallet_movements.customer_id`), ledger model and repository, balance/`U`/outstanding reads, invariant test | feat/customer-accounts-ledger |
+| T1 | S1, S2 | **done**: `0015` in one migration (type, tables, append-only triggers, sign and link CHECKs, unique charge/note/movement/idempotency indexes, deferred allocation ceiling), `src/customer_accounts/{model,repository}` with the six writers taking the customer advisory lock first, `tests/customer_accounts.rs` (35 tests: table contract, read model, every writer, two concurrent receipts) | `e230572`, `5f5f4f7`, `2cc7768` |
 | T2 | S4 | `complete` accepts `on_account`, writes the charge, renames the empty-payment test, keeps the cash path identical | feat/customer-accounts-charge |
 | T3 | S5, S7 | advisory lock on every balance write, credit limit column and exposure check | feat/customer-accounts-limit |
 | T4 | S3, S5, S6 | receipts endpoint, allocations, idempotency, `account_payment` kind in every sign `CASE` | feat/customer-accounts-receipts |
@@ -240,6 +240,15 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   engine rejects a bad row are one indivisible unit. Delivery shape when publishing: three
   chained commits, or three stacked PRs if a reviewer prefers one behavior each. Recorded here
   so the slice boundary is not discovered at merge time.
+- L8 — T1 delivered on `feat/customer-accounts-ledger`, not pushed and not reviewed: `e230572`
+  (migration, model, reads), `5f5f4f7` (charge, receipt, allocation), `2cc7768` (credit note,
+  credit refund, adjustment), plus a docs commit. `make check` green: 287 tests, 35 of them in
+  `tests/customer_accounts.rs`, clippy `-D warnings`, svelte-check 0/0. Deliberately absent from
+  T1: any HTTP route, any change to sale completion, and the `wallet_movements.customer_id`
+  column with its two new kinds — the last two belong to T4 and T7, which write them.
+- L9 — the one hole the review of B1 closed is now pinned by a test: a receipt whose amount
+  differs from the money its wallet movement carried is refused, because the foreign key proves
+  the movement exists, never that the two books agree. The same check guards a credit refund.
 - L7 — one hole closed while reviewing B1: `record_receipt` compares the receipt amount with the
   money the wallet movement carried. The foreign key proves the movement exists, never that the
   two books agree, and a silent disagreement between them is the failure nobody notices.
