@@ -66,13 +66,18 @@ fn is_tax_id_violation(err: &sqlx::Error) -> bool {
 
 /// A page of customers plus how many the filters match in total.
 ///
+/// `pattern` is a finished `LIKE` pattern built by [`crate::search::contains`],
+/// not the operator's text: the escaping happens once, in the service, and this
+/// layer only binds it. A raw string here would silently lose substring
+/// matching.
+///
 /// `total` is what lets the screen tell a full page from the last one. Every row
 /// of a page carries the same value; an empty page carries none and reports
 /// `-1`, which the service resolves with a re-count.
 pub async fn list_customers(
     pool: &PgPool,
     include_inactive: bool,
-    search: Option<&str>,
+    pattern: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<Customer>, i64), RepoError> {
@@ -101,7 +106,7 @@ pub async fn list_customers(
         LIMIT $3 OFFSET $4
         "#,
         include_inactive,
-        search,
+        pattern,
         limit,
         offset,
     )
@@ -134,7 +139,7 @@ pub async fn list_customers(
 pub async fn count_customers(
     pool: &PgPool,
     include_inactive: bool,
-    search: Option<&str>,
+    pattern: Option<&str>,
 ) -> Result<i64, RepoError> {
     let count = sqlx::query!(
         r#"
@@ -148,7 +153,7 @@ pub async fn count_customers(
           )
         "#,
         include_inactive,
-        search,
+        pattern,
     )
     .fetch_one(pool)
     .await?;
