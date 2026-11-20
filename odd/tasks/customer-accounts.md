@@ -252,3 +252,38 @@ verification per slice, and each slice stays under roughly 400 authored lines.
 - L7 — one hole closed while reviewing B1: `record_receipt` compares the receipt amount with the
   money the wallet movement carried. The foreign key proves the movement exists, never that the
   two books agree, and a silent disagreement between them is the failure nobody notices.
+- L10 — native review of T1 at last: **approved**, lineage `review-260435ec1c704443`, target
+  `sha256:f411c15d…`, three lenses (risk, resilience, reliability), authority burned with
+  `gentle-ai.review-acknowledged/v1`. The candidate is commits `e230572` (book + reads),
+  `5f5f4f7` (charge, receipt, allocation), `2cc7768` (note, refund, adjustment) and `f06a2a6`
+  (the correction below). An earlier lineage, `review-9bdabf97b891d543`, was abandoned after it
+  found a CRITICAL defect and the correction-plan slot refused the provider's own binding in
+  both accepted shapes ("missing or stale for current STATUS", nothing mutated); the record sits
+  in `.git/gentle-ai/review-transactions/quarantine/review-9bdabf97b891d543-3107567608`.
+- L11 — **the critical finding was real and is fixed in `f06a2a6`**: `allocate` bounded an
+  allocation only by its own receipt and by the sale's outstanding, never by the customer's
+  remaining credit. Receipt 150 (unallocated) → refund 30 → charge 150 → allocate 150 disposed of
+  180 against 150 collected, leaving `unapplied_credit` at −30 while `is_consistent()` still
+  returned true: the balance identity is algebraically satisfied by an account that spent the
+  money twice. Fixed by capping an allocation at `unapplied_credit` and by adding that floor to
+  the invariant. The regression test was observed failing before the check was restored.
+- L12 — thirteen advisory findings, all non-blocking, none reopening the review. Owner by slice:
+  - **T2** `R1-charge-amount-unbounded` — `record_charge` does not bound the charge to the sale
+    total; the completion invariant is T2's job and this writer is where it lands.
+  - **T4** `R1-movement-backing-amount-only` (the movement is not proven to belong to this
+    customer; needs the `wallet_movements.customer_id` column), `R4-receipt-unmapped-unique`,
+    `R3-receipt-untyped-rejections`, `R1-duplicate-allocation-untyped-rejection` (a repeated sale
+    in one receipt is refused by the engine as an untyped `Database` error).
+  - **T5** `R3-allocate-success-untested` — no test drives `allocate` to success; the credit
+    application slice is its first real success path, so it must add that test.
+  - **T6** `R1-credit-note-document-unverified`, `R3-note-sale-correspondence-unchecked` — the
+    writer never checks that the note is about the sale it cancels; the note slice owns the
+    document, so it must add the one-SELECT correspondence check.
+  - **T8** `R3-position-torn-read`, `R4-account-position-torn-read` — `account_position` reads the
+    aggregates and the per-sale list in two snapshots, so a position read outside the lock can
+    transiently look inconsistent; fold `outstanding_total` into the same statement.
+  - **Engine-level, either T6 or a small follow-up** `R3-per-sale-ceiling-no-engine-guard`,
+    `R4-per-sale-ceiling-unenforced` — the per-sale ceiling lives only in Rust, unlike every other
+    cross-table rule in `0015`; a deferred constraint trigger would close it.
+  - **T4** `R4-advisory-lock-unbounded-wait` — `pg_advisory_xact_lock` waits forever; decide a
+    `lock_timeout` when the collection endpoint exposes it.
