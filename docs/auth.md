@@ -139,8 +139,16 @@ make dev-user    # reads the variables below from .env, like every other target
 This does **not** reopen the decision in the table above. Nothing here runs at
 startup: `make dev-user` is a command a person types, so it cannot resurrect a
 deleted user between deploys or overwrite a password nobody asked it to touch.
-The password never appears in `argv` — the target pipes it to
-`create-user --password-stdin --upsert`.
+
+The password reaches `create-user --password-stdin` through the **environment**
+of the recipe, never through a command line. That distinction is the whole point
+of the `$$` in the target: make expands `$(VAR)` into the text it hands to the
+shell as its `-c` argument, which would put the plaintext password in `ps` for
+the whole pipeline — including the seconds argon2 spends hashing. With `$$VAR`
+the shell expands it itself, the recipe text only ever contains the variable
+name, and `make -n` prints a dry run that is safe to paste into a log. A process
+environment is readable by its own user and by root, not by every local user the
+way a command line is.
 
 Never point it at a deployment database: the target reads `DATABASE_URL` from the
 same file, so the two travel together and the mistake would be a conscious one.

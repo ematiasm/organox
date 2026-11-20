@@ -59,9 +59,15 @@ create-user: ## Create a user: make create-user EMAIL=x@y.com ROLE=owner
 	@test -n "$(ROLE)" || (echo "missing ROLE=owner|manager" && exit 1)
 	cargo run --bin create-user -- --email $(EMAIL) --role $(ROLE)
 
+# The development credentials are exported so the recipe can read them from the
+# environment instead of from its own text: make expands `$(VAR)` into the
+# command line it hands to the shell, which would put the password in `ps` for
+# the whole pipeline. `$$VAR` leaves the shell to expand it.
+export DEV_PASSWORD
+
 dev-user: ## Create or reset the dev user from .env: DEV_PASSWORD, DEV_EMAIL, DEV_ROLE
-	@test -n "$(DEV_PASSWORD)" || (echo "missing DEV_PASSWORD in .env (see docs/auth.md)" && exit 1)
-	@printf '%s' "$(DEV_PASSWORD)" | cargo run --quiet --bin create-user -- \
+	@test -n "$$DEV_PASSWORD" || (echo "missing DEV_PASSWORD in .env (see docs/auth.md)" && exit 1)
+	@printf '%s' "$$DEV_PASSWORD" | cargo run --quiet --bin create-user -- \
 		--email $(or $(DEV_EMAIL),owner@pyme.com) \
 		--role $(or $(DEV_ROLE),owner) \
 		--password-stdin --upsert
