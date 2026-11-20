@@ -207,7 +207,7 @@ and the new `on_account = 0` sibling.
 | id | spec | route | commit |
 |---|---|---|---|
 | T1 | S1, S2 | **done**: `0015` in one migration (type, tables, append-only triggers, sign and link CHECKs, unique charge/note/movement/idempotency indexes, deferred allocation ceiling), `src/customer_accounts/{model,repository}` with the six writers taking the customer advisory lock first, `tests/customer_accounts.rs` (35 tests: table contract, read model, every writer, two concurrent receipts) | `e230572`, `5f5f4f7`, `2cc7768` |
-| T2 | S4 | `complete` accepts `on_account`, writes the charge, renames the empty-payment test, keeps the cash path identical | feat/customer-accounts-charge |
+| T2 | S4 | **done**: `complete` takes `on_account`; the invariant is `payments + on_account == total`; the charge is written by `customer_accounts::record_charge` after the status flip inside the same transaction; `on_account = 0` keeps the old path through a four-argument wrapper; 8 HTTP-level tests plus the renamed empty-payment test | `1dc5a6b` |
 | T3 | S5, S7 | advisory lock on every balance write, credit limit column and exposure check | feat/customer-accounts-limit |
 | T4 | S3, S5, S6 | receipts endpoint, allocations, idempotency, `account_payment` kind in every sign `CASE` | feat/customer-accounts-receipts |
 | T5 | S8 | credit application at completion | feat/customer-accounts-apply-credit |
@@ -305,3 +305,17 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   path; proving the movement belongs to *this customer* needs `wallet_movements.customer_id`,
   which arrives with T4. That residual is T4's, not a silent gap.
   Ledger tests went from 36 to 45; `make check` green at 297 tests.
+- L15 — T2 delivered in `1dc5a6b`. The completion invariant is now equality: `payments +
+  on_account == total`; `on_account > 0` needs a customer on the draft **and** that customer active,
+  checked inside the transaction; a customer deactivated mid-draft still does not block a sale the
+  till collects in full. The charge goes through `record_charge` **after** the status flip and the
+  wallet movements, so its own ceiling (`total − sale_payment`) is exactly the on-account part:
+  the ledger re-derives what the completion already proved instead of trusting the caller. Lock
+  order stays sale → products → customer advisory; a receipt takes no sale row lock, so there is
+  no inversion.
+  Two deliberate deviations: `service::complete` keeps its four-argument signature and delegates
+  with `Decimal::ZERO`, because `tests/credit_notes.rs` (31 tests) calls it and must keep
+  compiling; and the new tests are HTTP-level, which is the only way to pin the JSON field, its
+  serde default and the problem details. `sales` still has no settlement column: the ledger is the
+  only truth. Generated contract regenerated (`openapi.json`, `schema.d.ts`). Full `make check`
+  green at 305 tests, `sales.rs` 42, svelte-check 0/0.
