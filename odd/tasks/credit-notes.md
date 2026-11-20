@@ -361,3 +361,11 @@ remaining advisories are test-rigor and scoping notes recorded for later: replay
 unproved, refresh-failure notice unproved, the retained key spanning payload edits, and two e2e
 assertions that can match the previous note's DOM. One approved review also created a probe
 owner in the dev database (`e2e-credit-notes-t10@example.test`) for the browser proof.
+
+L20 — delivered: PR #59 merged to `main` (`6e2d715`) with the whole feature; CI on `main` is
+green. The six stacked PRs (#53–#58) were superseded by it — #53, whose commits are in the
+merge, shows as merged, and the rest were closed with that note — because the branch ruleset
+requires the generated files to be current and the branch to be up to date with its base, which
+a chain that regenerates its artifacts in a later slice cannot satisfy. Nothing else is owed:
+the advisories in L10 and L12–L19 stay as later work, and `payments.cjs` P6 remains the known
+environmental failure when the database already has an active payment method.
