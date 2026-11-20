@@ -216,6 +216,7 @@ and the new `on_account = 0` sibling.
 | T8 | S13 | statement, receivables with aging, customer read columns | feat/customer-accounts-reads |
 | T9 | S14 | POS field, drawer, list column, receivables page, regenerated schema | feat/customer-accounts-ui |
 | T10 | S14 | docs, README, openapi regeneration | feat/customer-accounts-docs |
+| T11 | S2, S3, S9, S10 + L12 | **next**: close the T1 review advisories — bound a charge to the sale's unpaid part, verify a credit note against its own sale and total, reject a repeated sale in one receipt and a sale-kind movement as backing, map the remaining unique violations, bound the advisory lock wait, fold `outstanding_total` into one statement, add the `allocate` success test, and enforce the per-sale ceiling with a deferred trigger | feat/customer-accounts-advisories |
 
 T1, T2 and T6 are the high-risk slices (irreversible money data, contract change): independent
 verification per slice, and each slice stays under roughly 400 authored lines.
@@ -287,3 +288,20 @@ verification per slice, and each slice stays under roughly 400 authored lines.
     cross-table rule in `0015`; a deferred constraint trigger would close it.
   - **T4** `R4-advisory-lock-unbounded-wait` — `pg_advisory_xact_lock` waits forever; decide a
     `lock_timeout` when the collection endpoint exposes it.
+- L13 — "cerra primero los avisos" (user, verbatim): the advisories are closed before T2.
+- L14 — T11 delivered. Closed outright: `R1-charge-amount-unbounded` (a charge now cannot exceed
+  `sale.total - its sale_payment movements`), `R1-credit-note-document-unverified` and
+  `R3-note-sale-correspondence-unchecked` (the note must be about the sale it cancels and its
+  total bounds the cancellation), `R1-duplicate-allocation-untyped-rejection`,
+  `R3-receipt-untyped-rejections` and `R4-receipt-unmapped-unique` (typed rejections and the two
+  remaining unique violations mapped to `AlreadyRecorded`), `R3-allocate-success-untested`,
+  `R3-per-sale-ceiling-no-engine-guard` and `R4-per-sale-ceiling-unenforced` (migration `0016`
+  adds the deferred per-sale ceiling trigger, so the last cross-table rule is no longer Rust-only),
+  `R3-position-torn-read` and `R4-account-position-torn-read` (`outstanding_total` folded into the
+  same statement, pinned by an equivalence test), `R4-advisory-lock-unbounded-wait`
+  (`lock_timeout` 5s inside the lock call, `55P03` becomes `CustomerBusy`).
+  **Partially closed, on purpose**: `R1-movement-backing-amount-only`. A receipt or refund can no
+  longer be backed by a `sale_payment`/`sale_refund` movement, which was the double-collection
+  path; proving the movement belongs to *this customer* needs `wallet_movements.customer_id`,
+  which arrives with T4. That residual is T4's, not a silent gap.
+  Ledger tests went from 36 to 45; `make check` green at 297 tests.

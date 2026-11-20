@@ -12,6 +12,7 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use sqlx::{PgConnection, PgPool};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use super::model::{AccountPosition, CustomerAccountEntryKind, SaleOutstanding};
@@ -95,6 +96,33 @@ pub enum RepoError {
 
     #[error("that document is already recorded in the ledger")]
     AlreadyRecorded,
+
+    #[error("the charge of {requested} exceeds the {available} the sale leaves unpaid")]
+    ChargeExceedsSaleTotal {
+        requested: Decimal,
+        available: Decimal,
+    },
+
+    #[error("credit note not found")]
+    CreditNoteNotFound,
+
+    #[error("that credit note belongs to another sale")]
+    CreditNoteMismatch,
+
+    #[error("the note cancels {requested} but the note is only {available}")]
+    CreditNoteExceeded {
+        requested: Decimal,
+        available: Decimal,
+    },
+
+    #[error("the same sale appears twice in one receipt")]
+    DuplicateAllocation { sale_id: Uuid },
+
+    #[error("a receipt cannot be backed by a {kind} movement")]
+    MovementNotFromAnAccount { kind: String },
+
+    #[error("the customer account is busy, retry")]
+    CustomerBusy,
 }
 
 /// The customer's account as of now: balance, usable credit, what is owed.
@@ -107,6 +135,13 @@ pub async fn account_position(
 }
 
 /// [`account_position`] inside an open transaction.
+///
+/// One statement, one snapshot: the aggregates and `outstanding_total` are
+/// read at the same moment of the ledger, so a position read outside the
+/// customer lock can no longer show a balance from one instant and a debt
+/// total from the next. The scalar subquery repeats the definition
+/// [`outstanding_by_sale_in`] lists — per sale, charge minus cancelled minus
+/// allocated, positive rows only — so the two surfaces cannot disagree.
 pub async fn account_position_in(
     conn: &mut PgConnection,
     customer_id: Uuid,
@@ -130,11 +165,39 @@ pub async fn account_position_in(
             FROM customer_account_allocations a
             JOIN customer_account_entries e ON e.id = a.entry_id
             WHERE e.customer_id = $1
+        ),
+        charges AS (
+            SELECT sale_id, SUM(amount) AS charged
+            FROM customer_account_entries
+            WHERE customer_id = $1 AND kind = 'sale_charge'
+            GROUP BY sale_id
+        ),
+        cancelled AS (
+            SELECT sale_id, -SUM(amount) AS cancelled
+            FROM customer_account_entries
+            WHERE customer_id = $1 AND kind = 'credit_note'
+            GROUP BY sale_id
+        ),
+        sale_allocated AS (
+            SELECT a.sale_id, SUM(a.amount) AS allocated
+            FROM customer_account_allocations a
+            JOIN customer_account_entries e ON e.id = a.entry_id
+            WHERE e.customer_id = $1
+            GROUP BY a.sale_id
+        ),
+        debts AS (
+            SELECT c.charged - COALESCE(x.cancelled, 0) - COALESCE(l.allocated, 0)
+                AS outstanding
+            FROM charges c
+            LEFT JOIN cancelled x ON x.sale_id = c.sale_id
+            LEFT JOIN sale_allocated l ON l.sale_id = c.sale_id
         )
         SELECT balance::numeric(14, 2)                       AS "balance!: Decimal",
                (received - refunded - allocated.total)::numeric(14, 2)
                                                              AS "unapplied_credit!: Decimal",
-               adjustments::numeric(14, 2)                   AS "adjustments!: Decimal"
+               adjustments::numeric(14, 2)                   AS "adjustments!: Decimal",
+               COALESCE((SELECT SUM(outstanding) FROM debts WHERE outstanding > 0), 0)
+                   ::numeric(14, 2)                          AS "outstanding_total!: Decimal"
         FROM entries, allocated
         "#,
         customer_id
@@ -142,15 +205,10 @@ pub async fn account_position_in(
     .fetch_one(&mut *conn)
     .await?;
 
-    // `outstanding_total` is the sum of the same rows the account statement
-    // shows, so the two numbers cannot disagree.
-    let debts = outstanding_by_sale_in(&mut *conn, customer_id).await?;
-    let outstanding_total = debts.iter().map(|debt| debt.outstanding).sum();
-
     Ok(AccountPosition {
         balance: row.balance,
         unapplied_credit: row.unapplied_credit,
-        outstanding_total,
+        outstanding_total: row.outstanding_total,
         adjustments: row.adjustments,
     })
 }
@@ -290,6 +348,19 @@ pub async fn outstanding_for_sale_in(
 /// deadlock against it. An xact-scoped advisory lock gives every
 /// balance-changing writer the same first step, and concurrent collections
 /// serialize here instead of racing on the sums.
+/// One writer, one lock, taken first. The lock is deliberately not the
+/// customer's row: the sale-completion transaction already locks the sale and
+/// its products, so a collection that locked the customer row first could
+/// deadlock against it. An xact-scoped advisory lock gives every
+/// balance-changing writer the same first step, and concurrent collections
+/// serialize here instead of racing on the sums.
+///
+/// The wait is bounded: a writer that never finished would otherwise park
+/// every later collection behind it forever, so the lock times out and the
+/// caller answers "busy, retry". `SET LOCAL` keeps the timeout inside this
+/// transaction, and the session default is restored right after — the
+/// connection goes back to the pool and must not carry a timeout the pool
+/// never set.
 pub async fn lock_customer(conn: &mut PgConnection, customer_id: Uuid) -> Result<(), RepoError> {
     let found = sqlx::query!(
         r#"SELECT 1 AS found FROM customers WHERE id = $1"#,
@@ -301,12 +372,28 @@ pub async fn lock_customer(conn: &mut PgConnection, customer_id: Uuid) -> Result
         return Err(RepoError::CustomerNotFound);
     }
 
-    sqlx::query!(
+    sqlx::query!("SET LOCAL lock_timeout = '5s'")
+        .execute(&mut *conn)
+        .await?;
+
+    let locked = sqlx::query!(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
         customer_id.to_string()
     )
     .execute(&mut *conn)
-    .await?;
+    .await;
+
+    if let Err(err) = locked {
+        // 55P03 is `lock_not_available`: the timeout decided, not a failure.
+        if matches!(&err, sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")) {
+            return Err(RepoError::CustomerBusy);
+        }
+        return Err(err.into());
+    }
+
+    sqlx::query!("SET LOCAL lock_timeout = 0")
+        .execute(&mut *conn)
+        .await?;
 
     Ok(())
 }
@@ -336,6 +423,44 @@ async fn ensure_chargeable_sale(
     Ok(())
 }
 
+/// The movement a money-backed entry points at: it must exist, it must have
+/// carried exactly the money the entry claims, and it must not be the till's
+/// own accounting of a sale. The foreign key proves the movement exists; only
+/// the comparison proves the two books agree on how much moved. And a
+/// `sale_payment` or `sale_refund` movement collected for a sale at the till:
+/// it is not money that came from the customer's account, so a receipt backed
+/// by it would collect the same money twice. The kinds are compared by name
+/// because the `account_payment*` kinds that will back these entries arrive
+/// with the slices that write them and must pass here unchanged.
+async fn ensure_movement_backing(
+    conn: &mut PgConnection,
+    wallet_movement_id: Uuid,
+    amount: Decimal,
+) -> Result<(), RepoError> {
+    let movement = sqlx::query!(
+        r#"SELECT amount, kind::text AS "kind!" FROM wallet_movements WHERE id = $1"#,
+        wallet_movement_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(RepoError::MovementNotFound)?;
+
+    if movement.amount != amount {
+        return Err(RepoError::ReceiptDoesNotMatchMovement {
+            movement: movement.amount,
+            receipt: amount,
+        });
+    }
+
+    if movement.kind == "sale_payment" || movement.kind == "sale_refund" {
+        return Err(RepoError::MovementNotFromAnAccount {
+            kind: movement.kind,
+        });
+    }
+
+    Ok(())
+}
+
 /// Charge one sale's unpaid part to the account. The unique partial index is
 /// the real double-charge guard — the sale-completion path of a later slice
 /// writes the same entry — so a retried completion cannot bill the same sale
@@ -350,6 +475,35 @@ pub async fn record_charge(
     ensure_cents(amount)?;
     lock_customer(conn, customer_id).await?;
     ensure_chargeable_sale(conn, customer_id, sale_id).await?;
+
+    // A charge may only carry what the sale still leaves unpaid: the wallet's
+    // `sale_payment` movements already collected part of the total at the
+    // till, and charging that part again would bill the customer for money
+    // they already handed over. The completion slice will require exactly
+    // this remainder as its `on_account` equality.
+    let sale = sqlx::query!(
+        r#"
+        SELECT s.total::numeric(14, 2) AS "total!: Decimal",
+               COALESCE(
+                   (SELECT SUM(amount) FROM wallet_movements
+                    WHERE sale_id = s.id AND kind = 'sale_payment'),
+                   0
+               )::numeric(14, 2) AS "collected!: Decimal"
+        FROM sales s
+        WHERE s.id = $1
+        "#,
+        sale_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+
+    let available = sale.total - sale.collected;
+    if amount > available {
+        return Err(RepoError::ChargeExceedsSaleTotal {
+            requested: amount,
+            available,
+        });
+    }
 
     let id = Uuid::now_v7();
     sqlx::query!(
@@ -412,23 +566,17 @@ pub async fn record_receipt(
     ensure_cents(receipt.amount)?;
     lock_customer(conn, receipt.customer_id).await?;
 
-    // The ledger's number and the wallet's number are the same money. The
-    // foreign key proves the movement exists; only this proves it carried what
-    // the account says it carried. A silent disagreement between the two books
-    // is precisely the failure nobody notices.
-    let carried: Decimal = sqlx::query_scalar!(
-        "SELECT amount FROM wallet_movements WHERE id = $1",
-        receipt.wallet_movement_id
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .ok_or(RepoError::MovementNotFound)?;
+    ensure_movement_backing(conn, receipt.wallet_movement_id, receipt.amount).await?;
 
-    if carried != receipt.amount {
-        return Err(RepoError::ReceiptDoesNotMatchMovement {
-            movement: carried,
-            receipt: receipt.amount,
-        });
+    // A repeated sale in one receipt is the same allocation twice. The
+    // engine's `UNIQUE (entry_id, sale_id)` would refuse it, but as an
+    // untyped database error and only after the entry had been written;
+    // refusing it here keeps the rejection typed and the ledger untouched.
+    let mut seen = HashSet::new();
+    for (sale_id, _) in receipt.allocations {
+        if !seen.insert(*sale_id) {
+            return Err(RepoError::DuplicateAllocation { sale_id: *sale_id });
+        }
     }
 
     if let Some(key) = receipt.idempotency_key {
@@ -490,7 +638,15 @@ pub async fn record_receipt(
         receipt.created_by,
     )
     .execute(&mut *conn)
-    .await?;
+    .await
+    .map_err(|err| match violated_constraint(&err) {
+        // Both mean this money is already in the ledger: the movement already
+        // backs an entry, or this idempotency key already collected once.
+        // The lock makes them rare; the typed mapping makes them readable.
+        Some("customer_account_entries_one_entry_per_movement")
+        | Some("customer_account_entries_receipt_idempotency") => RepoError::AlreadyRecorded,
+        _ => RepoError::Database(err),
+    })?;
 
     for (sale_id, amount) in receipt.allocations {
         sqlx::query!(
@@ -624,6 +780,32 @@ pub async fn record_credit_note(
     lock_customer(conn, customer_id).await?;
     ensure_chargeable_sale(conn, customer_id, sale_id).await?;
 
+    // The note is the document this entry copies, so the document decides:
+    // it must be about this sale, and it cannot cancel more than it carries.
+    // Checked before the ledger's own ceiling, because a note that never
+    // belonged to the sale is a mismatch, not unaffordable debt.
+    let note = sqlx::query!(
+        r#"
+        SELECT sale_id, total::numeric(14, 2) AS "total!: Decimal"
+        FROM credit_notes
+        WHERE id = $1
+        "#,
+        credit_note_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(RepoError::CreditNoteNotFound)?;
+
+    if note.sale_id != sale_id {
+        return Err(RepoError::CreditNoteMismatch);
+    }
+    if amount > note.total {
+        return Err(RepoError::CreditNoteExceeded {
+            requested: amount,
+            available: note.total,
+        });
+    }
+
     let outstanding = outstanding_for_sale_in(conn, sale_id).await?;
     if amount > outstanding {
         return Err(RepoError::OutstandingExceeded {
@@ -678,23 +860,9 @@ pub async fn record_credit_refund(
     ensure_cents(amount)?;
     lock_customer(conn, customer_id).await?;
 
-    // The same check the receipt makes, for the same reason: the foreign key
-    // proves the movement exists, only this comparison proves the two books
-    // agree on how much money moved.
-    let carried: Decimal = sqlx::query_scalar!(
-        "SELECT amount FROM wallet_movements WHERE id = $1",
-        wallet_movement_id
-    )
-    .fetch_optional(&mut *conn)
-    .await?
-    .ok_or(RepoError::MovementNotFound)?;
-
-    if carried != amount {
-        return Err(RepoError::ReceiptDoesNotMatchMovement {
-            movement: carried,
-            receipt: amount,
-        });
-    }
+    // The same checks the receipt makes, for the same reasons: the movement
+    // carried what the entry claims, and it is not a sale's own till money.
+    ensure_movement_backing(conn, wallet_movement_id, amount).await?;
 
     // A replay answers by identity, not by re-running the numbers: the first
     // refund already consumed the credit this one claims, so affordability
