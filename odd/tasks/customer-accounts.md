@@ -1,0 +1,235 @@
+# Customer accounts (credit sales) — design record
+
+Scope: a sale may leave part of its total owed by the customer, the customer's debt is a
+first-class ledger, and money is collected against it later. Nothing here is implemented yet.
+
+## Specs
+
+### S1 — The debt ledger is its own append-only book
+
+`customer_account_entries` measures debt; `wallet_movements` keeps measuring real money. A
+wallet movement is written only when money actually enters or leaves a wallet.
+
+Columns: `id uuid pk`, `customer_id uuid not null references customers(id) on delete restrict`,
+`kind customer_account_entry_kind not null`, `amount numeric(14,2) not null`,
+`sale_id uuid null references sales(id) on delete restrict`,
+`credit_note_id uuid null references credit_notes(id) on delete restrict`,
+`wallet_movement_id uuid null references wallet_movements(id) on delete restrict`,
+`idempotency_key text null`, `note text null`,
+`created_by uuid not null`, `created_at timestamptz not null default now()`.
+
+`created_by` deliberately has no foreign key to `users`, for the same reason
+`wallet_movements.created_by` has none: the ledger is immutable, so deleting an
+account must not be able to rewrite or orphan history.
+
+`amount` is signed, and the sign is its effect on the balance:
+
+| kind | sign | meaning | required link | forbidden links |
+|---|---|---|---|---|
+| `sale_charge` | + | a sale went on account | `sale_id`, unique per sale | note, wallet movement |
+| `adjustment_in` | + | manual increase of the debt | `note` non-blank | all |
+| `credit_refund` | + | money handed back against a credit balance | `wallet_movement_id` | sale, note |
+| `receipt` | − | money collected against the account | `wallet_movement_id`, unique per movement | sale, note |
+| `credit_note` | − | a note cancelled part of this debt | `sale_id` + `credit_note_id`, unique per note | wallet movement |
+| `adjustment_out` | − | manual decrease of the debt | `note` non-blank | all |
+
+A trigger refuses `UPDATE` and `DELETE` with the same shape as
+`wallet_movements_no_update`. Balance is `COALESCE(SUM(amount), 0)::numeric(14,2)`; positive
+means the customer owes money. There is no stored balance and no endpoint that writes one.
+
+### S2 — Two derived quantities, one invariant
+
+Let `C` = sum of `sale_charge`, `N` = sum of `|credit_note|`, `Adj` = signed sum of adjustments,
+`R` = sum of `|receipt|`, `F` = sum of `credit_refund`, `A` = sum of the allocations in S3.
+
+- `unapplied_credit U = R − A − F`, never negative: money received, not allocated to a sale,
+  not handed back.
+- `outstanding(sale) = charge(sale) − allocations(sale) − cancel(sale)`, never negative.
+- Invariant, asserted by a test after every operation:
+  `balance + U == Σ outstanding + Adj`.
+
+Because debt and credit share one signed balance, a customer can be a debtor and hold
+unapplied money at the same time; `U` is what makes the two readable separately.
+
+### S3 — Collections are allocated to sales, never invented
+
+`customer_account_allocations(id, entry_id references customer_account_entries on delete restrict,
+sale_id references sales on delete restrict, amount numeric(14,2) not null, UNIQUE (entry_id, sale_id))`.
+Only a `receipt` entry may own allocations; every allocation targets a completed sale of the same
+customer; `amount > 0`.
+
+Rules, all enforced inside one transaction holding the customer lock of S5:
+
+- `Σ allocations(entry) <= |entry.amount|`, enforced by a deferred constraint trigger.
+- `Σ allocations to a sale <= outstanding(sale)`.
+- `Σ allocations from receipts <= U` (equivalently `A + F <= R` per customer).
+- The remainder of a receipt stays unallocated and becomes available credit. It is never a
+  second entry and never a second table.
+
+### S4 — A sale can be completed with part of its total on account
+
+`POST /sales/{id}/complete` gains `on_account` (decimal, default `0`, `>= 0`, at most two
+decimals). The completion invariant becomes:
+
+`Σ wallet payments + on_account == total`
+
+Rules:
+
+- `on_account > 0` requires the draft to have an active customer, else a typed rejection with no
+  state change.
+- The completion transaction writes exactly one `sale_charge` of `+on_account` linked to the sale,
+  in the same transaction as the stock movements and the wallet movements. A unique partial index
+  `(sale_id) WHERE kind = 'sale_charge'` makes a double charge impossible even on retry.
+- `on_account == 0` behaves exactly as today; every existing sale-completion test keeps its
+  meaning. The empty-payment-list test is renamed to say "unless the account covers it".
+- A zero-total sale keeps requiring `on_account = 0`.
+- No settlement column is added to `sales`: paid, partially paid and unpaid are derived from
+  `outstanding(sale)`, exactly as the balance is derived.
+
+### S5 — Every balance-changing write takes one lock, first
+
+Each transaction that can change a customer's balance takes
+`pg_advisory_xact_lock(hashtextextended(customer_id::text, 0))` as its **first** statement,
+before any sale or product row lock. One lock order, no deadlock with the existing completion
+transaction, and concurrent collections cannot over-collect.
+
+`POST /customers/{id}/receipts` accepts `idempotency_key` (body, optional) with a partial unique
+index `(customer_id, idempotency_key) WHERE idempotency_key IS NOT NULL`. A replay returns the
+first receipt unchanged with `200`; a fresh write answers `201`. Same contract as credit notes.
+
+### S6 — A collection is money in a wallet and debt down, together
+
+`POST /customers/{id}/receipts` body:
+`{ idempotency_key?, payment_method_id, amount, allocations: [{sale_id, amount}], note? }`.
+
+- `amount > 0`, at most two decimals; the payment method must exist and be active.
+- Writes one `wallet_movements` row of kind `account_payment` (sign +1) carrying `customer_id`
+  and `payment_method_id`, with `sale_id` and `credit_note_id` null, plus one `receipt` entry
+  linked to it, in one transaction.
+- Every allocation is validated against S3; a rejection leaves no wallet movement and no entry.
+- The server never invents allocations. The UI may prefill oldest-first; it is a convenience, not
+  a default the API applies.
+- Response: the receipt, the resulting balance, `U`, and the outstanding of each allocated sale.
+
+`wallet_movements` gains `customer_id`, constrained so `account_payment` requires it and every
+other kind forbids it. `account_payment` must be added to every SQL `CASE` sign mapping
+(`src/payments/repository.rs:112-119`, `:151-158`, `src/sales/repository.rs:512-521` is stock).
+`every_kind_is_counted_with_its_own_sign` must name the new kind.
+
+### S7 — Credit limit: NULL unlimited, 0 cash only
+
+`customers.credit_limit numeric(14,2) NULL`, `CHECK (credit_limit >= 0)`; `NULL` (the default)
+means no limit, `0` means cash only. Exposure after the sale is `balance + on_account`; when the
+limit is not null and exposure would exceed it, the completion is rejected whole, with the
+remaining amount named in the message, using the same status the stock rejection uses.
+
+Lowering a limit below the current balance is allowed and blocks only new credit. The check runs
+under the S5 lock.
+
+### S8 — Available credit is applied at completion
+
+When a sale puts `on_account` on the account, the same transaction allocates from receipts,
+oldest first, `min(on_account, U, on_account − already allocated)` to that sale. It is automatic,
+not a flag, and it always shows as one line in the statement. The response exposes
+`credit_applied`, and `on_account − credit_applied` is the debt the sale adds.
+
+### S9 — A credit note cancels debt before it pays cash
+
+For a note of `N` on a sale with `outstanding = O`:
+
+- `cancel = min(N, O)` writes one `credit_note` entry of `−cancel`; when `cancel == 0` no entry is
+  written and the sale is unchanged.
+- `cash = N − cancel` is refunded over the tenders that actually collected money for that sale:
+  its original `sale_payment` movements plus the receipts allocated to it, each capped at
+  `collected(tender) − already_refunded(tender)`, split in cents with largest-remainder, and the
+  shares must sum to `cash` exactly.
+- A fully unpaid credit sale therefore produces no wallet movement at all; the note is not refused
+  for lacking payments.
+- The ceiling `Σ notes <= sale.total` is unchanged, and `already_refunded(tender)` is read from
+  `credit_notes` and the refund movements, not recomputed from scratch.
+- `allocate_refund` is rewritten around that capacity list and keeps its zero-share skip.
+
+### S10 — Credit is returned with a wallet movement, never by editing the balance
+
+`POST /customers/{id}/credit-refunds` body `{ payment_method_id, amount, note, idempotency_key? }`
+writes one `wallet_movements` row of kind `account_payment_refund` (sign −1) and one
+`credit_refund` entry of `+amount`. It is refused unless `amount <= U` and `balance + amount <= 0`:
+money is only handed back against money actually held in the customer's favour.
+
+### S11 — Adjustments never cross zero
+
+`POST /customers/{id}/adjustments` body `{ direction: in|out, amount, note }` writes
+`adjustment_in` or `adjustment_out`. Both require the balance to stay `>= 0`: an adjustment may
+increase or decrease a debt, never create or destroy an available credit. This is the only route
+that can load an opening balance for a customer who already owed money before the system.
+
+### S12 — A customer with an open position cannot be deactivated
+
+`POST /customers/{id}/deactivate` answers a typed conflict naming the balance while
+`balance != 0` or `U != 0`. The operator settles or refunds first.
+
+### S13 — Read surfaces
+
+- `GET /customers/{id}/account`: the entries oldest first with a running balance, the balance, `U`,
+  and the outstanding of every sale with debt.
+- `GET /customers/{id}/receipts`, `GET /customers/{id}/adjustments`: the write logs of S6 and S11.
+- `GET /accounts/receivables`: customers with `balance != 0 or U != 0`, with aging buckets computed
+  from the sale date (0-30, 31-60, 61-90, 90+). No due date in this delivery.
+- `GET /customers` and `GET /customers/{id}` expose `balance`, `available_credit` and
+  `credit_limit`.
+
+### S14 — Surfaces, contracts and generated files
+
+Frontend: `on_account` field in the POS with the resulting amount to charge and the remaining
+limit; apply-credit line; customer drawer gains balance, available credit, credit limit, statement
+and the receipt form; customers list gains a balance column; a receivables page.
+
+Documentation contracts that currently promise the opposite and must be rewritten, not appended to:
+`docs/sales.md:102-105` and `:122-125`, `docs/payments.md:90-95` and `:128-130`,
+`docs/credit-notes.md:105-106`, `docs/customers.md:54-56` and `:190-193`. New
+`docs/customer-accounts.md`, README feature list, `openapi.json` and
+`frontend/src/lib/api/schema.d.ts` regenerated with `make fe-schema`.
+
+### S15 — Tests
+
+New `tests/customer_accounts.rs`. It must pin, through the HTTP surface: the S2 invariant after a
+scripted sequence of charge, receipt, partial allocation, credit application, note and adjustment; a
+replayed receipt creating no second movement; two concurrent receipts unable to over-collect; two
+concurrent completions unable to exceed the limit; over-allocation and allocation to another
+customer's sale each leaving no trace; the append-only trigger; the double-charge index; the note
+that cancels only debt writing no wallet movement; the note split whose shares sum exactly to the
+cash portion; the credit refund that would leave the balance positive being refused; and the
+deactivation refusal. Existing suites must pass untouched except for the renamed empty-payment test
+and the new `on_account = 0` sibling.
+
+## Tasks
+
+| id | spec | route | commit |
+|---|---|---|---|
+| T1 | S1, S2 | migrations 0015 (enum labels and new type only) and 0016 (tables, trigger, `wallet_movements.customer_id`), ledger model and repository, balance/`U`/outstanding reads, invariant test | feat/customer-accounts-ledger |
+| T2 | S4 | `complete` accepts `on_account`, writes the charge, renames the empty-payment test, keeps the cash path identical | feat/customer-accounts-charge |
+| T3 | S5, S7 | advisory lock on every balance write, credit limit column and exposure check | feat/customer-accounts-limit |
+| T4 | S3, S5, S6 | receipts endpoint, allocations, idempotency, `account_payment` kind in every sign `CASE` | feat/customer-accounts-receipts |
+| T5 | S8 | credit application at completion | feat/customer-accounts-apply-credit |
+| T6 | S9 | debt-first note split, `allocate_refund` rewrite, `account_payment_refund` kind | feat/customer-accounts-note-split |
+| T7 | S10, S11, S12 | credit refunds, adjustments, deactivation guard | feat/customer-accounts-adjustments |
+| T8 | S13 | statement, receivables with aging, customer read columns | feat/customer-accounts-reads |
+| T9 | S14 | POS field, drawer, list column, receivables page, regenerated schema | feat/customer-accounts-ui |
+| T10 | S14 | docs, README, openapi regeneration | feat/customer-accounts-docs |
+
+T1, T2 and T6 are the high-risk slices (irreversible money data, contract change): independent
+verification per slice, and each slice stays under roughly 400 authored lines.
+
+## Log
+
+- L1 — "sigamos con los clientes. Lo importante a resolver ahora es el tema de ventas a crédito/cuentas corrientes. Es decir, como llevar los saldos de clientes de ventas que no han sido pagadas. Antes de escribir codigo resolvamos bien todos los problemas que puedan surgir"
+- L2 — decisions taken in the design questionnaire: "Imputación por venta (recomendado)", "Permitir saldo a favor", "Si, bloqueo duro pero default = 0 = ilimitado", "Deuda primero, después efectivo (recomendado)".
+- L3 — limit sentinel settled: "NULL = ilimitado · 0 = sólo contado". The user's L2 phrase "default = 0" is preserved as intent (no limit by default) with `NULL` as the sentinel, because `0` must remain available for "cash only".
+- L4 — design record written before any source change; implementation waits for an explicit go-ahead.
+- L5 — scope of T1 settled while implementing it. `wallet_movements.customer_id` and the
+  `account_payment` / `account_payment_refund` labels are **not** part of T1: without their writers
+  they are dead columns and untestable vocabulary, so they move to T4 and T7, the slices that write
+  them. Consequently T1 ships **one** migration instead of two: the `0009`/`0010` split exists only
+  because a label added to a *pre-existing* enum cannot be used in the transaction that adds it;
+  a brand-new type can be created and used in the same migration. `created_by` carries no foreign
+  key to `users`, matching `wallet_movements`.

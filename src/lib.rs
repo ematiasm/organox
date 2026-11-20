@@ -4,6 +4,7 @@ pub mod auth;
 pub mod catalog;
 pub mod config;
 pub mod credit_notes;
+pub mod customer_accounts;
 pub mod customers;
 pub mod db;
 pub mod error;
