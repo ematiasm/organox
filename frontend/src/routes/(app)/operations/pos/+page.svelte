@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { api, ApiError, type Product, type Sale } from '$lib/api/client';
+	import { api, ApiError, type Customer, type Product, type Sale } from '$lib/api/client';
 	import * as Select from '$lib/components/ui/select';
 
 	let { data } = $props();
@@ -17,6 +17,18 @@
 	let completed = $state<{ total: string; method: string; destination: string } | null>(null);
 	// Nothing is preselected: a charge must name a method explicitly.
 	let paymentMethodId = $state('');
+
+	// --- Customer picker ---
+	//
+	// The list loads lazily so the cart, the POS's hot path, stays as it was.
+	// The picker searches the active registry server-side: a deactivated
+	// customer never appears, and the one the cashier already loaded is still
+	// clickable, which is how a refusal gets a chance to be shown.
+	let pickerOpen = $state(false);
+	let customerSearch = $state('');
+	let customers = $state<Customer[]>([]);
+	let pickerError = $state<string | null>(null);
+	let customerTimer: ReturnType<typeof setTimeout> | undefined;
 
 	// Client-side search covers loaded products, not the entire catalog.
 	const visible = $derived(
@@ -121,6 +133,51 @@
 
 	function focusScan() {
 		scanInput?.focus();
+	}
+
+	/** Active customers matching the picker's search box, name or document. */
+	async function loadCustomers() {
+		try {
+			const list = await api.listCustomers({
+				search: customerSearch.trim() || undefined,
+				limit: 20
+			});
+			customers = list.items;
+			pickerError = null;
+		} catch (e) {
+			pickerError = e instanceof ApiError ? e.message : 'Could not load customers.';
+		}
+	}
+
+	function togglePicker() {
+		pickerOpen = !pickerOpen;
+		if (pickerOpen) void loadCustomers();
+	}
+
+	/** The list follows the search box, at the customers screen's own pace. */
+	function onCustomerInput() {
+		clearTimeout(customerTimer);
+		customerTimer = setTimeout(() => void loadCustomers(), 250);
+	}
+
+	/**
+	 * Attach or clear the draft's customer. The PUT answers 204, so the sale is
+	 * re-read: the cart's only source of truth is the server response. On a
+	 * refusal the previous customer stays exactly as it was, and the server's
+	 * `problem.detail` is shown verbatim.
+	 */
+	async function chooseCustomer(customerId: string | null) {
+		if (busy) return;
+		busy = true;
+		try {
+			await api.setSaleCustomer(sale.id, customerId);
+			apply(await api.getSale(sale.id));
+			pickerOpen = false;
+		} catch (e) {
+			error = e instanceof ApiError ? e.message : 'Could not set the customer.';
+		} finally {
+			busy = false;
+		}
 	}
 </script>
 
@@ -238,6 +295,61 @@
 		{/if}
 
 		<div class="totals">
+			<div class="customer">
+				<label class="pm-label" for="customer-trigger">Customer</label>
+				<button
+					type="button"
+					id="customer-trigger"
+					class="cust-trigger"
+					onclick={togglePicker}
+					aria-expanded={pickerOpen}
+					aria-haspopup="dialog"
+					disabled={busy}
+				>
+					{sale.customer_name ?? 'No customer'}
+				</button>
+
+				{#if pickerOpen}
+					<div class="cust-panel" role="dialog" aria-label="Choose a customer">
+						<input
+							type="search"
+							bind:value={customerSearch}
+							oninput={onCustomerInput}
+							placeholder="Search by name or document…"
+							aria-label="Search customers"
+						/>
+						<button
+							type="button"
+							class="cust-none"
+							disabled={busy}
+							onclick={() => chooseCustomer(null)}
+						>
+							No customer
+						</button>
+						{#each customers as customer (customer.id)}
+							<button
+								type="button"
+								class="cust-option"
+								disabled={busy}
+								onclick={() => chooseCustomer(customer.id)}
+							>
+								<span>{customer.name}</span>
+								{#if customer.tax_id}<span class="doc">{customer.tax_id}</span>{/if}
+							</button>
+						{/each}
+						{#if pickerError}
+							<p class="cust-error" role="alert">{pickerError}</p>
+						{:else if customers.length === 0}
+							<p class="cust-empty">
+								{customerSearch.trim()
+									? `No customers match “${customerSearch}”.`
+									: 'No customers have been added yet.'}
+							</p>
+						{/if}
+					</div>
+				{/if}
+			</div>
+
 			<div class="trow big"><span>Total</span><span>{sale.total}</span></div>
 
 			<div class="pay-method">
@@ -531,6 +643,83 @@
 		display: flex;
 		justify-content: space-between;
 		font-variant-numeric: tabular-nums;
+	}
+
+	/* --- Customer picker --- */
+
+	.customer {
+		display: grid;
+		gap: 0.35rem;
+		margin-bottom: 0.6rem;
+	}
+
+	.cust-trigger {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+		width: 100%;
+		padding: 0.45rem 0.6rem;
+		font-size: 0.87rem;
+		text-align: left;
+		overflow-wrap: anywhere;
+	}
+
+	.cust-trigger::after {
+		content: '▾';
+		font-size: 0.7rem;
+		color: var(--color-muted-foreground);
+	}
+
+	.cust-panel {
+		display: grid;
+		gap: 0.25rem;
+		max-height: 240px;
+		overflow-y: auto;
+		padding: 0.5rem;
+		background: var(--color-card);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius);
+	}
+
+	.cust-panel input {
+		font-size: 0.87rem;
+		padding: 0.4rem 0.55rem;
+	}
+
+	.cust-none {
+		justify-content: flex-start;
+		padding: 0.35rem 0.5rem;
+		font-size: 0.85rem;
+		font-style: italic;
+		color: var(--color-muted-foreground);
+	}
+
+	.cust-option {
+		display: flex;
+		justify-content: space-between;
+		gap: 0.5rem;
+		padding: 0.35rem 0.5rem;
+		font-size: 0.85rem;
+		text-align: left;
+	}
+
+	.cust-option .doc {
+		color: var(--color-muted-foreground);
+		font-size: 0.75rem;
+	}
+
+	.cust-empty,
+	.cust-error {
+		margin: 0;
+		padding: 0.3rem 0.2rem;
+		font-size: 0.78rem;
+		text-align: center;
+		color: var(--color-muted-foreground);
+	}
+
+	.cust-error {
+		color: var(--color-destructive);
 	}
 
 	.trow.big {

@@ -319,6 +319,16 @@ export const api = {
 			body: { payments }
 		}),
 
+	// The one sale mutation that answers 204 instead of the recalculated sale:
+	// the screen re-reads the sale afterwards. `customer_id` is always present
+	// in the body — an omitted field is a 422 by design, and `null` is the only
+	// way to clear the customer.
+	setSaleCustomer: (saleId: string, customerId: string | null) =>
+		request<void>(`/api/v1/sales/${encodeURIComponent(saleId)}/customer`, {
+			method: 'PUT',
+			body: { customer_id: customerId }
+		}),
+
 	cancelSale: (saleId: string) =>
 		request<void>(`/api/v1/sales/${saleId}/cancel`, { method: 'POST' }),
 
