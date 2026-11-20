@@ -15,7 +15,8 @@
                 "purchase",
                 "sale",
                 "adjustment",
-                "loss"
+                "loss",
+                "return"
               ]
             }
           }

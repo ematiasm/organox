@@ -24,6 +24,12 @@ export type User = components['schemas']['UserResponse'];
 export type Sale = components['schemas']['SaleResponse'];
 export type SaleItem = components['schemas']['SaleItemResponse'];
 export type SaleStatus = components['schemas']['SaleStatus'];
+export type SaleCreditNotes = components['schemas']['SaleCreditNotesResponse'];
+export type CreditNote = components['schemas']['CreditNoteResponse'];
+export type CreditableLine = components['schemas']['CreditableLineResponse'];
+export type CreditNoteItem = components['schemas']['CreditNoteItemResponse'];
+export type CreditNoteRefund = components['schemas']['CreditNoteRefundResponse'];
+export type CreateCreditNoteRequest = components['schemas']['CreateCreditNoteRequest'];
 export type CompletedSale = components['schemas']['CompletedSaleResponse'];
 export type Draft = components['schemas']['DraftResponse'];
 export type Problem = components['schemas']['Problem'];
@@ -275,5 +281,23 @@ export const api = {
 		}),
 
 	cancelSale: (saleId: string) =>
-		request<void>(`/api/v1/sales/${saleId}/cancel`, { method: 'POST' })
+		request<void>(`/api/v1/sales/${saleId}/cancel`, { method: 'POST' }),
+
+	// --- Credit notes ---
+	//
+	// A return sends a reason, quantities and an optional idempotency key: a
+	// repeated create with the same key and sale returns the first note. The
+	// note's prices, total and refunds come back from the server; the client
+	// never calculates them.
+
+	listSales: () => request<Sale[]>('/api/v1/sales'),
+
+	saleCreditNotes: (saleId: string) =>
+		request<SaleCreditNotes>(`/api/v1/sales/${encodeURIComponent(saleId)}/credit-notes`),
+
+	createCreditNote: (saleId: string, body: CreateCreditNoteRequest) =>
+		request<CreditNote>(`/api/v1/sales/${encodeURIComponent(saleId)}/credit-notes`, {
+			method: 'POST',
+			body
+		})
 };

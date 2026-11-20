@@ -14,6 +14,7 @@
 	import ThemeToggle from '$lib/components/theme-toggle.svelte';
 	import ChangePasswordDialog from './change-password-dialog.svelte';
 	import CartIcon from '@lucide/svelte/icons/shopping-cart';
+	import ReceiptIcon from '@lucide/svelte/icons/receipt';
 	import ListIcon from '@lucide/svelte/icons/list';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import UsersIcon from '@lucide/svelte/icons/users';
@@ -46,7 +47,15 @@
 	const groups: Group[] = [
 		{
 			label: 'Operations',
-			items: [{ href: '/operations/pos', label: 'Sale', icon: CartIcon }]
+			items: [
+				{ href: '/operations/pos', label: 'Sale', icon: CartIcon },
+				{
+					href: '/operations/sales',
+					label: 'Sales',
+					icon: ReceiptIcon,
+					current: (path) => path.startsWith('/operations/sales')
+				}
+			]
 		},
 		{
 			label: 'Catalog',

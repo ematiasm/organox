@@ -150,6 +150,7 @@ pub async fn list_products(
             SELECT COALESCE(SUM(
                 CASE m.reason
                     WHEN 'purchase'   THEN m.quantity
+                    WHEN 'return'     THEN m.quantity
                     WHEN 'adjustment' THEN m.quantity
                     WHEN 'sale'       THEN -m.quantity
                     WHEN 'loss'       THEN -m.quantity
@@ -260,6 +261,7 @@ pub async fn find_product(pool: &PgPool, id: Uuid) -> Result<Option<ProductWithS
             SELECT COALESCE(SUM(
                 CASE m.reason
                     WHEN 'purchase'   THEN m.quantity
+                    WHEN 'return'     THEN m.quantity
                     WHEN 'adjustment' THEN m.quantity
                     WHEN 'sale'       THEN -m.quantity
                     WHEN 'loss'       THEN -m.quantity
@@ -439,6 +441,7 @@ pub async fn list_movements(
             quantity,
             CASE reason
                 WHEN 'purchase'   THEN quantity
+                WHEN 'return'     THEN quantity
                 WHEN 'adjustment' THEN quantity
                 WHEN 'sale'       THEN -quantity
                 WHEN 'loss'       THEN -quantity
@@ -480,6 +483,7 @@ pub async fn current_stock(pool: &PgPool, product_id: Uuid) -> Result<Decimal, R
         SELECT COALESCE(SUM(
             CASE reason
                 WHEN 'purchase'   THEN quantity
+                WHEN 'return'     THEN quantity
                 WHEN 'adjustment' THEN quantity
                 WHEN 'sale'       THEN -quantity
                 WHEN 'loss'       THEN -quantity

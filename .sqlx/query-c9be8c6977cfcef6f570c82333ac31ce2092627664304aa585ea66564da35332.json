@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COALESCE(SUM(\n                CASE reason\n                    WHEN 'purchase'   THEN quantity\n                    WHEN 'return'     THEN quantity\n                    WHEN 'adjustment' THEN quantity\n                    WHEN 'sale'       THEN -quantity\n                    WHEN 'loss'       THEN -quantity\n                END\n            ), 0) AS \"stock!\"\n            FROM stock_movements\n            WHERE product_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stock!",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c9be8c6977cfcef6f570c82333ac31ce2092627664304aa585ea66564da35332"
+}

@@ -24,6 +24,9 @@ use uuid::Uuid;
 #[serde(rename_all = "snake_case")]
 pub enum WalletMovementKind {
     SalePayment,
+    /// Money handed back to a customer for a returned sale. The outflow side of
+    /// `sale_payment`, and like it, only ever written by a sale document.
+    SaleRefund,
     Expense,
     AdjustmentIn,
     AdjustmentOut,
@@ -33,6 +36,7 @@ impl WalletMovementKind {
     pub fn as_str(self) -> &'static str {
         match self {
             WalletMovementKind::SalePayment => "sale_payment",
+            WalletMovementKind::SaleRefund => "sale_refund",
             WalletMovementKind::Expense => "expense",
             WalletMovementKind::AdjustmentIn => "adjustment_in",
             WalletMovementKind::AdjustmentOut => "adjustment_out",
@@ -46,7 +50,9 @@ impl WalletMovementKind {
     pub fn sign(self) -> i8 {
         match self {
             WalletMovementKind::SalePayment | WalletMovementKind::AdjustmentIn => 1,
-            WalletMovementKind::Expense | WalletMovementKind::AdjustmentOut => -1,
+            WalletMovementKind::SaleRefund
+            | WalletMovementKind::Expense
+            | WalletMovementKind::AdjustmentOut => -1,
         }
     }
 
@@ -55,9 +61,13 @@ impl WalletMovementKind {
     }
 
     /// Kinds an operator records by hand. A sale payment is only ever produced
-    /// by charging a sale, never typed into a form.
+    /// by charging a sale, and a sale refund only by a credit note: neither is
+    /// ever typed into a form.
     pub fn is_manual(self) -> bool {
-        !matches!(self, WalletMovementKind::SalePayment)
+        !matches!(
+            self,
+            WalletMovementKind::SalePayment | WalletMovementKind::SaleRefund
+        )
     }
 }
 
@@ -73,11 +83,12 @@ impl FromStr for WalletMovementKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "sale_payment" | "cobro" => Ok(WalletMovementKind::SalePayment),
+            "sale_refund" => Ok(WalletMovementKind::SaleRefund),
             "expense" | "gasto" => Ok(WalletMovementKind::Expense),
             "adjustment_in" | "ajuste_entrada" => Ok(WalletMovementKind::AdjustmentIn),
             "adjustment_out" | "ajuste_salida" => Ok(WalletMovementKind::AdjustmentOut),
             other => Err(format!(
-                "unknown kind: {other:?} (valid: sale_payment, expense, adjustment_in, adjustment_out)"
+                "unknown kind: {other:?} (valid: sale_payment, sale_refund, expense, adjustment_in, adjustment_out)"
             )),
         }
     }
@@ -155,9 +166,13 @@ mod tests {
     }
 
     #[test]
-    fn expenses_and_adjustment_out_remove_money() {
+    fn expenses_adjustment_out_and_sale_refunds_remove_money() {
         assert_eq!(
             WalletMovementKind::Expense.signed_effect(dec!(100.00)),
+            dec!(-100.00)
+        );
+        assert_eq!(
+            WalletMovementKind::SaleRefund.signed_effect(dec!(100.00)),
             dec!(-100.00)
         );
         assert_eq!(
@@ -167,8 +182,9 @@ mod tests {
     }
 
     #[test]
-    fn only_a_sale_payment_is_not_manual() {
+    fn only_the_sale_kinds_are_not_manual() {
         assert!(!WalletMovementKind::SalePayment.is_manual());
+        assert!(!WalletMovementKind::SaleRefund.is_manual());
         assert!(WalletMovementKind::Expense.is_manual());
         assert!(WalletMovementKind::AdjustmentIn.is_manual());
         assert!(WalletMovementKind::AdjustmentOut.is_manual());
@@ -178,6 +194,7 @@ mod tests {
     fn kinds_round_trip_through_their_wire_value() {
         for kind in [
             WalletMovementKind::SalePayment,
+            WalletMovementKind::SaleRefund,
             WalletMovementKind::Expense,
             WalletMovementKind::AdjustmentIn,
             WalletMovementKind::AdjustmentOut,

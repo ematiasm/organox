@@ -1093,6 +1093,151 @@
         }
       }
     },
+    "/api/v1/sales/{id}/credit-notes": {
+      "get": {
+        "tags": [
+          "credit_notes"
+        ],
+        "summary": "The credits of a sale: what was charged, what came back and where the money\nof each note went. A draft has no stored total, so the charged lines decide\nit; the refunded total is the sum of the notes already issued, and\n`refundable_total` is the money allowance create still enforces\n(`sale_total − refunded_total`). Quantities and money can run out together:\nonce the allowance reaches zero, further notes are refused even if units\nremain.",
+        "operationId": "get_credit_notes_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sale ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Credits of the sale",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaleCreditNotesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Sale not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "credit_notes"
+        ],
+        "summary": "Return part or all of a charged sale.",
+        "description": "Creates a credit note: the goods rejoin stock and the money leaves the\nwallets that received the payment, in proportion to it. The sale is never\nedited; a sale can be returned in several notes, but the total returned per\nproduct can never exceed what was sold and the refunds can never exceed\nwhat the sale charged. An optional idempotency key makes a retry return the\noriginal note with 200 instead of issuing a duplicate.",
+        "operationId": "create_credit_note_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sale ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCreditNoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Existing credit note returned for a repeated idempotency key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditNoteResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Credit note issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreditNoteResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Sale not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Sale not completed, more than what can still be returned, or refunds that would cross what the sale charged; the detail names the money allowance left",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid reason, key, line or quantity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sales/{id}/items": {
       "post": {
         "tags": [
@@ -1970,6 +2115,34 @@
           }
         }
       },
+      "CreateCreditNoteRequest": {
+        "type": "object",
+        "description": "A return. The total is not sent: the server calculates it.",
+        "required": [
+          "reason",
+          "items"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional retry key. A repeated create with the same key and sale\nreturns the first note instead of issuing another one.",
+            "maxLength": 100
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditNoteLineRequest"
+            }
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the goods came back. Required, and kept on the document."
+          }
+        }
+      },
       "CreatePaymentMethodRequest": {
         "type": "object",
         "required": [
@@ -2070,6 +2243,161 @@
           }
         }
       },
+      "CreditNoteItemResponse": {
+        "type": "object",
+        "required": [
+          "product_id",
+          "product_name",
+          "quantity",
+          "unit_price",
+          "subtotal"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_name": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "string"
+          },
+          "subtotal": {
+            "type": "string"
+          },
+          "unit_price": {
+            "type": "string"
+          }
+        }
+      },
+      "CreditNoteLineRequest": {
+        "type": "object",
+        "description": "One line to return. The price is not sent: it is the one charged on the sale.",
+        "required": [
+          "product_id",
+          "quantity"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "string",
+            "example": "1"
+          }
+        }
+      },
+      "CreditNoteRefundResponse": {
+        "type": "object",
+        "description": "Where the money went back.",
+        "required": [
+          "wallet_id",
+          "wallet_name",
+          "payment_method_id",
+          "payment_method_name",
+          "amount"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string"
+          },
+          "payment_method_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payment_method_name": {
+            "type": "string"
+          },
+          "wallet_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "wallet_name": {
+            "type": "string"
+          }
+        }
+      },
+      "CreditNoteResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "sale_id",
+          "reason",
+          "total",
+          "items",
+          "refunds",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditNoteItemResponse"
+            }
+          },
+          "reason": {
+            "type": "string"
+          },
+          "refunds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditNoteRefundResponse"
+            }
+          },
+          "sale_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The sale being corrected. The sale itself never changes."
+          },
+          "total": {
+            "type": "string",
+            "description": "Calculated by the server from the returned quantities."
+          }
+        }
+      },
+      "CreditableLineResponse": {
+        "type": "object",
+        "description": "A charged line, with the quantity already credited and what can still come\nback.",
+        "required": [
+          "product_id",
+          "product_name",
+          "quantity",
+          "unit_price",
+          "credited_quantity",
+          "returnable_quantity"
+        ],
+        "properties": {
+          "credited_quantity": {
+            "type": "string"
+          },
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_name": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "string"
+          },
+          "returnable_quantity": {
+            "type": "string"
+          },
+          "unit_price": {
+            "type": "string"
+          }
+        }
+      },
       "DraftResponse": {
         "type": "object",
         "required": [
@@ -2159,6 +2487,7 @@
         "enum": [
           "purchase",
           "sale",
+          "return",
           "adjustment",
           "loss"
         ]
@@ -2446,6 +2775,46 @@
           "manager"
         ]
       },
+      "SaleCreditNotesResponse": {
+        "type": "object",
+        "description": "The sale's credits: its charged lines, the money still refundable, and\nthe notes already issued.",
+        "required": [
+          "sale_id",
+          "sale_total",
+          "refunded_total",
+          "refundable_total",
+          "items",
+          "credit_notes"
+        ],
+        "properties": {
+          "credit_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditNoteResponse"
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditableLineResponse"
+            }
+          },
+          "refundable_total": {
+            "type": "string",
+            "description": "The money allowance create still enforces: `sale_total` minus\n`refunded_total`. Once it reaches zero, further notes are refused\neven if units remain."
+          },
+          "refunded_total": {
+            "type": "string"
+          },
+          "sale_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sale_total": {
+            "type": "string"
+          }
+        }
+      },
       "SaleItemResponse": {
         "type": "object",
         "required": [
@@ -2669,6 +3038,7 @@
         "description": "Why money moved.\n\nThis is an enum while payment methods are rows, and the asymmetry is the\npoint: a new method is business data the operator creates, but a new kind\nalways arrives with a writer, a validation and a screen — that is, with code.",
         "enum": [
           "sale_payment",
+          "sale_refund",
           "expense",
           "adjustment_in",
           "adjustment_out"
@@ -2787,6 +3157,10 @@
     {
       "name": "payments",
       "description": "Wallets, payment methods and the money ledger"
+    },
+    {
+      "name": "credit_notes",
+      "description": "Returns of a charged sale"
     }
   ]
 }
