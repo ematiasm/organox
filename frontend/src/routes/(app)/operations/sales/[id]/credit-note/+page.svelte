@@ -74,6 +74,24 @@
 		quantities[productId] = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
 	}
 
+	/**
+	 * A key that survives one intended note. `crypto.randomUUID` exists only in
+	 * secure contexts, and this app is served over plain HTTP on a LAN or a
+	 * tailnet on purpose, so fall back to `getRandomValues` and then to a
+	 * timestamp: the server only needs the same string on a retry, not a UUID.
+	 */
+	function newIdempotencyKey(): string {
+		if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+
+		const bytes = new Uint8Array(16);
+		if (typeof crypto.getRandomValues === 'function') {
+			crypto.getRandomValues(bytes);
+			return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+		}
+
+		return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+	}
+
 	async function submit(event: SubmitEvent) {
 		event.preventDefault();
 		if (!canSubmit || !credits) return;
@@ -83,7 +101,7 @@
 		busy = true;
 		let note: CreditNote;
 		try {
-			idempotencyKey ??= crypto.randomUUID();
+			idempotencyKey ??= newIdempotencyKey();
 			const items = Object.entries(quantities)
 				.filter(
 					([productId, quantity]) =>
