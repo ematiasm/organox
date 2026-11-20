@@ -20,7 +20,7 @@ S5. The customer name is frozen onto the sale at completion, because a completed
 
 S6. The list response is the catalog shape — `{items, limit, offset, total}` — because it is the only paginated analogue in the tree; `GET /auth`-style bare vectors are not copied.
 
-S7. `search` matches the name or the tax id, case-insensitively; `active` filters and is absent by default so a screen can show both.
+S7. `search` matches the name or the tax id, case-insensitively. The list shows active customers only; `include_inactive` widens it, the same flag the products list takes, because the screen offers "show deactivated" rather than "show only deactivated".
 
 S8. Errors are RFC 7807 problem+json with English `detail` strings; the codes are the ones the tree already uses: `409` for a taken tax id, `422` for a validation failure, `404` for an unknown id, `204` for the two mutations that return no body.
 
@@ -37,7 +37,7 @@ S12. `make check`, `make prepare` and `make fe-schema` stay clean, because CI fa
 | Method | Path | Result |
 |---|---|---|
 | `POST` | `/customers` | `201 {id}` |
-| `GET` | `/customers?search=&active=&limit=&offset=` | `200 {items, limit, offset, total}` |
+| `GET` | `/customers?search=&include_inactive=&limit=&offset=` | `200 {items, limit, offset, total}` |
 | `GET` | `/customers/{id}` | `200 CustomerResponse` |
 | `PATCH` | `/customers/{id}` | `204` |
 | `POST` | `/customers/{id}/deactivate` | `204` |

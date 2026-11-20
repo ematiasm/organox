@@ -224,7 +224,7 @@ a stock ledger, sales, payments, credit notes and customers.
   ledger, and a balance read from it rather than stored.
 - **Customers**: a registry with an optional unique document, soft deactivation
   and search; a sale may point at one, and the name is frozen at checkout.
-- **238 tests** (unit + integration against real Postgres).
+- **240 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
   navigation rail** (expandable, with groups and user menu), product list,
   movements, **point of sale with barcode scanner** at `/operations/pos`, users

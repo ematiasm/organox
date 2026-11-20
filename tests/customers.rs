@@ -480,3 +480,85 @@ async fn send(
     };
     (status, value)
 }
+
+// --- Uniqueness is the database's rule, not the service's ----------------
+
+/// The service performs no read-then-check: it inserts and lets the partial
+/// unique index arbitrate. A probe that only used the service would still pass
+/// with the index dropped, so this one bypasses it.
+#[sqlx::test]
+async fn the_partial_index_rejects_a_case_variant_document_without_the_service(pool: PgPool) {
+    for name in ["One", "Two", "Three"] {
+        sqlx::query("INSERT INTO customers (id, name) VALUES ($1, $2)")
+            .bind(Uuid::now_v7())
+            .bind(name)
+            .execute(&pool)
+            .await
+            .expect("a customer without a document");
+    }
+
+    sqlx::query("INSERT INTO customers (id, name, tax_id) VALUES ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind("Doc Holder")
+        .bind("ab-123")
+        .execute(&pool)
+        .await
+        .expect("the first holder of the document");
+
+    let duplicate = sqlx::query("INSERT INTO customers (id, name, tax_id) VALUES ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind("Same taxpayer")
+        .bind("AB-123")
+        .execute(&pool)
+        .await
+        .expect_err("a document has no case: this is the same taxpayer");
+
+    let error = duplicate
+        .as_database_error()
+        .expect("a constraint violation, not a transport error");
+    assert_eq!(error.constraint(), Some("customers_tax_id_unique"));
+}
+
+/// Two creates racing for the same document: the database rejects one, and the
+/// client is told. Without that, two rows would carry the same taxpayer.
+#[sqlx::test]
+async fn two_concurrent_creates_with_the_same_document_leave_one_customer(pool: PgPool) {
+    let (_actor, password) = seed_user_with_password(&pool, "owner@pyme.com", Role::Owner).await;
+    let router = app(pool.clone());
+    let cookie = login(&router, "owner@pyme.com", &password).await;
+
+    let body = json!({"name": "Same taxpayer", "tax_id": "20-12345678-9"});
+    let first = send(
+        &router,
+        "POST",
+        "/api/v1/customers",
+        Some(&cookie),
+        Some(body.clone()),
+    );
+    let second = send(
+        &router,
+        "POST",
+        "/api/v1/customers",
+        Some(&cookie),
+        Some(body),
+    );
+    let (first, second) = tokio::join!(first, second);
+
+    let statuses = [first.0, second.0];
+    assert!(
+        statuses.contains(&StatusCode::CREATED),
+        "one create wins: {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&StatusCode::CONFLICT),
+        "the other is told, not silently merged: {statuses:?}"
+    );
+
+    let stored: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM customers WHERE upper(tax_id) = upper('20-12345678-9')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count");
+    assert_eq!(stored, 1);
+}

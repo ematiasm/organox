@@ -201,7 +201,7 @@
 					<Label for="tax_id">Document</Label>
 					<!-- Empty keeps the current document on edit (the API cannot clear
 					     it) and omits it on create. The server enforces uniqueness. -->
-					<Input id="tax_id" bind:value={form.tax_id} maxlength={40} placeholder={optionalPlaceholder()} />
+					<Input id="tax_id" bind:value={form.tax_id} maxlength={32} placeholder={optionalPlaceholder()} />
 				</div>
 
 				<div class="grid gap-2">
