@@ -399,6 +399,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sales/{id}/customer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Attach or clear the sale's customer. Draft-only.
+         * @description `customer_id` is required in the body; `null` clears the customer. A closed
+         *     sale is a fact and takes no customer (409). The customer must exist (404) and
+         *     be active (409): those are the customers module's rules, not a copy in sales.
+         */
+        put: operations["set_sale_customer_doc"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sales/{id}/items": {
         parameters: {
             query?: never;
@@ -910,6 +932,16 @@ export interface components {
             completed_at?: string | null;
             /** Format: date-time */
             created_at: string;
+            /**
+             * Format: uuid
+             * @description The customer the sale is charged to, `null` for an anonymous sale.
+             */
+            customer_id?: string | null;
+            /**
+             * @description The live registry name while the sale is a draft; the snapshot frozen
+             *     at completion once closed, so a later rename changes nothing.
+             */
+            customer_name?: string | null;
             /** Format: uuid */
             id: string;
             item_count: number;
@@ -923,6 +955,21 @@ export interface components {
         SetQuantityRequest: {
             /** @example 3 */
             quantity: string;
+        };
+        /**
+         * @description Attaches a customer to the draft, or clears it.
+         *
+         *     `customer_id` must be present: clearing is an explicit `null`, and an omitted
+         *     field is rejected instead of being read as "clear". A truncated payload
+         *     would otherwise detach a customer silently, and the cashier would see it only
+         *     on the printed ticket.
+         */
+        SetSaleCustomerRequest: {
+            /**
+             * Format: uuid
+             * @description The customer to attach, or `null` to leave the sale anonymous.
+             */
+            customer_id?: string | null;
         };
         UpdateCustomerRequest: {
             email?: string | null;
@@ -2185,6 +2232,67 @@ export interface operations {
                 };
             };
             /** @description Invalid reason, key, line or quantity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_sale_customer_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Sale ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetSaleCustomerRequest"];
+            };
+        };
+        responses: {
+            /** @description Customer attached or cleared */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Sale or customer not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Sale is closed, or the customer is deactivated */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description customer_id is missing */
             422: {
                 headers: {
                     [name: string]: unknown;

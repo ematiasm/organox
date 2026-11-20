@@ -1550,6 +1550,83 @@
         }
       }
     },
+    "/api/v1/sales/{id}/customer": {
+      "put": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Attach or clear the sale's customer. Draft-only.",
+        "description": "`customer_id` is required in the body; `null` clears the customer. A closed\nsale is a fact and takes no customer (409). The customer must exist (404) and\nbe active (409): those are the customers module's rules, not a copy in sales.",
+        "operationId": "set_sale_customer_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sale ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSaleCustomerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Customer attached or cleared"
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Sale or customer not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Sale is closed, or the customer is deactivated",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "customer_id is missing",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sales/{id}/items": {
       "post": {
         "tags": [
@@ -3320,6 +3397,21 @@
             "type": "string",
             "format": "date-time"
           },
+          "customer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The customer the sale is charged to, `null` for an anonymous sale."
+          },
+          "customer_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The live registry name while the sale is a draft; the snapshot frozen\nat completion once closed, so a later rename changes nothing."
+          },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -3360,6 +3452,20 @@
           "quantity": {
             "type": "string",
             "example": "3"
+          }
+        }
+      },
+      "SetSaleCustomerRequest": {
+        "type": "object",
+        "description": "Attaches a customer to the draft, or clears it.\n\n`customer_id` must be present: clearing is an explicit `null`, and an omitted\nfield is rejected instead of being read as \"clear\". A truncated payload\nwould otherwise detach a customer silently, and the cashier would see it only\non the printed ticket.",
+        "properties": {
+          "customer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The customer to attach, or `null` to leave the sale anonymous."
           }
         }
       },

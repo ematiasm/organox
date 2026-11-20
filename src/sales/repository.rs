@@ -209,6 +209,52 @@ pub async fn remove_item(pool: &PgPool, sale_id: Uuid, product_id: Uuid) -> Resu
     set_item_quantity(pool, sale_id, product_id, Decimal::ZERO).await
 }
 
+/// Attach or clear the sale's customer. Draft-only: same rule as every other
+/// draft mutation, checked the same way.
+///
+/// Existence and active state are NOT checked here: they are the customers
+/// module's rule (`service::get_customer`), and a copy in sales SQL would drift.
+pub async fn set_customer(
+    pool: &PgPool,
+    sale_id: Uuid,
+    customer_id: Option<Uuid>,
+) -> Result<(), RepoError> {
+    // One statement instead of "read the status, then write": the sale could be
+    // completed in between, and a customer attached after completion would land
+    // on a closed sale with no snapshot — a sale whose name could still change.
+    // The draft guard therefore lives in the WHERE clause. The item mutations
+    // above read the status first because they branch on it; this one does not.
+    let result = sqlx::query!(
+        "UPDATE sales SET customer_id = $2 WHERE id = $1 AND status = 'draft'",
+        sale_id,
+        customer_id,
+    )
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() > 0 {
+        return Ok(());
+    }
+
+    // Nothing was updated: report why. A frame that matched no row is either a
+    // missing sale or a closed one, never a draft.
+    let status = sqlx::query_scalar!(
+        r#"SELECT status AS "status: SaleStatus" FROM sales WHERE id = $1"#,
+        sale_id
+    )
+    .fetch_optional(pool)
+    .await?
+    .ok_or(RepoError::NotFound)?;
+
+    if status.is_editable() {
+        return Err(RepoError::Database(sqlx::Error::Protocol(
+            "the draft sale was not updated".to_string(),
+        )));
+    }
+
+    Err(RepoError::NotEditable)
+}
+
 /// Cancel a draft. Does not touch the stock ledger because a draft never did:
 /// that is the virtue of not deducting until checkout.
 pub async fn cancel(pool: &PgPool, sale_id: Uuid) -> Result<(), RepoError> {
@@ -237,9 +283,15 @@ pub async fn cancel(pool: &PgPool, sale_id: Uuid) -> Result<(), RepoError> {
 pub async fn find_sale(pool: &PgPool, sale_id: Uuid) -> Result<Option<Sale>, RepoError> {
     let row = sqlx::query!(
         r#"
-        SELECT id, status AS "status: SaleStatus", created_by, created_at, completed_at
-        FROM sales
-        WHERE id = $1
+        SELECT s.id, s.status AS "status: SaleStatus", s.created_by, s.created_at, s.completed_at,
+               -- Name precedence: a completed sale carries the frozen snapshot
+               -- (non-NULL), which wins; a draft has none yet, so the joined
+               -- live name shows and still tracks a rename.
+               COALESCE(s.customer_name, c.name) AS "customer_name?",
+               s.customer_id
+        FROM sales s
+        LEFT JOIN customers c ON c.id = s.customer_id
+        WHERE s.id = $1
         "#,
         sale_id
     )
@@ -267,6 +319,8 @@ pub async fn find_sale(pool: &PgPool, sale_id: Uuid) -> Result<Option<Sale>, Rep
         created_by: row.created_by,
         created_at: row.created_at,
         completed_at: row.completed_at,
+        customer_id: row.customer_id,
+        customer_name: row.customer_name,
         items: items
             .into_iter()
             .map(|i| SaleItem {
@@ -528,7 +582,14 @@ pub async fn complete(
     let completed_at = sqlx::query_scalar!(
         r#"
         UPDATE sales
-        SET status = 'completed', total = $2, completed_by = $3, completed_at = now()
+        SET status = 'completed', total = $2, completed_by = $3, completed_at = now(),
+            -- Freeze the customer name in the SAME statement that closes the
+            -- sale: the snapshot and the status flip commit together, so a
+            -- rename racing the checkout cannot slip in between. A sale
+            -- without a customer stays NULL (the subquery matches no row), and
+            -- a customer deactivated after the attach does NOT block the sale:
+            -- the goods already left, and the snapshot is still taken.
+            customer_name = (SELECT name FROM customers WHERE id = sales.customer_id)
         WHERE id = $1
         RETURNING completed_at AS "completed_at!"
         "#,

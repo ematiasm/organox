@@ -96,6 +96,12 @@ pub struct Sale {
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// The customer the sale is charged to, when it has one. Optional by
+    /// design: a walk-in buyer is still a sale.
+    pub customer_id: Option<Uuid>,
+    /// Customer name as reported for THIS sale: the live registry name while
+    /// the sale is a draft, the snapshot frozen at completion once closed.
+    pub customer_name: Option<String>,
 }
 
 impl Sale {
@@ -138,6 +144,8 @@ mod tests {
             created_by: Uuid::now_v7(),
             created_at: Utc::now(),
             completed_at: None,
+            customer_id: None,
+            customer_name: None,
         };
 
         // 5600.00 + 1800.495 + 0.30 = 7400.795
@@ -155,6 +163,8 @@ mod tests {
             created_by: Uuid::now_v7(),
             created_at: Utc::now(),
             completed_at: None,
+            customer_id: None,
+            customer_name: None,
         };
         assert_eq!(sale.total(), Decimal::ZERO);
         assert_eq!(sale.item_count(), 0);

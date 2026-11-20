@@ -4,6 +4,7 @@
 //!  * a cashier has only one open draft;
 //!  * a product without a price or a service cannot be added;
 //!  * a completed sale is immutable;
+//!  * a deactivated customer cannot be attached;
 //!  * the server calculates the total.
 
 use rust_decimal::Decimal;
@@ -12,6 +13,7 @@ use uuid::Uuid;
 
 use super::model::{Sale, SalePaymentInput};
 use super::repository::{self, CompletedSale, RepoError};
+use crate::customers::service::{CustomerError, get_customer};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SalesError {
@@ -51,6 +53,14 @@ pub enum SalesError {
 
     #[error("the payment method is unknown or inactive")]
     PaymentMethodUnavailable,
+
+    #[error("the customer is deactivated and cannot be attached to a sale")]
+    CustomerInactive,
+
+    /// Customer lookup failures that carry no sales policy. The only one
+    /// reachable through `get_customer` is `NotFound`, handled above.
+    #[error("customer lookup error: {0}")]
+    CustomerLookup(#[from] CustomerError),
 
     #[error("internal sales error")]
     Internal(#[from] RepoError),
@@ -153,6 +163,33 @@ pub async fn remove_item(
 
 pub async fn cancel(pool: &PgPool, sale_id: Uuid) -> Result<(), SalesError> {
     repository::cancel(pool, sale_id)
+        .await
+        .map_err(map_repo_error)
+}
+
+/// Attach or clear the sale's customer. Draft-only (the repository enforces
+/// it), and only an active customer can be attached.
+///
+/// Existence and active state reuse the customers module's own `get_customer`:
+/// the rule "who is attachable" already lives there, and a second copy in
+/// sales would drift out of sync with it.
+pub async fn set_customer(
+    pool: &PgPool,
+    sale_id: Uuid,
+    customer_id: Option<Uuid>,
+) -> Result<(), SalesError> {
+    if let Some(id) = customer_id {
+        let customer = get_customer(pool, id).await.map_err(|err| match err {
+            CustomerError::NotFound => SalesError::NotFound,
+            other => SalesError::CustomerLookup(other),
+        })?;
+
+        if !customer.is_active {
+            return Err(SalesError::CustomerInactive);
+        }
+    }
+
+    repository::set_customer(pool, sale_id, customer_id)
         .await
         .map_err(map_repo_error)
 }

@@ -47,15 +47,23 @@ S12. `make check`, `make prepare` and `make fe-schema` stay clean, because CI fa
 
 | ID | Task | Specs | Route | Status | Commit |
 |---|---|---|---|---|---|
-| T1 | Backend customers module: `0013_customers.sql`, model, validation, repository, service, handlers, router, OpenAPI stubs, `tests/customers.rs` | S1, S2, S3, S6, S7, S8, S11, S12 | inline | pending | — |
+| T1 | Backend customers module: `0013_customers.sql`, model, validation, repository, service, handlers, router, OpenAPI stubs, `tests/customers.rs` | S1, S2, S3, S6, S7, S8, S11, S12 | inline | done | 1b52e99 |
 | T2 | Sale ↔ customer: `0014_sales_customer.sql`, `PUT /sales/{id}/customer`, snapshot at completion, `SaleResponse.customer_id/customer_name`, `tests/sales.rs` additions, `docs/sales.md` | S4, S5, S8 | writer | pending | — |
 | T3 | Customers screen: route `(app)/customers`, list/search/pager, Sheet drawer for create/edit/deactivate, API wrappers, regenerated schema | S1, S2, S9, S12 | writer | pending | — |
 | T4 | Point of sale: customer picker on the open draft, customer column in the sales history | S4, S10 | writer | pending | — |
 | T5 | `docs/customers.md`, README index and structure tree, final `make check` | S11, S12 | inline | pending | — |
 
-T1 is the foundation and ships first; T2 and T3 touch disjoint surfaces and can
-run together once T1 lands; T4 needs both, because the picker consumes T3's list
-and writes through T2's route.
+T1 is the foundation and ships first; T2 and T3 touch disjoint surfaces but run
+in order, not together: T2 changes `SaleResponse`, so it regenerates
+`openapi.json` and `schema.d.ts`, and two writers regenerating the same
+committed artifact at once would collide. T4 needs both, because the picker
+consumes T3's list and writes through T2's route.
+
+Slice boundary: T1 is one commit of 2,653 changed lines, of which 1,127 are
+generated (`.sqlx`, `openapi.json`, `schema.d.ts`). The remaining ~1,526 are a
+new domain layer (976 lines of source), its 482 lines of tests and this
+document. It is not split: `CONTRIBUTING.md` requires code, tests and docs in
+one commit, and half a module has no behaviour to review.
 
 ## Log
 
@@ -66,3 +74,11 @@ L1. Original user request (verbatim):
 L2. Starting evidence: there is no customer entity. No `customers` table in `migrations/`, no `customer` column on `sales` (`migrations/0005_sales.sql:17-45`), and the words appear only in prose (`docs/credit-notes.md:102`, `docs/sales.md:100` both list "customer attached to the sale" as missing). The request was therefore scoped as a new feature, not a continuation. Decisions taken with the user one question at a time, quoted as chosen: scope "ABM completo: crear, editar, desactivar, buscar"; sales linkage "Sí, cliente opcional en la venta" (the option described a nullable FK plus a name snapshot so historical sales are not rewritten); fields "Nombre + documento + email + teléfono".
 
 L3. Shape read from the tree before writing any code: catalog is the only paginated list (`src/catalog/handlers.rs:66-76`, `{items,limit,offset,total}`), so `list_sales`-style bare vectors are not the model; the layer split is `repository` (SQL only) / `service` (policy) / `handlers` (HTTP), stated in `src/auth/mod.rs:3-11`; a nullable unique column is a *partial* unique index (`products_sku_unique`, `migrations/0003_catalog.sql:55`); adding a column to `sales` is done additively as in `migrations/0011_credit_note_refund_link.sql:9-24`; the sale is created empty, filled, then completed in two phases (`src/sales/handlers.rs:26-39`), and `total` is frozen at `src/sales/repository.rs:528-534`, which is where the name snapshot belongs.
+
+L4. T2 delivered: `0014_sales_customer.sql` (nullable `customer_id` with `ON DELETE RESTRICT`, `customer_name` snapshot, `sales_customer_name_needs_its_customer`, partial FK index), `PUT /sales/{id}/customer` reusing `customers::service::get_customer` instead of copying the active rule into sales SQL, the snapshot written in the same `UPDATE` that flips `status` and freezes `total`, and `SaleResponse.customer_id/customer_name` with snapshot-over-join precedence. Nine tests, `make check` green.
+
+Parent correction during review of the slice: `set_customer` first read the status and then wrote, so a sale completed between the two statements could receive a customer and stay without a snapshot — a closed sale whose name could still change. The guard moved into the `WHERE status = 'draft'` of a single `UPDATE`, and the reason is in the code. The item mutations keep their read-then-write: they branch on the status, this one does not.
+
+Independent verification (Risk: item 3 — the completion statement is shared with the POS checkout, the wallet ledger and the credit-note flow) returned PASS on S4, S5 and S8, with the full suite green on both the candidate and the base tree and the atomic attach proven by lock choreography out of tree. Its one advisory was real and is fixed: an omitted `customer_id` was read as "clear the customer", contradicting the documented contract, so presence is now required (`Some(None)` vs `None` via a deserializer) and a cleared customer is an explicit `null`. A test pins the 422 and that the stored row is untouched.
+
+Recorded boundaries, not fixed here because they are older than this feature: malformed request bodies get axum's `text/plain` rejection instead of problem+json on every route in the tree, and `sales_customer_id_idx` has no query yet — it is there for per-customer history, which T4 or a later slice will read.

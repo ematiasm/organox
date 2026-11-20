@@ -32,6 +32,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/sales/{id}/complete", post(complete_sale))
         .route("/sales/{id}/cancel", post(cancel_sale))
+        .route("/sales/{id}/customer", put(set_sale_customer))
         .route("/sales", get(list_sales))
 }
 
@@ -56,6 +57,11 @@ pub struct SaleResponse {
     /// Calculated on the server. The client displays it, not decides it.
     pub total: String,
     pub item_count: usize,
+    /// The customer the sale is charged to, `null` for an anonymous sale.
+    pub customer_id: Option<Uuid>,
+    /// The live registry name while the sale is a draft; the snapshot frozen
+    /// at completion once closed, so a later rename changes nothing.
+    pub customer_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -106,6 +112,29 @@ pub struct AddItemRequest {
 pub struct SetQuantityRequest {
     #[schema(value_type = String, example = "3")]
     pub quantity: Decimal,
+}
+
+/// Attaches a customer to the draft, or clears it.
+///
+/// `customer_id` must be present: clearing is an explicit `null`, and an omitted
+/// field is rejected instead of being read as "clear". A truncated payload
+/// would otherwise detach a customer silently, and the cashier would see it only
+/// on the printed ticket.
+#[derive(Deserialize, ToSchema)]
+pub struct SetSaleCustomerRequest {
+    /// The customer to attach, or `null` to leave the sale anonymous.
+    #[serde(default, deserialize_with = "present_option")]
+    #[schema(value_type = Option<Uuid>)]
+    pub customer_id: Option<Option<Uuid>>,
+}
+
+/// Distinguishes an omitted field (`None`) from an explicit `null`
+/// (`Some(None)`): serde collapses both to `None` for a plain `Option`.
+fn present_option<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Uuid>::deserialize(deserializer).map(Some)
 }
 
 // --- Handlers -----------------------------------------------------------
@@ -203,6 +232,22 @@ async fn cancel_sale(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn set_sale_customer(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetSaleCustomerRequest>,
+) -> Result<StatusCode, AppError> {
+    let Some(customer_id) = body.customer_id else {
+        return Err(AppError::Validation(
+            "customer_id is required: send null to clear the sale's customer".to_string(),
+        ));
+    };
+
+    service::set_customer(&state.pool, id, customer_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn list_sales(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -242,6 +287,8 @@ fn to_response(sale: Sale) -> SaleResponse {
         item_count: items.len(),
         total: format_money(sale.total()),
         items,
+        customer_id: sale.customer_id,
+        customer_name: sale.customer_name,
         created_at: sale.created_at,
         completed_at: sale.completed_at,
     }
@@ -274,6 +321,8 @@ impl From<SalesError> for AppError {
                 format_money(paid),
                 format_money(total)
             )),
+            SalesError::CustomerInactive => AppError::Conflict(err.to_string()),
+            SalesError::CustomerLookup(err) => AppError::Internal(err.to_string()),
             SalesError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
     }
@@ -430,6 +479,32 @@ fn complete_sale_doc() {}
 )]
 #[allow(dead_code)]
 fn cancel_sale_doc() {}
+
+/// Attach or clear the sale's customer. Draft-only.
+///
+/// `customer_id` is required in the body; `null` clears the customer. A closed
+/// sale is a fact and takes no customer (409). The customer must exist (404) and
+/// be active (409): those are the customers module's rules, not a copy in sales.
+#[utoipa::path(
+    put,
+    path = "/api/v1/sales/{id}/customer",
+    tag = "sales",
+    params(("id" = Uuid, Path, description = "Sale ID")),
+    request_body = SetSaleCustomerRequest,
+    responses(
+        (status = 204, description = "Customer attached or cleared"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Sale or customer not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Sale is closed, or the customer is deactivated", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "customer_id is missing", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn set_sale_customer_doc() {}
 
 /// Latest completed sales.
 #[utoipa::path(

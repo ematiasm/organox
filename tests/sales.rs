@@ -13,6 +13,7 @@ use organox::auth::repository::{self, NewUser};
 use organox::auth::{password, validation};
 use organox::catalog::model::{MovementReason, ProductKind};
 use organox::catalog::service::{self as catalog, CreateProductInput, RecordMovementInput};
+use organox::customers::service::{self as customers, CreateCustomerInput, UpdateCustomerInput};
 use organox::payments::model::WalletMovementKind;
 use organox::payments::service::{self as payments, CreateMethodInput, CreateWalletInput};
 use organox::routes::router;
@@ -516,6 +517,207 @@ async fn completed_sales_are_listed_newest_first(pool: PgPool) {
     assert!(list.iter().all(|s| s.status == SaleStatus::Completed));
 }
 
+// --- Customer -----------------------------------------------------------
+
+async fn seed_customer(pool: &PgPool, name: &str) -> Uuid {
+    customers::create_customer(
+        pool,
+        CreateCustomerInput {
+            name: name.to_string(),
+            tax_id: None,
+            email: None,
+            phone: None,
+        },
+    )
+    .await
+    .expect("customer")
+}
+
+async fn rename_customer(pool: &PgPool, id: Uuid, name: &str) {
+    customers::update_customer(
+        pool,
+        id,
+        UpdateCustomerInput {
+            name: Some(name.to_string()),
+            tax_id: None,
+            email: None,
+            phone: None,
+            is_active: None,
+        },
+    )
+    .await
+    .expect("rename");
+}
+
+async fn stored_customer_id(pool: &PgPool, sale: Uuid) -> Option<Uuid> {
+    sqlx::query_scalar("SELECT customer_id FROM sales WHERE id = $1")
+        .bind(sale)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn stored_customer_name(pool: &PgPool, sale: Uuid) -> Option<String> {
+    sqlx::query_scalar("SELECT customer_name FROM sales WHERE id = $1")
+        .bind(sale)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Attaching writes the column; clearing returns it to NULL. Both only on a
+/// draft.
+#[sqlx::test]
+async fn a_draft_accepts_and_then_clears_a_customer(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    assert_eq!(stored_customer_id(&pool, draft).await, Some(customer));
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.customer_id, Some(customer));
+    assert_eq!(sale.customer_name.as_deref(), Some("Ana Pérez"));
+
+    sales::set_customer(&pool, draft, None).await.unwrap();
+
+    assert_eq!(stored_customer_id(&pool, draft).await, None);
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.customer_id, None);
+    assert_eq!(sale.customer_name, None);
+}
+
+/// A completed or a cancelled sale is a fact: neither accepts a customer.
+#[sqlx::test]
+async fn a_closed_sale_refuses_a_customer_change(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+    complete(&pool, draft, actor, dec!(100)).await.unwrap();
+
+    let err = sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .expect_err("a completed sale cannot take a customer");
+    assert!(matches!(err, SalesError::NotEditable));
+    assert_eq!(stored_customer_id(&pool, draft).await, None);
+
+    let cancelled = sales::open_draft(&pool, actor).await.unwrap();
+    sales::cancel(&pool, cancelled).await.unwrap();
+    let err = sales::set_customer(&pool, cancelled, Some(customer))
+        .await
+        .expect_err("a cancelled draft cannot take a customer");
+    assert!(matches!(err, SalesError::NotEditable));
+}
+
+/// Unknown id: the draft is left untouched.
+#[sqlx::test]
+async fn an_unknown_customer_cannot_be_attached(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+
+    let err = sales::set_customer(&pool, draft, Some(Uuid::now_v7()))
+        .await
+        .expect_err("no such customer");
+    assert!(matches!(err, SalesError::NotFound));
+    assert_eq!(stored_customer_id(&pool, draft).await, None);
+}
+
+/// The active check is the customers module's rule, not a copy in sales SQL.
+#[sqlx::test]
+async fn a_deactivated_customer_cannot_be_attached(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    customers::deactivate_customer(&pool, customer)
+        .await
+        .unwrap();
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let err = sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .expect_err("a deactivated customer cannot be attached");
+    assert!(matches!(err, SalesError::CustomerInactive));
+    assert_eq!(stored_customer_id(&pool, draft).await, None);
+}
+
+/// While the sale is a draft the name follows the registry (the sale is still
+/// editable, so the name is too); after completion the frozen snapshot wins,
+/// so a rename never rewrites what the charged sale says.
+#[sqlx::test]
+async fn the_customer_name_freezes_at_completion(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    // Draft: the name comes from the joined customer and tracks a rename.
+    rename_customer(&pool, customer, "Ana Gómez").await;
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.customer_name.as_deref(), Some("Ana Gómez"));
+    assert_eq!(
+        stored_customer_name(&pool, draft).await,
+        None,
+        "a draft stores no snapshot yet"
+    );
+
+    complete(&pool, draft, actor, dec!(100)).await.unwrap();
+    assert_eq!(
+        stored_customer_name(&pool, draft).await.as_deref(),
+        Some("Ana Gómez")
+    );
+
+    rename_customer(&pool, customer, "Ana Smith").await;
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(
+        sale.customer_name.as_deref(),
+        Some("Ana Gómez"),
+        "the snapshot wins after completion"
+    );
+}
+
+/// A customer deactivated between the attach and the checkout does NOT block
+/// the sale: the goods already left, and the snapshot is still taken.
+#[sqlx::test]
+async fn a_customer_deactivated_mid_draft_does_not_block_checkout(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    customers::deactivate_customer(&pool, customer)
+        .await
+        .unwrap();
+
+    complete(&pool, draft, actor, dec!(100)).await.unwrap();
+    assert_eq!(
+        stored_customer_name(&pool, draft).await.as_deref(),
+        Some("Ana Pérez")
+    );
+}
+
 // --- Payment ------------------------------------------------------------
 
 async fn wallet_for(pool: &PgPool, method: Uuid) -> Uuid {
@@ -984,4 +1186,251 @@ async fn http_sale_flow_returns_server_computed_total(pool: PgPool) {
     assert_eq!(sale["total"], "3001.00");
     assert_eq!(sale["item_count"], 1);
     assert_eq!(sale["items"][0]["subtotal"], "3001.00");
+}
+
+/// The route and the response shape: 204 on attach and on clear, the two
+/// fields present in the sale JSON, and `null` for both on a sale without a
+/// customer.
+#[sqlx::test]
+async fn http_customer_route_attaches_clears_and_reports_the_fields(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (_, password) = seed_user_with_password(&pool).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    let cookie = login_cookie(&pool, &password).await;
+
+    let draft = app(pool.clone())
+        .oneshot(
+            with_session("POST", "/api/v1/sales/draft", &cookie)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(draft.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let sale_id = body["id"].as_str().unwrap().to_string();
+
+    // A sale without a customer reports null for both fields.
+    let sale: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(
+            app(pool.clone())
+                .oneshot(
+                    with_session("GET", &format!("/api/v1/sales/{sale_id}"), &cookie)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .into_body(),
+            65536,
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sale["customer_id"], serde_json::Value::Null);
+    assert_eq!(sale["customer_name"], serde_json::Value::Null);
+
+    let put = app(pool.clone())
+        .oneshot(
+            with_session("PUT", &format!("/api/v1/sales/{sale_id}/customer"), &cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "customer_id": customer }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put.status(), axum::http::StatusCode::NO_CONTENT);
+
+    let sale: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(
+            app(pool.clone())
+                .oneshot(
+                    with_session("GET", &format!("/api/v1/sales/{sale_id}"), &cookie)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .into_body(),
+            65536,
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sale["customer_id"], serde_json::json!(customer));
+    assert_eq!(sale["customer_name"], "Ana Pérez");
+
+    // Clearing is an explicit null, not an omitted field.
+    let put = app(pool.clone())
+        .oneshot(
+            with_session("PUT", &format!("/api/v1/sales/{sale_id}/customer"), &cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "customer_id": null }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put.status(), axum::http::StatusCode::NO_CONTENT);
+
+    let sale: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(
+            app(pool.clone())
+                .oneshot(
+                    with_session("GET", &format!("/api/v1/sales/{sale_id}"), &cookie)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .into_body(),
+            65536,
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sale["customer_id"], serde_json::Value::Null);
+    assert_eq!(sale["customer_name"], serde_json::Value::Null);
+}
+
+/// The errors are RFC 7807 problem+json with the agreed codes: 409 for a
+/// closed sale or a deactivated customer, 404 for an unknown one.
+#[sqlx::test]
+async fn http_customer_route_errors_are_problem_json(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let inactive = seed_customer(&pool, "Viejo").await;
+    customers::deactivate_customer(&pool, inactive)
+        .await
+        .unwrap();
+
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+    complete(&pool, draft, actor, dec!(100)).await.unwrap();
+
+    let cookie = login_cookie(&pool, &password).await;
+
+    // A closed sale: 409.
+    let closed = app(pool.clone())
+        .oneshot(
+            with_session("PUT", &format!("/api/v1/sales/{draft}/customer"), &cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "customer_id": null }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), axum::http::StatusCode::CONFLICT);
+    let problem: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(closed.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        problem["detail"],
+        "the sale is already closed and cannot be modified"
+    );
+
+    // Unknown customer: 404.
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let unknown = app(pool.clone())
+        .oneshot(
+            with_session("PUT", &format!("/api/v1/sales/{draft}/customer"), &cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "customer_id": Uuid::now_v7() }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
+
+    // Deactivated customer: 409 with a readable detail.
+    let inactive_put = app(pool.clone())
+        .oneshot(
+            with_session("PUT", &format!("/api/v1/sales/{draft}/customer"), &cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "customer_id": inactive }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inactive_put.status(), axum::http::StatusCode::CONFLICT);
+    let problem: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(inactive_put.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        problem["detail"],
+        "the customer is deactivated and cannot be attached to a sale"
+    );
+}
+
+/// `customer_id` is required in the body: an omitted field is a truncated
+/// payload, not a request to clear the customer. Reading it as "clear" would
+/// detach a customer silently, and the cashier would find out on the ticket.
+#[sqlx::test]
+async fn an_omitted_customer_id_is_rejected_and_keeps_the_customer(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    let cookie = login_cookie(&pool, &password).await;
+    let response = app(pool.clone())
+        .oneshot(
+            with_session("PUT", &format!("/api/v1/sales/{draft}/customer"), &cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "an omitted customer_id is not a request to clear"
+    );
+    let problem: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        problem["detail"],
+        "customer_id is required: send null to clear the sale's customer"
+    );
+
+    // The rejected request left the stored row untouched.
+    assert_eq!(stored_customer_id(&pool, draft).await, Some(customer));
 }
