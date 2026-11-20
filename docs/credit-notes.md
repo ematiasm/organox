@@ -99,7 +99,9 @@ explicitly future work.
 
 - **Fiscal numbering**: a note has an internal id, not a numbered fiscal
   document.
-- **Customer**: sales and notes are not attached to a customer.
+- **Customer on the note**: the sale may name a customer (`docs/customers.md`),
+  but the note itself carries no customer reference or name; there is no
+  per-customer view of returns.
 - **Credit balance in favor of the customer**: a note always refunds the
   original wallets; money cannot stay as store credit.
 - **VAT breakdown**: totals are stored without a tax breakdown.

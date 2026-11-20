@@ -50,8 +50,8 @@ S12. `make check`, `make prepare` and `make fe-schema` stay clean, because CI fa
 | T1 | Backend customers module: `0013_customers.sql`, model, validation, repository, service, handlers, router, OpenAPI stubs, `tests/customers.rs` | S1, S2, S3, S6, S7, S8, S11, S12 | inline | done | 1b52e99 |
 | T2 | Sale ↔ customer: `0014_sales_customer.sql`, `PUT /sales/{id}/customer`, snapshot at completion, `SaleResponse.customer_id/customer_name`, `tests/sales.rs` additions, `docs/sales.md` | S4, S5, S8 | writer | done | 8f812c7 |
 | T3 | Customers screen: route `(app)/customers`, list/search/pager, Sheet drawer for create/edit/deactivate, API wrappers, regenerated schema | S1, S2, S9, S12 | writer | done | this branch |
-| T4 | Point of sale: customer picker on the open draft, customer column in the sales history | S4, S10 | writer | pending | — |
-| T5 | `docs/customers.md`, README index and structure tree, final `make check` | S11, S12 | inline | pending | — |
+| T4 | Point of sale: customer picker on the open draft, customer column in the sales history | S4, S10 | writer | done | fe8c7d3 |
+| T5 | `docs/customers.md`, README index and structure tree, final `make check` | S11, S12 | writer | done | this branch |
 
 T1 is the foundation and ships first; T2 and T3 touch disjoint surfaces but run
 in order, not together: T2 changes `SaleResponse`, so it regenerates
@@ -92,3 +92,7 @@ L6. T4 delivered by a writer: a customer picker on the draft the POS opens on lo
 The probe proved the feature and missed a defect at the same time: the history row gained a cell and the header did not, so every label sat one column to the left. A parent review of the diff caught it, a check was added for exactly that (`thead` cell count and the Customer label), and the fix was observed twice: 22/23 with the misaligned header from the pre-fix build, 23/23 after rebuilding. That is the useful shape of the lesson — the probe asserted data, not layout, and a column that moves is invisible to a data assertion.
 
 Side effect of running it: `e2e-customers-gate@example.com` (owner, unused password) and the probe's stamped rows remain in the development database, like every probe in this tree leaves its rows.
+
+L7. T5 delivered by a writer: `docs/customers.md` (decisions with their rejected alternatives, the six-route API table, a validation table with the layer that enforces each rule, and an honest missing list), the README docs index, structure tree and API table, plus two corrections the writer found while cross-referencing: `docs/sales.md` said "every item mutation returns the full sale" although `cancel` and the customer attach answer `204`, and `docs/credit-notes.md` still claimed sales were not attached to a customer. The parent closed two README items the writer left out of its scope: the "Current state" section still opened with "Slices 1–3" and the probe list named three probes when seven exist.
+
+Final gate on the branch: `make prepare` and `make fe-schema` regenerate nothing (`git status` shows only documents), `make check` green, 238 tests, svelte-check 0/0, and the two UI probes at 23/23 (`pos-customer.cjs`) and 14/14 (`customers.cjs`) against the built app.

@@ -76,6 +76,12 @@ src/
     repository.rs catalog SQL and stock calculation
     service.rs    rules: negative stock, service without stock, transaction
     handlers.rs   catalog endpoints
+  customers/
+    model.rs      Customer, is_active
+    validation.rs name, document, email, phone
+    repository.rs customer SQL
+    service.rs    rules: unique document, honest page totals
+    handlers.rs   customer endpoints
   sales/
     model.rs      Sale, SaleItem, SaleStatus
     repository.rs sales SQL and transactional checkout
@@ -106,6 +112,7 @@ frontend/
       +layout.svelte    the single navigation rail
       +layout.ts        session guard: api.me(), 401 -> /login
       products/         product list, search, stock
+      customers/        customer registry: search, create/edit sheet, deactivate
       operations/pos/   point of sale with barcode scanner
       operations/movements/  stock ledger history
       users/            users (owner only)
@@ -162,6 +169,11 @@ Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 | POST | `/products/{id}/deactivate` | session | Soft-deactivate, idempotent |
 | GET | `/products/{id}/movements` | session | History, newest first |
 | POST | `/products/{id}/movements` | session | Records a stock movement |
+| GET | `/customers` | session | List (`?search=&include_inactive=&limit=&offset=`), ordered by name |
+| POST | `/customers` | session | Create a customer |
+| GET | `/customers/{id}` | session | One customer |
+| PATCH | `/customers/{id}` | session | Updates only the fields supplied |
+| POST | `/customers/{id}/deactivate` | session | Soft-deactivate, idempotent |
 | POST | `/sales/draft` | session | Opens (or reuses) the cart |
 | GET | `/sales/{id}` | session | Sale with server-calculated total |
 | POST | `/sales/{id}/items` | session | Adds an item |
@@ -169,6 +181,7 @@ Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 | DELETE | `/sales/{id}/items/{product_id}` | session | Removes an item |
 | POST | `/sales/{id}/complete` | session | Completes checkout and deducts stock |
 | POST | `/sales/{id}/cancel` | session | Cancels the draft |
+| PUT | `/sales/{id}/customer` | session | Attaches or clears the draft's customer (`customer_id` or `null`) |
 | GET | `/sales` | session | Completed sales |
 | POST | `/sales/{id}/credit-notes` | session | Returns part or all of a charged sale; refunds its wallets |
 | GET | `/sales/{id}/credit-notes` | session | Credits of a sale, with what is still returnable |
@@ -193,7 +206,8 @@ curl -b jar.txt localhost:3000/api/v1/auth/me
 
 ## Current state
 
-Slices 1–3: skeleton, authentication, and catalog with a stock ledger.
+The whole feature set as of this branch: skeleton, authentication, catalog,
+a stock ledger, sales, payments, credit notes and customers.
 
 - **Auth**: login/logout/`me`, revocable DB sessions, `HttpOnly`+`SameSite=Strict`
   cookie, argon2id. Binary RBAC (`owner`, `manager`).
@@ -206,16 +220,21 @@ Slices 1–3: skeleton, authentication, and catalog with a stock ledger.
 - **Credit notes**: a completed sale can be returned in several notes without
   editing it; returned goods rejoin stock and the money goes back to the
   wallets that collected the payment.
-- **204 tests** (unit + integration against real Postgres).
+- **Payments**: payment methods that point at a wallet, an append-only money
+  ledger, and a balance read from it rather than stored.
+- **Customers**: a registry with an optional unique document, soft deactivation
+  and search; a sale may point at one, and the name is frozen at checkout.
+- **238 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
   navigation rail** (expandable, with groups and user menu), product list,
-  movements, and **point of sale with barcode scanner** at `/operations/pos`.
+  movements, **point of sale with barcode scanner** at `/operations/pos`, users
+  and customers.
 - **OpenAPI 3.1** generated from code; frontend types are generated from that
   spec (`make fe-schema`).
 
-See `docs/auth.md`, `docs/catalog.md`, `docs/ratelimit.md`, `docs/sales.md`,
-`docs/credit-notes.md`, `docs/payments.md` and `docs/backup.md` for the
-reasoning and what is missing.
+See `docs/auth.md`, `docs/catalog.md`, `docs/customers.md`, `docs/ratelimit.md`,
+`docs/sales.md`, `docs/credit-notes.md`, `docs/payments.md` and `docs/backup.md` for
+the reasoning and what is missing.
 
 ## Frontend
 
@@ -275,10 +294,12 @@ Open `http://localhost:3000`. Interactive API documentation is at
 `make check`, so a type error in a component fails the same gate as a clippy
 warning. There is no frontend unit-test runner yet: the behavior that matters
 lives in the Rust integration tests, and the behavior only a browser can prove
-lives in three manual Playwright probes under `frontend/e2e/` — `nav-shell.cjs`
-for the navigation shell, `drawer.cjs` for the product drawer (row click, edit,
-create, deactivate) and `payments.cjs` for wallets, payment methods and charging
-at the POS. They are not part of `make check`.
+lives in manual Playwright probes under `frontend/e2e/` — `nav-shell.cjs` for
+navigation, `drawer.cjs` for the product drawer, `payments.cjs` for wallets and
+methods, `sales.cjs` for the checkout and its credit notes, `pos-customer.cjs`
+for the customer at the counter, `customers.cjs` for the registry screen and
+`users.cjs` for users and credential rotation. They are not part of
+`make check`.
 
 `playwright` is a dev dependency, so `npm ci` provides the module. The browser
 binary is a separate one-time download that `npm` does not run:

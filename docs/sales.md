@@ -15,8 +15,8 @@ Why:
    differ from the one charged; the one that counts is the one the API returns.
 4. **Stock can be validated on every action**, not only at confirmation.
 
-Every mutation returns the **full recalculated sale**. The client does not sum,
-does not validate and does not decide: it only renders.
+Every item mutation returns the **full recalculated sale**. The client does not
+sum, does not validate and does not decide: it only renders.
 
 ## A draft never touches the stock ledger
 
@@ -80,6 +80,9 @@ as `sale_items.unit_price`.
 A customer deactivated between the attach and the checkout does **not** block
 the sale: the goods already left, and the snapshot is still taken.
 
+The registry itself — its fields, deactivation and what it does not have yet —
+is documented in `docs/customers.md`.
+
 ## API
 
 | Method | Route | What it does |
@@ -117,6 +120,7 @@ routes and the refund ledger.
   counts are not reconciled against the wallets of `docs/payments.md`.
 - **VAT**: the sale stores the total; the tax is not broken out.
 - **Mandatory customer / account statement**: the customer on a sale is optional
-  (a walk-in buyer is still a sale), and there is no per-customer account
-  statement — what each customer bought, returned or owes is not viewable yet.
+  (`docs/customers.md`; a walk-in buyer is still a sale), and there is no
+  per-customer account statement — what each customer bought, returned or owes
+  is not viewable yet.
 - **Orphan drafts**: there is no cleanup of old drafts.
