@@ -14,12 +14,63 @@ use rust_decimal::Decimal;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use super::model::{AccountPosition, SaleOutstanding};
+use super::model::{AccountPosition, CustomerAccountEntryKind, SaleOutstanding};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+
+    #[error("customer not found")]
+    CustomerNotFound,
+
+    #[error("sale not found")]
+    SaleNotFound,
+
+    #[error("account entry not found")]
+    EntryNotFound,
+
+    #[error("that sale belongs to another customer")]
+    SaleOfAnotherCustomer,
+
+    #[error("that sale is not completed")]
+    SaleNotChargeable,
+
+    #[error("this sale is already charged to the account")]
+    AlreadyCharged,
+
+    #[error("the amount must be positive")]
+    NonPositiveAmount,
+
+    #[error("the amount {amount} carries more than two decimals")]
+    TooManyDecimals { amount: Decimal },
+
+    #[error("the allocation of {requested} exceeds the {outstanding} this sale still owes")]
+    OutstandingExceeded {
+        requested: Decimal,
+        outstanding: Decimal,
+    },
+
+    #[error("the allocations ({allocated}) exceed the money the receipt collected ({collected})")]
+    ReceiptOverAllocated {
+        allocated: Decimal,
+        collected: Decimal,
+    },
+
+    #[error("this receipt collected {collected} and {allocated} is already allocated")]
+    AllocationExceedsReceipt {
+        collected: Decimal,
+        allocated: Decimal,
+    },
+
+    #[error("only a receipt can be allocated to a sale")]
+    NotAReceipt,
+
+    #[error("wallet movement not found")]
+    MovementNotFound,
+
+    #[error("the receipt records {receipt} but the wallet movement carries {movement}")]
+    ReceiptDoesNotMatchMovement { movement: Decimal, receipt: Decimal },
 }
 
 /// The customer's account as of now: balance, usable credit, what is owed.
@@ -146,4 +197,370 @@ pub async fn outstanding_by_sale_in(
             outstanding: row.outstanding,
         })
         .collect())
+}
+
+// --- Writes ------------------------------------------------------------
+
+/// The constraint that rejected the row, when the error came from the database.
+fn violated_constraint(err: &sqlx::Error) -> Option<&str> {
+    match err {
+        sqlx::Error::Database(db_err) => db_err.constraint(),
+        _ => None,
+    }
+}
+
+/// An amount a money writer accepts: positive, and no finer than cents. The
+/// column is `numeric(14, 2)`, so Postgres would silently round a third
+/// decimal instead of rejecting it — and a ledger that rounds what the
+/// operator typed is a ledger nobody can audit.
+fn ensure_cents(amount: Decimal) -> Result<(), RepoError> {
+    if amount <= Decimal::ZERO {
+        return Err(RepoError::NonPositiveAmount);
+    }
+    if amount.round_dp(2) != amount {
+        return Err(RepoError::TooManyDecimals { amount });
+    }
+    Ok(())
+}
+
+/// What one sale still owes, on the same definition [`outstanding_by_sale_in`]
+/// lists: its charge, minus the notes that cancelled part of it, minus the
+/// receipts allocated to it. Derived per sale, because a writer has to check
+/// one allocation without reading the customer's whole debt list.
+pub async fn outstanding_for_sale_in(
+    conn: &mut PgConnection,
+    sale_id: Uuid,
+) -> Result<Decimal, RepoError> {
+    let outstanding = sqlx::query_scalar!(
+        r#"
+        WITH charge AS (
+            SELECT COALESCE(SUM(amount), 0) AS charged
+            FROM customer_account_entries
+            WHERE sale_id = $1 AND kind = 'sale_charge'
+        ),
+        cancelled AS (
+            SELECT COALESCE(-SUM(amount), 0) AS cancelled
+            FROM customer_account_entries
+            WHERE sale_id = $1 AND kind = 'credit_note'
+        ),
+        allocated AS (
+            SELECT COALESCE(SUM(amount), 0) AS allocated
+            FROM customer_account_allocations
+            WHERE sale_id = $1
+        )
+        SELECT (charge.charged - cancelled.cancelled - allocated.allocated)::numeric(14, 2)
+               AS "outstanding!: Decimal"
+        FROM charge, cancelled, allocated
+        "#,
+        sale_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+
+    Ok(outstanding)
+}
+
+/// One writer, one lock, taken first. The lock is deliberately not the
+/// customer's row: the sale-completion transaction already locks the sale and
+/// its products, so a collection that locked the customer row first could
+/// deadlock against it. An xact-scoped advisory lock gives every
+/// balance-changing writer the same first step, and concurrent collections
+/// serialize here instead of racing on the sums.
+pub async fn lock_customer(conn: &mut PgConnection, customer_id: Uuid) -> Result<(), RepoError> {
+    let found = sqlx::query!(
+        r#"SELECT 1 AS found FROM customers WHERE id = $1"#,
+        customer_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if found.is_none() {
+        return Err(RepoError::CustomerNotFound);
+    }
+
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        customer_id.to_string()
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    Ok(())
+}
+
+/// The sale an account operation may point at: it exists, it belongs to this
+/// customer, and it is completed. One helper, three writers, so the three can
+/// never disagree about what a payable sale is.
+async fn ensure_chargeable_sale(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    sale_id: Uuid,
+) -> Result<(), RepoError> {
+    let sale = sqlx::query!(
+        r#"SELECT customer_id, status::text AS "status!" FROM sales WHERE id = $1"#,
+        sale_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(RepoError::SaleNotFound)?;
+
+    if sale.customer_id != Some(customer_id) {
+        return Err(RepoError::SaleOfAnotherCustomer);
+    }
+    if sale.status != "completed" {
+        return Err(RepoError::SaleNotChargeable);
+    }
+    Ok(())
+}
+
+/// Charge one sale's unpaid part to the account. The unique partial index is
+/// the real double-charge guard — the sale-completion path of a later slice
+/// writes the same entry — so a retried completion cannot bill the same sale
+/// twice even if it never goes through this function.
+pub async fn record_charge(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    sale_id: Uuid,
+    amount: Decimal,
+    created_by: Uuid,
+) -> Result<Uuid, RepoError> {
+    ensure_cents(amount)?;
+    lock_customer(conn, customer_id).await?;
+    ensure_chargeable_sale(conn, customer_id, sale_id).await?;
+
+    let id = Uuid::now_v7();
+    sqlx::query!(
+        r#"
+        INSERT INTO customer_account_entries (id, customer_id, kind, amount, sale_id, created_by)
+        VALUES ($1, $2, 'sale_charge', $3, $4, $5)
+        "#,
+        id,
+        customer_id,
+        amount,
+        sale_id,
+        created_by,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| {
+        if violated_constraint(&err) == Some("customer_account_entries_one_charge_per_sale") {
+            RepoError::AlreadyCharged
+        } else {
+            RepoError::Database(err)
+        }
+    })?;
+
+    Ok(id)
+}
+
+/// A collection: the movement that carried the money, and the sales it pays.
+///
+/// `allocations` is what the operator decided, never something the server
+/// invents; the remainder of `amount` carries no row anywhere and that is
+/// exactly what an available credit is.
+pub struct NewReceipt<'a> {
+    pub customer_id: Uuid,
+    pub wallet_movement_id: Uuid,
+    pub amount: Decimal,
+    pub allocations: &'a [(Uuid, Decimal)],
+    pub idempotency_key: Option<&'a str>,
+    pub note: Option<&'a str>,
+    pub created_by: Uuid,
+}
+
+/// The receipt as recorded, or as it already was: a replay answers the first
+/// entry so a retried collection never collects twice.
+pub struct RecordedReceipt {
+    pub entry_id: Uuid,
+    pub replayed: bool,
+}
+
+/// Record one collection and its allocations.
+///
+/// Everything is validated before the first insert, so a rejection leaves no
+/// entry and no allocation behind — in an append-only ledger a rejected write
+/// must not need a compensating entry. The advisory lock is also what makes
+/// the replay lookup race-free: two concurrent copies of the same request
+/// serialize, and the second one sees the first one's entry.
+pub async fn record_receipt(
+    conn: &mut PgConnection,
+    receipt: NewReceipt<'_>,
+) -> Result<RecordedReceipt, RepoError> {
+    ensure_cents(receipt.amount)?;
+    lock_customer(conn, receipt.customer_id).await?;
+
+    // The ledger's number and the wallet's number are the same money. The
+    // foreign key proves the movement exists; only this proves it carried what
+    // the account says it carried. A silent disagreement between the two books
+    // is precisely the failure nobody notices.
+    let carried: Decimal = sqlx::query_scalar!(
+        "SELECT amount FROM wallet_movements WHERE id = $1",
+        receipt.wallet_movement_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(RepoError::MovementNotFound)?;
+
+    if carried != receipt.amount {
+        return Err(RepoError::ReceiptDoesNotMatchMovement {
+            movement: carried,
+            receipt: receipt.amount,
+        });
+    }
+
+    if let Some(key) = receipt.idempotency_key {
+        let first = sqlx::query_scalar!(
+            r#"
+            SELECT id FROM customer_account_entries
+            WHERE customer_id = $1 AND idempotency_key = $2
+            "#,
+            receipt.customer_id,
+            key,
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some(entry_id) = first {
+            return Ok(RecordedReceipt {
+                entry_id,
+                replayed: true,
+            });
+        }
+    }
+
+    // Each allocation is checked against what its sale still owes before
+    // anything is written; the sum is checked last so a receipt that pays one
+    // sale too much names the sale, not the sum.
+    let mut allocated = Decimal::ZERO;
+    for (sale_id, amount) in receipt.allocations {
+        ensure_cents(*amount)?;
+        ensure_chargeable_sale(conn, receipt.customer_id, *sale_id).await?;
+
+        let outstanding = outstanding_for_sale_in(conn, *sale_id).await?;
+        if *amount > outstanding {
+            return Err(RepoError::OutstandingExceeded {
+                requested: *amount,
+                outstanding,
+            });
+        }
+        allocated += *amount;
+    }
+    if allocated > receipt.amount {
+        return Err(RepoError::ReceiptOverAllocated {
+            allocated,
+            collected: receipt.amount,
+        });
+    }
+
+    let entry_id = Uuid::now_v7();
+    sqlx::query!(
+        r#"
+        INSERT INTO customer_account_entries
+            (id, customer_id, kind, amount, wallet_movement_id, idempotency_key, note, created_by)
+        VALUES ($1, $2, 'receipt', $3, $4, $5, $6, $7)
+        "#,
+        entry_id,
+        receipt.customer_id,
+        -receipt.amount,
+        receipt.wallet_movement_id,
+        receipt.idempotency_key,
+        receipt.note,
+        receipt.created_by,
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    for (sale_id, amount) in receipt.allocations {
+        sqlx::query!(
+            r#"
+            INSERT INTO customer_account_allocations (id, entry_id, sale_id, amount)
+            VALUES ($1, $2, $3, $4)
+            "#,
+            Uuid::now_v7(),
+            entry_id,
+            *sale_id,
+            *amount,
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    Ok(RecordedReceipt {
+        entry_id,
+        replayed: false,
+    })
+}
+
+/// Point already-collected money at one more sale. This is the primitive the
+/// credit-application slice will call: it moves no balance, it only says which
+/// sale the money pays.
+pub async fn allocate(
+    conn: &mut PgConnection,
+    entry_id: Uuid,
+    sale_id: Uuid,
+    amount: Decimal,
+) -> Result<(), RepoError> {
+    ensure_cents(amount)?;
+
+    // Read before locking: the entry is append-only, so this row cannot change
+    // under us; only the allocation sum below needs the lock.
+    let entry = sqlx::query!(
+        r#"
+        SELECT customer_id, kind AS "kind: CustomerAccountEntryKind", amount
+        FROM customer_account_entries
+        WHERE id = $1
+        "#,
+        entry_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(RepoError::EntryNotFound)?;
+
+    if entry.kind != CustomerAccountEntryKind::Receipt {
+        return Err(RepoError::NotAReceipt);
+    }
+
+    lock_customer(conn, entry.customer_id).await?;
+
+    let already = sqlx::query_scalar!(
+        r#"
+        SELECT COALESCE(SUM(amount), 0)::numeric(14, 2) AS "already!: Decimal"
+        FROM customer_account_allocations
+        WHERE entry_id = $1
+        "#,
+        entry_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+
+    let collected = -entry.amount;
+    if already + amount > collected {
+        return Err(RepoError::AllocationExceedsReceipt {
+            collected,
+            allocated: already,
+        });
+    }
+
+    ensure_chargeable_sale(conn, entry.customer_id, sale_id).await?;
+
+    let outstanding = outstanding_for_sale_in(conn, sale_id).await?;
+    if amount > outstanding {
+        return Err(RepoError::OutstandingExceeded {
+            requested: amount,
+            outstanding,
+        });
+    }
+
+    sqlx::query!(
+        r#"
+        INSERT INTO customer_account_allocations (id, entry_id, sale_id, amount)
+        VALUES ($1, $2, $3, $4)
+        "#,
+        Uuid::now_v7(),
+        entry_id,
+        sale_id,
+        amount,
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    Ok(())
 }

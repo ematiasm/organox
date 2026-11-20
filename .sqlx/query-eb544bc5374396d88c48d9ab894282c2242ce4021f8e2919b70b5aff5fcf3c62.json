@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COALESCE(SUM(amount), 0)::numeric(14, 2) AS \"already!: Decimal\"\n        FROM customer_account_allocations\n        WHERE entry_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "already!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "eb544bc5374396d88c48d9ab894282c2242ce4021f8e2919b70b5aff5fcf3c62"
+}
