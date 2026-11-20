@@ -16,6 +16,7 @@
 	import CartIcon from '@lucide/svelte/icons/shopping-cart';
 	import ReceiptIcon from '@lucide/svelte/icons/receipt';
 	import ListIcon from '@lucide/svelte/icons/list';
+	import ContactIcon from '@lucide/svelte/icons/contact';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import WalletIcon from '@lucide/svelte/icons/wallet';
@@ -67,6 +68,13 @@
 					label: 'Products',
 					icon: ListIcon,
 					current: (path) => path.startsWith('/products')
+				},
+				{
+					// Customers is registry work, like products: the sale points at it.
+					href: '/customers',
+					label: 'Customers',
+					icon: ContactIcon,
+					current: (path) => path.startsWith('/customers')
 				},
 				{
 					href: '/operations/movements',

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod catalog;
 pub mod config;
 pub mod credit_notes;
+pub mod customers;
 pub mod db;
 pub mod error;
 pub mod openapi;

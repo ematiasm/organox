@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sales\n        SET status = 'completed', total = $2, completed_by = $3, completed_at = now(),\n            -- Freeze the customer name in the SAME statement that closes the\n            -- sale: the snapshot and the status flip commit together, so a\n            -- rename racing the checkout cannot slip in between. A sale\n            -- without a customer stays NULL (the subquery matches no row), and\n            -- a customer deactivated after the attach does NOT block the sale:\n            -- the goods already left, and the snapshot is still taken.\n            customer_name = (SELECT name FROM customers WHERE id = sales.customer_id)\n        WHERE id = $1\n        RETURNING completed_at AS \"completed_at!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "completed_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "completed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Numeric",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "bf94820a1985f5b695b652c3d2be9f1d76633a768a18bea6e6b9543242d1317a"
+}

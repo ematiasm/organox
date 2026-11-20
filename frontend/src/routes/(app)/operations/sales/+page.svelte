@@ -39,6 +39,7 @@
 				<TableRow>
 					<TableHead>When</TableHead>
 					<TableHead>Sale</TableHead>
+					<TableHead>Customer</TableHead>
 					<TableHead>Items</TableHead>
 					<TableHead class="text-right">Total</TableHead>
 					<TableHead class="text-right">Action</TableHead>
@@ -49,6 +50,9 @@
 					<TableRow>
 						<TableCell class="text-muted-foreground">{when(sale.completed_at ?? sale.created_at)}</TableCell>
 						<TableCell class="font-mono text-xs" title={sale.id}>{sale.id.slice(0, 8)}</TableCell>
+						<!-- The name the server carries: for a charged sale it is the one
+						     frozen at checkout, never the registry's live name. -->
+						<TableCell>{sale.customer_name ?? '—'}</TableCell>
 						<TableCell>
 							<Badge variant="secondary">
 								{sale.item_count}

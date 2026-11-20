@@ -15,8 +15,8 @@ Why:
    differ from the one charged; the one that counts is the one the API returns.
 4. **Stock can be validated on every action**, not only at confirmation.
 
-Every mutation returns the **full recalculated sale**. The client does not sum,
-does not validate and does not decide: it only renders.
+Every item mutation returns the **full recalculated sale**. The client does not
+sum, does not validate and does not decide: it only renders.
 
 ## A draft never touches the stock ledger
 
@@ -62,6 +62,27 @@ outbound movement. If a service ever has to be invoiced, the model changes: it
 becomes an item that does not deduct stock, and that needs its own reasoning
 about the ledger.
 
+## The customer is optional, and its name freezes at checkout
+
+A sale may name the customer it serves: `PUT /sales/{id}/customer` attaches or
+clears one, and only on a draft — a completed or cancelled sale is a fact that
+takes no new customer (`409`). The customer must exist (`404`) and be active
+(`409`): those checks reuse the customers module's own rule, not a copy in
+sales SQL.
+
+`SaleResponse.customer_name` follows the live registry while the sale is a
+draft — the sale is still editable, so the name is too. The moment the sale
+completes, the same `UPDATE` that flips `status` and freezes `total` also
+freezes the name onto `sales.customer_name`. After that the snapshot wins, so
+renaming the customer never rewrites what a charged sale says. Same discipline
+as `sale_items.unit_price`.
+
+A customer deactivated between the attach and the checkout does **not** block
+the sale: the goods already left, and the snapshot is still taken.
+
+The registry itself — its fields, deactivation and what it does not have yet —
+is documented in `docs/customers.md`.
+
 ## API
 
 | Method | Route | What it does |
@@ -73,6 +94,7 @@ about the ledger.
 | DELETE | `/api/v1/sales/{id}/items/{product_id}` | Removes the item |
 | POST | `/api/v1/sales/{id}/complete` | Charges; requires the list of payments |
 | POST | `/api/v1/sales/{id}/cancel` | Cancels the draft |
+| PUT | `/api/v1/sales/{id}/customer` | Attaches or clears the draft's customer; body `{"customer_id": "<uuid>"}` or `{"customer_id": null}` |
 | GET | `/api/v1/sales` | Most recent charged sales |
 
 ## How the sale is paid
@@ -97,5 +119,8 @@ routes and the refund ledger.
 - **Cash shift / register close**: there is no shift opening or closing, so cash
   counts are not reconciled against the wallets of `docs/payments.md`.
 - **VAT**: the sale stores the total; the tax is not broken out.
-- **Customer attached** to the sale.
+- **Mandatory customer / account statement**: the customer on a sale is optional
+  (`docs/customers.md`; a walk-in buyer is still a sale), and there is no
+  per-customer account statement — what each customer bought, returned or owes
+  is not viewable yet.
 - **Orphan drafts**: there is no cleanup of old drafts.
