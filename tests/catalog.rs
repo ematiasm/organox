@@ -959,3 +959,32 @@ async fn search_treats_the_wildcards_literally(pool: PgPool) {
         "an ordinary word still matches by substring"
     );
 }
+
+/// Same two pins as the customer search: the escape character itself, and the
+/// re-count path, which no other assertion exercises with a metacharacter.
+#[sqlx::test]
+async fn search_finds_a_literal_backslash(pool: PgPool) {
+    seed_product(&pool, ProductKind::Product, "Ruta C:\\Proveedores", None).await;
+    seed_product(&pool, ProductKind::Product, "Ruta C:/Proveedores", None).await;
+
+    let (found, total) = service::list_products(&pool, None, false, Some("C:\\"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(
+        total, 1,
+        "a backslash is not a wildcard and not a separator"
+    );
+    assert_eq!(found[0].product.name, "Ruta C:\\Proveedores");
+}
+
+#[sqlx::test]
+async fn a_page_past_the_end_recounts_with_the_escaped_pattern(pool: PgPool) {
+    seed_product(&pool, ProductKind::Product, "Kiosco 50% Off", None).await;
+    seed_product(&pool, ProductKind::Product, "Plain Shop", None).await;
+
+    let (empty, total) = service::list_products(&pool, None, false, Some("%"), 50, 99)
+        .await
+        .expect("page");
+    assert!(empty.is_empty());
+    assert_eq!(total, 1, "the re-count uses the escaped pattern too");
+}

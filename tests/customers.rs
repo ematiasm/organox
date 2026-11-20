@@ -611,3 +611,36 @@ async fn search_treats_the_wildcards_literally(pool: PgPool) {
         "an ordinary word still matches by substring"
     );
 }
+
+/// The escape character is a character too: a name with a literal backslash has
+/// to be findable, and one with a slash is a different name. The helper's unit
+/// test proves the doubling; this proves it decodes under the declared ESCAPE.
+#[sqlx::test]
+async fn search_finds_a_literal_backslash(pool: PgPool) {
+    seed_customer(&pool, "Ruta C:\\Proveedores", None).await;
+    seed_customer(&pool, "Ruta C:/Proveedores", None).await;
+
+    let (found, total) = service::list_customers(&pool, false, Some("C:\\"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(
+        total, 1,
+        "a backslash is not a wildcard and not a separator"
+    );
+    assert_eq!(found[0].name, "Ruta C:\\Proveedores");
+}
+
+/// The page query and its count query must receive the same pattern. The
+/// re-count only runs when a page comes back empty, so nothing else exercises
+/// it with a metacharacter.
+#[sqlx::test]
+async fn a_page_past_the_end_recounts_with_the_escaped_pattern(pool: PgPool) {
+    seed_customer(&pool, "Kiosco 50% Off", None).await;
+    seed_customer(&pool, "Plain Shop", None).await;
+
+    let (empty, total) = service::list_customers(&pool, false, Some("%"), 50, 99)
+        .await
+        .expect("page");
+    assert!(empty.is_empty());
+    assert_eq!(total, 1, "the re-count uses the escaped pattern too");
+}

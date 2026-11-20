@@ -114,6 +114,11 @@ fn is_sku_violation(err: &sqlx::Error) -> bool {
 /// cover it by comparing both paths.
 /// A page of products plus the number of products the filters match in total.
 ///
+/// `pattern` is a finished `LIKE` pattern built by [`crate::search::contains`],
+/// not the operator's text: the escaping happens once, in the service, and this
+/// layer only binds it. A raw string here would silently lose substring
+/// matching.
+///
 /// `total` is what lets a client tell a full page from the last page. Without
 /// it a caller that pages by `limit`/`offset` can only guess whether more rows
 /// exist, which is how the product list truncated silently at 50 (issue #22).
@@ -121,7 +126,7 @@ pub async fn list_products(
     pool: &PgPool,
     kind: Option<ProductKind>,
     include_inactive: bool,
-    search: Option<&str>,
+    pattern: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<ProductWithStock>, i64), RepoError> {
@@ -167,7 +172,7 @@ pub async fn list_products(
         "#,
         kind as Option<ProductKind>,
         include_inactive,
-        search,
+        pattern,
         limit,
         offset,
     )
@@ -221,7 +226,7 @@ pub async fn count_products(
     pool: &PgPool,
     kind: Option<ProductKind>,
     include_inactive: bool,
-    search: Option<&str>,
+    pattern: Option<&str>,
 ) -> Result<i64, RepoError> {
     let total = sqlx::query!(
         r#"
@@ -233,7 +238,7 @@ pub async fn count_products(
         "#,
         kind as Option<ProductKind>,
         include_inactive,
-        search,
+        pattern,
     )
     .fetch_one(pool)
     .await?;
