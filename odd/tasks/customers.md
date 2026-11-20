@@ -48,8 +48,8 @@ S12. `make check`, `make prepare` and `make fe-schema` stay clean, because CI fa
 | ID | Task | Specs | Route | Status | Commit |
 |---|---|---|---|---|---|
 | T1 | Backend customers module: `0013_customers.sql`, model, validation, repository, service, handlers, router, OpenAPI stubs, `tests/customers.rs` | S1, S2, S3, S6, S7, S8, S11, S12 | inline | done | 1b52e99 |
-| T2 | Sale ↔ customer: `0014_sales_customer.sql`, `PUT /sales/{id}/customer`, snapshot at completion, `SaleResponse.customer_id/customer_name`, `tests/sales.rs` additions, `docs/sales.md` | S4, S5, S8 | writer | pending | — |
-| T3 | Customers screen: route `(app)/customers`, list/search/pager, Sheet drawer for create/edit/deactivate, API wrappers, regenerated schema | S1, S2, S9, S12 | writer | pending | — |
+| T2 | Sale ↔ customer: `0014_sales_customer.sql`, `PUT /sales/{id}/customer`, snapshot at completion, `SaleResponse.customer_id/customer_name`, `tests/sales.rs` additions, `docs/sales.md` | S4, S5, S8 | writer | done | 8f812c7 |
+| T3 | Customers screen: route `(app)/customers`, list/search/pager, Sheet drawer for create/edit/deactivate, API wrappers, regenerated schema | S1, S2, S9, S12 | writer | done | this branch |
 | T4 | Point of sale: customer picker on the open draft, customer column in the sales history | S4, S10 | writer | pending | — |
 | T5 | `docs/customers.md`, README index and structure tree, final `make check` | S11, S12 | inline | pending | — |
 
@@ -82,3 +82,7 @@ Parent correction during review of the slice: `set_customer` first read the stat
 Independent verification (Risk: item 3 — the completion statement is shared with the POS checkout, the wallet ledger and the credit-note flow) returned PASS on S4, S5 and S8, with the full suite green on both the candidate and the base tree and the atomic attach proven by lock choreography out of tree. Its one advisory was real and is fixed: an omitted `customer_id` was read as "clear the customer", contradicting the documented contract, so presence is now required (`Some(None)` vs `None` via a deserializer) and a cleared customer is an explicit `null`. A test pins the 422 and that the stored row is untouched.
 
 Recorded boundaries, not fixed here because they are older than this feature: malformed request bodies get axum's `text/plain` rejection instead of problem+json on every route in the tree, and `sales_customer_id_idx` has no query yet — it is there for per-customer history, which T4 or a later slice will read.
+
+L5. T3 delivered by a writer: `(app)/customers` with `?search`, 1-based `?page`, `?include_inactive` and `?id`/`?new`, a Sheet drawer with create, partial edit and a two-step deactivate, five `request<T>` wrappers, a Customers entry in the Catalog nav group and `frontend/e2e/customers.cjs`. No frontend unit runner exists in this repo, so the runnable surface was the probe itself: it ran against `make run` on :3000 with the dev database and the freshly built app, **14/14 checks**, after the first run failed 12/14 on two probe bugs (a row click blocked by the drawer overlay, and the deliberately triggered 409 counted as a console error). `npm run check` 0 errors / 0 warnings and `npm run build` clean.
+
+The two server rules this screen may not paper over are written in `client.ts` and in the drawer: an empty optional input travels as `undefined`, never `''`, and `PATCH` cannot clear a field, so no affordance offers it. Every failure is displayed from `problem.detail`, including the duplicate document's 409.

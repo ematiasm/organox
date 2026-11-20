@@ -16,6 +16,9 @@ import type { components } from './schema';
 export type Product = components['schemas']['ProductResponse'];
 export type ProductList = components['schemas']['ProductListResponse'];
 export type ProductKind = components['schemas']['ProductKind'];
+export type Customer = components['schemas']['CustomerResponse'];
+export type CustomerList = components['schemas']['CustomerListResponse'];
+export type CustomerId = components['schemas']['CustomerIdResponse'];
 export type Movement = components['schemas']['MovementResponse'];
 export type MovementReason = components['schemas']['MovementReason'];
 export type Role = components['schemas']['Role'];
@@ -203,6 +206,42 @@ export const api = {
 
 	deactivateProduct: (id: string) =>
 		request<void>(`/api/v1/products/${id}/deactivate`, { method: 'POST' }),
+
+	// --- Customers ---
+	//
+	// The registry a sale may point at. `tax_id`, `email` and `phone` are
+	// optional free text: an empty input is `undefined`, never `''` — on POST an
+	// omitted field means "absent", and on PATCH the server COALESCEs, so a null
+	// means "unchanged" (an optional field can be replaced, not cleared). The
+	// server is the only validator; its `problem.detail` is the error message.
+
+	listCustomers: (params: {
+		search?: string;
+		includeInactive?: boolean;
+		limit?: number;
+		offset?: number;
+	}) =>
+		request<CustomerList>('/api/v1/customers', {
+			query: {
+				search: params.search,
+				include_inactive: params.includeInactive,
+				limit: params.limit,
+				offset: params.offset
+			}
+		}),
+
+	getCustomer: (id: string) => request<Customer>(`/api/v1/customers/${id}`),
+
+	createCustomer: (body: { name: string; tax_id?: string; email?: string; phone?: string }) =>
+		request<CustomerId>('/api/v1/customers', { method: 'POST', body }),
+
+	updateCustomer: (
+		id: string,
+		body: { name?: string; tax_id?: string; email?: string; phone?: string }
+	) => request<void>(`/api/v1/customers/${id}`, { method: 'PATCH', body }),
+
+	deactivateCustomer: (id: string) =>
+		request<void>(`/api/v1/customers/${id}/deactivate`, { method: 'POST' }),
 
 	// --- Wallets and payment methods ---
 	//
