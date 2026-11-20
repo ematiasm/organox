@@ -1081,14 +1081,15 @@ async fn owner_reset_of_own_password_keeps_current_session(pool: sqlx::PgPool) {
 /// must not keep a live login alive.
 #[sqlx::test]
 async fn create_or_reset_creates_a_missing_user(pool: PgPool) {
-    let outcome =
-        service::create_or_reset_user(&pool, "dev@pyme.com", Role::Owner, "first-secret-1")
-            .await
-            .expect("upsert creates");
+    // Generated per run: a literal here is a CodeQL hard-coded-credential alert.
+    let first = test_password();
+    let outcome = service::create_or_reset_user(&pool, "dev@pyme.com", Role::Owner, &first)
+        .await
+        .expect("upsert creates");
     assert!(matches!(outcome, UpsertOutcome::Created(_)));
 
     let limiter = AccountLimiter::new(pool.clone(), AccountPolicy::default());
-    match service::login(&pool, &limiter, "dev@pyme.com", "first-secret-1", None)
+    match service::login(&pool, &limiter, "dev@pyme.com", &first, None)
         .await
         .expect("login")
     {
@@ -1100,19 +1101,15 @@ async fn create_or_reset_creates_a_missing_user(pool: PgPool) {
 
 #[sqlx::test]
 async fn create_or_reset_replaces_the_password_and_revokes_sessions(pool: PgPool) {
-    let id = service::create_user(
-        &pool,
-        Role::Owner,
-        "dev@pyme.com",
-        "first-secret-1",
-        Role::Owner,
-    )
-    .await
-    .expect("user");
+    let first = test_password();
+    let second = test_password();
+    let id = service::create_user(&pool, Role::Owner, "dev@pyme.com", &first, Role::Owner)
+        .await
+        .expect("user");
 
     // A live session for the old password, which the reset must invalidate.
     let limiter = AccountLimiter::new(pool.clone(), AccountPolicy::default());
-    let old_session = match service::login(&pool, &limiter, "dev@pyme.com", "first-secret-1", None)
+    let old_session = match service::login(&pool, &limiter, "dev@pyme.com", &first, None)
         .await
         .expect("login")
     {
@@ -1123,21 +1120,20 @@ async fn create_or_reset_replaces_the_password_and_revokes_sessions(pool: PgPool
 
     // Reset with a DIFFERENT role: with Owner in and Owner out, the assertion
     // below would pass even if the reset overwrote the stored role.
-    let outcome =
-        service::create_or_reset_user(&pool, "dev@pyme.com", Role::Manager, "second-secret-2")
-            .await
-            .expect("upsert resets");
+    let outcome = service::create_or_reset_user(&pool, "dev@pyme.com", Role::Manager, &second)
+        .await
+        .expect("upsert resets");
     assert!(matches!(outcome, UpsertOutcome::PasswordReset(uid) if uid == id));
 
     // The old password is gone, the new one works.
     assert!(matches!(
-        service::login(&pool, &limiter, "dev@pyme.com", "first-secret-1", None)
+        service::login(&pool, &limiter, "dev@pyme.com", &first, None)
             .await
             .expect("login is evaluated"),
         LoginOutcome::InvalidCredentials
     ));
     assert!(matches!(
-        service::login(&pool, &limiter, "dev@pyme.com", "second-secret-2", None)
+        service::login(&pool, &limiter, "dev@pyme.com", &second, None)
             .await
             .expect("login"),
         LoginOutcome::Authenticated { .. }
