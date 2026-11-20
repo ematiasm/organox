@@ -1823,3 +1823,94 @@ async fn a_zero_total_sale_needs_no_on_account(pool: PgPool) {
     assert_eq!(stock_outflow_count(&pool).await, 1);
     assert_eq!(ledger_entry_count(&pool).await, 0);
 }
+
+/// A negative on-account amount is the only way 105 collected at the till can
+/// balance a total of 100. It would leave the sale over-collected with nothing
+/// in the ledger explaining the surplus, so the guard has to refuse it before
+/// any write.
+#[sqlx::test]
+async fn a_negative_on_account_is_rejected(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "105.00" } ],
+            "on_account": "-5.00"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "the on-account amount cannot be negative"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(wallet_balance(&pool, wallet).await, Decimal::ZERO);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// The on-account charge waits for the customer's advisory lock, and that wait
+/// is bounded. A collection in flight must not turn a checkout into a request
+/// that hangs forever: the register gets a retryable 409 instead.
+#[sqlx::test]
+async fn a_busy_customer_account_answers_409(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    // Another connection holds the account the way a collection in flight does.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(customer.to_string())
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        http_complete(
+            &pool,
+            &cookie,
+            draft,
+            serde_json::json!({ "payments": [], "on_account": "100.00" }),
+        ),
+    )
+    .await
+    .expect("the completion never answered: the lock wait is not bounded");
+
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        problem_detail(response).await,
+        "the customer account is busy, retry"
+    );
+
+    holder.rollback().await.unwrap();
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}

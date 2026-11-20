@@ -55,6 +55,11 @@ one wins and the other gets `409` with the exact available quantity. Covered by
 If stock is missing **nothing is written**: no movements, no status, no modified
 cart. Covered by `insufficient_stock_leaves_no_state_change`.
 
+When part of the total is on account, the same transaction also writes the charge
+in the customer's ledger, so the goods, the money and the debt commit together.
+That charge serializes against collections on the same account: a busy account
+answers `409` and the operator retries, instead of queueing behind it.
+
 ## A service is not sold as an item
 
 `service_cannot_be_sold_as_item`. A service has no stock, so it cannot produce an

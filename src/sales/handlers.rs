@@ -469,7 +469,7 @@ fn remove_item_doc() {}
          content_type = "application/problem+json"),
         (status = 404, description = "Not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "Insufficient stock or sale already closed", body = crate::openapi::Problem,
+        (status = 409, description = "Insufficient stock, sale already closed, or the customer account is busy", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 422, description = "Sale empty, wrong sum, unusable method, or an on-account amount without an active customer", body = crate::openapi::Problem,
          content_type = "application/problem+json"),

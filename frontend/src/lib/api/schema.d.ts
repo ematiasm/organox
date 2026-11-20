@@ -2120,7 +2120,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Insufficient stock or sale already closed */
+            /** @description Insufficient stock, sale already closed, or the customer account is busy */
             409: {
                 headers: {
                     [name: string]: unknown;

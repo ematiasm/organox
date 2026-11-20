@@ -319,3 +319,16 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   serde default and the problem details. `sales` still has no settlement column: the ledger is the
   only truth. Generated contract regenerated (`openapi.json`, `schema.d.ts`). Full `make check`
   green at 305 tests, `sales.rs` 42, svelte-check 0/0.
+- L16 — T2 reviewed: lineage `review-a7e4951a9f9a438d`, tier **high**, candidate `f06a2a6..HEAD`
+  (the advisories commit and T2 together), **approved**, authority burned. Nine advisories, all
+  non-blocking. Closed right after the receipt: the negative `on_account` guard and the bounded
+  lock wait each got the test they were missing (`a_negative_on_account_is_rejected`,
+  `a_busy_customer_account_answers_409`, the latter driving a real `55P03`), and the 409
+  description now names the busy account in the contract, the generated document and
+  `docs/sales.md`. Still open, each with its owner: **T3** `R1-on-account-credit-unbounded` (no
+  aggregate ceiling yet — the credit limit is precisely T3), `R3-active-check-race` and
+  `R4-on-account-active-gate-race` (the `is_active` read is not locked, so a deactivation inside
+  the window can still be charged; close it with the limit work, which will touch the same gate);
+  **T4** `R1-receipt-backing-not-customer-bound`; **accepted, documented** `R4-advisory-wait-holds-checkout-locks`
+  and `R4-busy-409-contract-gap` (the 409 is now documented; the checkout serialization is the
+  deliberate price of one lock order).
