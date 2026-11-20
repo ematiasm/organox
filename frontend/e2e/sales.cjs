@@ -14,6 +14,11 @@
  * S6: a reload keeps the note in the list.
  * S7: asking for more than is left shows the server's 409 detail and writes
  *     nothing.
+ * S8: a sale paid twice with the same payment method refunds through both
+ *     payments, and the created note renders two refund rows that share one
+ *     wallet and method (the duplicate-key case).
+ * S9: a line returned down to zero shows the fully-returned state with its
+ *     input disabled.
  *
  * Usage: E2E_BASE=http://localhost:5173 E2E_EMAIL=owner@example.com \
  *   E2E_PASSWORD=... node e2e/sales.cjs
@@ -359,6 +364,163 @@ async function login(page) {
 			});
 		}
 
+		// --- S8: a sale paid twice with one method -------------------------
+		//
+		// Both payments land in the same wallet through the same method, so the
+		// note's two refunds repeat wallet and method: the each key needs the
+		// position to stay unique.
+		const splitDraft = await api(page, '/api/v1/sales/draft', { method: 'POST' });
+		const splitSaleId = splitDraft.body?.id;
+		const splitAdded = await api(page, `/api/v1/sales/${splitSaleId}/items`, {
+			method: 'POST',
+			body: { product_id: productId, quantity: '2' }
+		});
+		const splitCharged = await api(page, `/api/v1/sales/${splitSaleId}/complete`, {
+			method: 'POST',
+			body: {
+				payments: [
+					{ payment_method_id: method.body.id, amount: '10.00' },
+				{ payment_method_id: method.body.id, amount: '15.00' }
+			]
+			}
+		});
+		const splitOk = await attempt(
+			'S8',
+			'a sale paid twice with one method is charged',
+			async () => ({
+				ok:
+					splitDraft.status === 201 &&
+					typeof splitSaleId === 'string' &&
+					splitAdded.status === 200 &&
+					splitCharged.status === 200 &&
+					splitCharged.body?.total === '25.00',
+				detail: `draft=${JSON.stringify(splitDraft)} add=${JSON.stringify(splitAdded)} complete=${JSON.stringify(splitCharged)}`
+			})
+		);
+
+		if (splitOk) {
+			await page.goto(`${BASE}/operations/sales/${splitSaleId}/credit-note`, {
+				waitUntil: 'networkidle'
+			});
+			await page.locator(`#return-qty-${productId}`).fill('1');
+			await page.locator('#return-reason').fill(REASON);
+			const splitPosted = page.waitForResponse(
+				(r) =>
+					r.request().method() === 'POST' &&
+					r.url().endsWith(`/sales/${splitSaleId}/credit-notes`)
+			);
+			await page.getByRole('button', { name: 'Issue credit note' }).click();
+			const splitResponse = await splitPosted;
+			const splitNote = await splitResponse.json();
+			await attempt('S8', 'the note refunds through both payments of the method', async () => ({
+				ok:
+					splitResponse.status() === 201 &&
+					splitNote.refunds?.length === 2 &&
+					splitNote.refunds.every((r) => r.wallet_name === WALLET) &&
+					splitNote.refunds.some((r) => r.amount === '5.00') &&
+					splitNote.refunds.some((r) => r.amount === '7.50'),
+				detail: `status=${splitResponse.status()} note=${JSON.stringify(splitNote)}`
+			}));
+
+			await attempt('S8', 'the created note shows both refund rows of one method', async () => {
+				await page.locator('.issued').waitFor({ state: 'visible', timeout: 15000 });
+				const rows = page.locator('.issued ul li');
+				const count = await rows.count();
+				const text = await page.locator('.issued').innerText();
+				return {
+					ok: count === 2 && text.includes('5.00') && text.includes('7.50'),
+					detail: `count=${count} text=${text}`
+				};
+			});
+			await attempt('S8', 'the notes list shows both refund rows', async () => {
+				const row = page.locator('#credit-notes-table tbody tr').first();
+				await row.waitFor({ state: 'visible', timeout: 15000 });
+				const refunds = row.locator('td').last().locator('li');
+				const count = await refunds.count();
+				const amounts = await refunds.allInnerTexts();
+				return {
+					ok:
+						count === 2 &&
+						amounts.some((t) => t.includes('5.00')) &&
+						amounts.some((t) => t.includes('7.50')),
+					detail: `count=${count} amounts=${JSON.stringify(amounts)}`
+				};
+			});
+
+			// --- S9: the same sale returned down to zero -------------------
+			const oneLeft = await attempt(
+				'S9',
+				'the first split note leaves one unit returnable',
+				async () => {
+					await page.waitForFunction(
+						(id) => {
+							const input = document.getElementById(`return-qty-${id}`);
+							return input && input.max === '1' && input.value === '0';
+						},
+						productId,
+						{ timeout: 15000 }
+					);
+					return { ok: true, detail: '' };
+				}
+			);
+
+			if (oneLeft) {
+				await page.locator(`#return-qty-${productId}`).fill('1');
+				await page.locator('#return-reason').fill(REASON);
+				const lastPosted = page.waitForResponse(
+					(r) =>
+						r.request().method() === 'POST' &&
+						r.url().endsWith(`/sales/${splitSaleId}/credit-notes`)
+				);
+				await page.getByRole('button', { name: 'Issue credit note' }).click();
+				const lastResponse = await lastPosted;
+				const lastNote = await lastResponse.json();
+				await attempt('S9', 'the second note keeps both refund rows distinct', async () => {
+					await page.locator('.issued').waitFor({ state: 'visible', timeout: 15000 });
+					const rows = page.locator('.issued ul li');
+					const count = await rows.count();
+					const text = await page.locator('.issued').innerText();
+					return {
+						ok:
+							lastResponse.status() === 201 &&
+							count === 2 &&
+							text.includes('5.00') &&
+							text.includes('7.50'),
+							detail: `status=${lastResponse.status()} count=${count} text=${text}`
+					};
+				});
+				await attempt('S9', 'the line shows the fully-returned state', async () => {
+					await page.waitForFunction(
+						(id) =>
+							document
+								.getElementById(`return-line-${id}`)
+								?.textContent?.includes('Fully returned'),
+						productId,
+						{ timeout: 15000 }
+					);
+					const line = await page.locator(`#return-line-${productId}`).innerText();
+					const input = page.locator(`#return-qty-${productId}`);
+					return {
+						ok:
+							line.includes('Fully returned') &&
+							!line.includes('left') &&
+							(await input.isDisabled()),
+						detail: `line=${line} disabled=${await input.isDisabled()}`
+					};
+				});
+				await attempt('S9', 'the server reports nothing left to return', async () => {
+					const after = await api(page, `/api/v1/sales/${splitSaleId}/credit-notes`);
+					return {
+						ok:
+							after.status === 200 &&
+							after.body?.credit_notes?.length === 2 &&
+							Number(after.body?.items?.[0]?.returnable_quantity) === 0,
+						detail: JSON.stringify(after)
+					};
+				});
+			}
+		}
+
 		check('X', 'no page errors', errors.length === 0, errors.join(' | '));
 	} finally {
 		// Leave no extra active method behind: the payments probe asserts that
@@ -369,10 +531,20 @@ async function login(page) {
 					method: 'PATCH',
 					body: { is_active: false }
 				});
-				check('S8', 'the probe deactivates its payment method', disabled.status === 204, JSON.stringify(disabled));
+				check(
+					'cleanup',
+					'the probe deactivates its payment method',
+					disabled.status === 204,
+					JSON.stringify(disabled)
+				);
 			}
 		} catch (error) {
-			check('S8', 'the probe deactivates its payment method', false, String(error).split('\n')[0]);
+			check(
+				'cleanup',
+				'the probe deactivates its payment method',
+				false,
+				String(error).split('\n')[0]
+			);
 		}
 		await browser.close();
 	}

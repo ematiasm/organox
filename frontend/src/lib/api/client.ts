@@ -285,8 +285,10 @@ export const api = {
 
 	// --- Credit notes ---
 	//
-	// A return sends only a reason and quantities. The note's prices, total and
-	// refunds come back from the server; the client never calculates them.
+	// A return sends a reason, quantities and an optional idempotency key: a
+	// repeated create with the same key and sale returns the first note. The
+	// note's prices, total and refunds come back from the server; the client
+	// never calculates them.
 
 	listSales: () => request<Sale[]>('/api/v1/sales'),
 

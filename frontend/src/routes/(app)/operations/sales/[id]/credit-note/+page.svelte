@@ -28,8 +28,16 @@
 	);
 	let reason = $state('');
 	let error = $state<string | null>(null);
+	// Non-blocking: the note is created; only the screen refresh failed.
+	let refreshNotice = $state<string | null>(null);
 	let busy = $state(false);
 	let created = $state<CreditNote | null>(null);
+
+	// One idempotency key per intended note, not per submit: created lazily on
+	// the first submit, kept across failures and cleared only after the POST
+	// succeeds, so a retry (a lost response, a failed refresh) replays this
+	// note instead of issuing a second one.
+	let idempotencyKey: string | null = null;
 
 	/** Only units are counted here; every money amount is the server's string. */
 	const selectedUnits = $derived(
@@ -71,8 +79,11 @@
 		if (!canSubmit || !credits) return;
 
 		error = null;
+		refreshNotice = null;
 		busy = true;
+		let note: CreditNote;
 		try {
+			idempotencyKey ??= crypto.randomUUID();
 			const items = Object.entries(quantities)
 				.filter(
 					([productId, quantity]) =>
@@ -80,16 +91,32 @@
 				)
 				.map(([productId, quantity]) => ({ product_id: productId, quantity: String(quantity) }));
 
-			const note = await api.createCreditNote(data.saleId, { reason: reason.trim(), items });
-			created = note;
-			reason = '';
-			for (const productId of Object.keys(quantities)) quantities[productId] = 0;
+			note = await api.createCreditNote(data.saleId, {
+				reason: reason.trim(),
+				items,
+				idempotency_key: idempotencyKey
+			});
+		} catch (e) {
+			// The key is kept on purpose: a resubmit replays this same intended note.
+			error = failure(e, 'Could not issue the credit note.');
+			busy = false;
+			return;
+		}
+
+		// The note exists on the server now: show it and reset the form before
+		// the refresh, so a failed refresh cannot hide a created note or invite
+		// a retry that would issue a second one.
+		created = note;
+		idempotencyKey = null;
+		reason = '';
+		for (const productId of Object.keys(quantities)) quantities[productId] = 0;
+		try {
 			// The notes list and the returnable quantities both come from the
 			// load, so one invalidation refreshes the whole screen.
 			await invalidateAll();
-		} catch (e) {
-			created = null;
-			error = failure(e, 'Could not issue the credit note.');
+		} catch {
+			refreshNotice =
+				'The credit note was issued, but the lists could not be refreshed. Reload the page to see the updated notes and returnable quantities.';
 		} finally {
 			busy = false;
 		}
@@ -119,11 +146,16 @@
 		<p class="mb-4 text-sm text-destructive" role="alert">{error}</p>
 	{/if}
 
+	{#if refreshNotice}
+		<p class="mb-4 text-sm text-muted-foreground" role="status">{refreshNotice}</p>
+	{/if}
+
 	{#if created}
 		<div class="issued mb-6 rounded-lg border border-border p-4 text-sm" role="status">
 			<strong>Credit note issued.</strong> Total {created.total}.
 			<ul class="mt-2 space-y-0.5 text-muted-foreground">
-				{#each created.refunds as refund (refund.wallet_id + refund.payment_method_id)}
+				<!-- The index is part of the key: a sale paid twice with one method produces two refunds with the same wallet and method. -->
+				{#each created.refunds as refund, i (refund.wallet_id + ':' + refund.payment_method_id + ':' + i)}
 					<li>{refund.wallet_name} ({refund.payment_method_name}): {refund.amount}</li>
 				{/each}
 			</ul>
@@ -155,7 +187,8 @@
 				</TableHeader>
 				<TableBody>
 					{#each credits.items as line (line.product_id)}
-						{@const fullyReturned = line.returnable_quantity === '0'}
+					<!-- Zero at any decimal scale: the contract is a decimal string, not the literal "0". -->
+					{@const fullyReturned = Number(line.returnable_quantity) === 0}
 						<TableRow
 							id={`return-line-${line.product_id}`}
 							class={fullyReturned ? 'opacity-60' : ''}
@@ -257,7 +290,8 @@
 								</TableCell>
 								<TableCell class="whitespace-normal">
 									<ul class="space-y-0.5 text-xs">
-										{#each note.refunds as refund (refund.wallet_id + refund.payment_method_id)}
+										<!-- The index is part of the key: a sale paid twice with one method produces two refunds with the same wallet and method. -->
+										{#each note.refunds as refund, i (refund.wallet_id + ':' + refund.payment_method_id + ':' + i)}
 											<li>{refund.wallet_name}: {refund.amount}</li>
 										{/each}
 									</ul>
