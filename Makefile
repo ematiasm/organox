@@ -2,6 +2,13 @@
 # (copy `.env.example`) and that the DB is up (`make db-up`).
 
 -include .env
+# The bare `export` makes every variable `.env` defines (DATABASE_URL,
+# DEV_PASSWORD, ...) part of the environment of every recipe below, not only of
+# the recipes that use it. Deliberate: recipes like `run`, `migrate` and
+# `create-user` need DATABASE_URL in their environment, and make has no way to
+# export a subset of what `-include` just read in. The comment on `dev-user`
+# explains how that recipe keeps the password out of the command line make
+# hands to the shell.
 export
 
 .PHONY: help db-up db-down db-reset migrate new-migration run create-user dev-user prepare test fmt lint check fe-install fe-dev fe-build fe-check fe-schema dev backup backup-check backup-install
@@ -59,17 +66,22 @@ create-user: ## Create a user: make create-user EMAIL=x@y.com ROLE=owner
 	@test -n "$(ROLE)" || (echo "missing ROLE=owner|manager" && exit 1)
 	cargo run --bin create-user -- --email $(EMAIL) --role $(ROLE)
 
-# The development credentials are exported so the recipe can read them from the
-# environment instead of from its own text: make expands `$(VAR)` into the
-# command line it hands to the shell, which would put the password in `ps` for
-# the whole pipeline. `$$VAR` leaves the shell to expand it.
-export DEV_PASSWORD
-
+# DEV_PASSWORD arrives in this recipe's environment through the bare `export`
+# at the top of this file, like every other variable `.env` defines: there is
+# no per-target scoping in make to restore, and a second `export DEV_PASSWORD`
+# here would only have repeated that fact. The recipe reads it from the
+# environment with `$$DEV_PASSWORD`: make expands `$(VAR)` into the command
+# line it hands to the shell, which would put the password in `ps` for the
+# whole pipeline, and `$$VAR` leaves the expansion to the shell.
+#
+# A reset does not clear a failed-login lockout: if the account is locked, the
+# next login is still rejected until the lock expires, so a rejected login
+# right after this target is the lock at work, not a failed reset.
 dev-user: ## Create or reset the dev user from .env: DEV_PASSWORD, DEV_EMAIL, DEV_ROLE
 	@test -n "$$DEV_PASSWORD" || (echo "missing DEV_PASSWORD in .env (see docs/auth.md)" && exit 1)
 	@printf '%s' "$$DEV_PASSWORD" | cargo run --quiet --bin create-user -- \
-		--email $(or $(DEV_EMAIL),owner@pyme.com) \
-		--role $(or $(DEV_ROLE),owner) \
+		--email "$(or $(DEV_EMAIL),owner@pyme.com)" \
+		--role "$(or $(DEV_ROLE),owner)" \
 		--password-stdin --upsert
 
 prepare: ## Regenerate the sqlx query cache (commit .sqlx/)
