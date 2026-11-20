@@ -350,3 +350,14 @@ sends no idempotency key). Also `R2-004` / `R3-fully-returned-untested` (`return
 === '0'` is string equality against a decimal contract, and the state has no assertion) and five
 e2e-assertion nits (`R2-001`, `R2-002`, `R2-005`, `R3-nav-assertion-drift`: the nav assertion
 was already red at baseline and this slice repaired it).
+
+L19 — native review of the T10 fix (`7708ad8` vs `2dfd618`, tier medium, lenses readability +
+reliability): **approved**, authority burned. Nine advisories, all SUGGESTION except one real
+WARNING: `R3-randomuuid-secure-context` — `crypto.randomUUID` exists only in secure contexts and
+this app is served over plain HTTP on a LAN or tailnet on purpose, so every submit there would
+have thrown before sending anything. Fixed in `19f182d` (fallback to `getRandomValues`, then to a
+timestamp string) and **approved with no findings** (lineage `review-9a23ab87866cfd29`). The
+remaining advisories are test-rigor and scoping notes recorded for later: replay-after-lost-create
+unproved, refresh-failure notice unproved, the retained key spanning payload edits, and two e2e
+assertions that can match the previous note's DOM. One approved review also created a probe
+owner in the dev database (`e2e-credit-notes-t10@example.test`) for the browser proof.
