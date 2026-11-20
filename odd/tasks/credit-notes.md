@@ -176,6 +176,12 @@ movements and the `sale_refund` wallet movements, and commits once.
   `refundable_total`; tests for the 200/201 replay status over HTTP, an over-long key, a
   concurrent same-key pair, and a fractional sale whose quantities and money run out together.
   T8 keeps the note's `total` equal to the sum of its lines: the cap refuses, never clamps.
+- **T10** — S9 — the two real defects the slice-5 review found: refund rows keyed by a value
+  that repeats when a sale paid twice with one method (add the position to the key), and a
+  failed post-success refresh hiding a note that was created (separate the two errors and
+  send one idempotency key per intended note, so a retry replays instead of duplicating).
+  `returnable_quantity === '0'` becomes a numeric check, and the browser proof gains the
+  same-method-two-payments sale and the fully-returned state.
 - **T9** — S6, S7 — the four T8 advisories: assert a 100-character key is accepted, prove
   the one-connection property with a pool capped at one connection, state in the code that
   the unique-race recovery is unreachable under the sale lock (a comment, not a test), and
