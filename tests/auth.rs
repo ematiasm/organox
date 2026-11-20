@@ -1160,3 +1160,65 @@ async fn create_or_reset_replaces_the_password_and_revokes_sessions(pool: PgPool
         "a password reset must not change the role: it was called with Manager"
     );
 }
+
+// --- Pins for the `make dev-user` surface --------------------------------
+
+/// `make dev-user` passes `--upsert` and `--password-stdin` to this binary;
+/// if either flag disappears or is renamed, the target breaks at exactly the
+/// moment a developer relies on it. `--help` needs no database, so this is a
+/// plain test rather than an integration one.
+#[test]
+fn cli_advertises_the_flags_the_dev_user_target_passes() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_create-user"))
+        .arg("--help")
+        .output()
+        .expect("the compiled create-user binary must run");
+
+    assert!(output.status.success(), "--help must exit 0");
+    let stdout = String::from_utf8(output.stdout).expect("--help output is UTF-8");
+    assert!(
+        stdout.contains("--upsert"),
+        "create-user must advertise --upsert: `make dev-user` passes it"
+    );
+    assert!(
+        stdout.contains("--password-stdin"),
+        "create-user must advertise --password-stdin: `make dev-user` passes it"
+    );
+}
+
+/// The `dev-user` recipe must reference the password as `$$DEV_PASSWORD` and
+/// must contain no `$(DEV_PASSWORD)` expansion.
+///
+/// This pins the fix for a plaintext leak, as a test, because nothing else can
+/// see it: `$(VAR)` is expanded by make **into the recipe text** it hands to the
+/// shell, so the password would sit in that command line — readable via `ps`
+/// by every local user, and printed verbatim by `make -n` — for as long as the
+/// argon2 hash takes. `$$VAR` leaves the expansion to the shell, which keeps
+/// the value out of the recipe text and out of any log. This is not pedantry:
+/// delete the assertion and the leak can return with every other test green.
+#[test]
+fn dev_user_recipe_keeps_the_password_out_of_the_recipe_text() {
+    let makefile = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Makefile"))
+        .expect("the Makefile sits next to the crate and must be readable");
+
+    let start = makefile
+        .lines()
+        .position(|line| line.starts_with("dev-user:"))
+        .expect("the Makefile must keep a dev-user target");
+    let recipe: Vec<&str> = makefile
+        .lines()
+        .skip(start + 1)
+        .take_while(|line| line.starts_with('\t'))
+        .collect();
+    assert!(!recipe.is_empty(), "dev-user must have a recipe to inspect");
+
+    assert!(
+        recipe.iter().any(|line| line.contains("$$DEV_PASSWORD")),
+        "the recipe must read the password via the shell ($$DEV_PASSWORD)"
+    );
+    assert!(
+        recipe.iter().all(|line| !line.contains("$(DEV_PASSWORD)")),
+        "make would expand $(DEV_PASSWORD) into the recipe text, leaking the \
+         password to `ps` and to `make -n` output"
+    );
+}

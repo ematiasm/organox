@@ -100,7 +100,22 @@ pub async fn create_user(
         return Err(AuthError::Forbidden);
     }
 
+    create_user_record(pool, email, password_plain, role).await
+}
+
+/// The single creation path, shared by the API route and the terminal upsert.
+///
+/// Owns everything a new account must satisfy — email and password validation,
+/// hashing, the insert, the "already registered" answer — so a change to
+/// creation policy lands here and nowhere else.
+async fn create_user_record(
+    pool: &PgPool,
+    email: &str,
+    password_plain: &str,
+    role: Role,
+) -> Result<Uuid, AuthError> {
     let email = ValidatedEmail::parse(email)?;
+    validation::validate_password(password_plain)?;
 
     let id = repository::create_user(
         pool,
@@ -137,6 +152,8 @@ pub enum UpsertOutcome {
 /// A reset replaces the hash and revokes every session of that user in one
 /// transaction, because a password that no longer exists must not keep a live
 /// login alive. The role is left alone: a password reset is not a promotion.
+/// Creation goes through `create_user_record` — the same path as the API — so
+/// creation policy changes land in one place.
 pub async fn create_or_reset_user(
     pool: &PgPool,
     email: &str,
@@ -144,27 +161,17 @@ pub async fn create_or_reset_user(
     password_plain: &str,
 ) -> Result<UpsertOutcome, AuthError> {
     let email = ValidatedEmail::parse(email)?;
-    // The policy belongs to the service, not to whoever calls it: a documented
-    // minimum that only the CLI enforces is a minimum the next caller forgets.
-    validation::validate_password(password_plain)?;
-    let new_hash = hash_off_thread(password_plain.to_string()).await?;
 
     let Some(existing) = repository::find_user_by_email(pool, &email).await? else {
-        let id = repository::create_user(
-            pool,
-            NewUser {
-                email: &email,
-                password_hash: &new_hash,
-                role,
-            },
-        )
-        .await
-        .map_err(|err| match err {
-            RepoError::EmailTaken => AuthError::EmailTaken,
-            other => AuthError::Internal(other),
-        })?;
+        let id = create_user_record(pool, email.as_str(), password_plain, role).await?;
         return Ok(UpsertOutcome::Created(id));
     };
+
+    // The password policy belongs to the service, not to whoever calls it: a
+    // documented minimum that only the CLI enforces is a minimum the next
+    // caller forgets.
+    validation::validate_password(password_plain)?;
+    let new_hash = hash_off_thread(password_plain.to_string()).await?;
 
     let mut tx = pool.begin().await?;
     if !repository::update_password_hash(&mut *tx, existing.id, &new_hash).await? {

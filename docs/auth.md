@@ -136,19 +136,31 @@ make dev-user    # reads the variables below from .env, like every other target
 | `DEV_EMAIL` | `owner@pyme.com` | Not a secret |
 | `DEV_ROLE` | `owner` | Applied on creation only; a reset keeps the existing role |
 
+A reset does not clear a failed-login lockout (`docs/ratelimit.md`): if the
+account is locked, the next login is still rejected until the lock expires. A
+rejected login right after `make dev-user` is that lock at work, not a failed
+reset.
+
 This does **not** reopen the decision in the table above. Nothing here runs at
 startup: `make dev-user` is a command a person types, so it cannot resurrect a
 deleted user between deploys or overwrite a password nobody asked it to touch.
 
-The password reaches `create-user --password-stdin` through the **environment**
-of the recipe, never through a command line. That distinction is the whole point
-of the `$$` in the target: make expands `$(VAR)` into the text it hands to the
-shell as its `-c` argument, which would put the plaintext password in `ps` for
-the whole pipeline — including the seconds argon2 spends hashing. With `$$VAR`
-the shell expands it itself, the recipe text only ever contains the variable
-name, and `make -n` prints a dry run that is safe to paste into a log. A process
-environment is readable by its own user and by root, not by every local user the
-way a command line is.
+What protects the value is that no `$(DEV_PASSWORD)` exists anywhere in the
+target: make never expands it into the recipe text, so the text it hands to the
+shell — and the dry run `make -n` prints, safe to paste into a log — carries
+only the variable name. The shell expands `$$DEV_PASSWORD` itself and pipes the
+value to the tool as data on stdin. That distinction is the whole point of the
+`$$` in the target: make expands `$(VAR)` into the text it hands to the shell as
+its `-c` argument, which would put the plaintext password in `ps` for the whole
+pipeline — including the seconds argon2 spends hashing.
+
+One residual, stated precisely: the recipe does pass the value to `printf` as
+an argument. `printf` is a builtin in the shells make uses here (`/bin/sh`), so
+normally no process `argv` ever carries the value — but that is a property of
+the shell, not a guarantee of this design, and an external `printf` would expose
+the value in that process's command line for as long as the pipe takes. The
+environment, by contrast, is readable by its own user and by root, not by every
+local user the way a command line is.
 
 Never point it at a deployment database: the target reads `DATABASE_URL` from the
 same file, so the two travel together and the mistake would be a conscious one.
