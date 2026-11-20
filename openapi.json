@@ -1327,7 +1327,7 @@
           "sales"
         ],
         "summary": "Complete the sale.",
-        "description": "In one transaction: validate stock with the product row locked, check that\nthe payments add up to the total, write an outflow movement per item and a\nmoney movement per payment, then close the sale. Any rejection leaves **no**\nmovements and no status change.",
+        "description": "In one transaction: validate stock with the product row locked, check that\nthe payments plus the optional `on_account` amount add up to the total,\nwrite an outflow movement per item, a money movement per payment and, when\npart of the total is on account, the charge in the customer's ledger,\nthen close the sale. Any rejection leaves **no** movements, no ledger\nentry and no status change.",
         "operationId": "complete_sale_doc",
         "parameters": [
           {
@@ -1393,7 +1393,7 @@
             }
           },
           "422": {
-            "description": "Sale empty, payments missing, wrong sum or unusable method",
+            "description": "Sale empty, wrong sum, unusable method, or an on-account amount without an active customer",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2458,6 +2458,11 @@
           "payments"
         ],
         "properties": {
+          "on_account": {
+            "type": "string",
+            "description": "Part of the total charged to the customer's account instead of\ncollected at the till. Optional and defaults to 0; never negative and\nat most two decimals. The payments plus this amount must equal the\ntotal the server calculated, and a positive amount needs an active\ncustomer on the draft.",
+            "example": "60.00"
+          },
           "payments": {
             "type": "array",
             "items": {

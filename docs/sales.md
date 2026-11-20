@@ -92,17 +92,23 @@ is documented in `docs/customers.md`.
 | POST | `/api/v1/sales/{id}/items` | Adds; if it was already there, adds the quantity |
 | PUT | `/api/v1/sales/{id}/items/{product_id}` | Sets the quantity; `0` removes it |
 | DELETE | `/api/v1/sales/{id}/items/{product_id}` | Removes the item |
-| POST | `/api/v1/sales/{id}/complete` | Charges; requires the list of payments |
+| POST | `/api/v1/sales/{id}/complete` | Charges; takes the list of payments and the optional `on_account` part |
 | POST | `/api/v1/sales/{id}/cancel` | Cancels the draft |
 | PUT | `/api/v1/sales/{id}/customer` | Attaches or clears the draft's customer; body `{"customer_id": "<uuid>"}` or `{"customer_id": null}` |
 | GET | `/api/v1/sales` | Most recent charged sales |
 
 ## How the sale is paid
 
-Charging requires at least one payment method and the payments must add up to
-the total the server computed. Each payment writes a movement into the wallet
-that method points at, in the same transaction that deducts stock. Wallets,
-payment methods and their ledger have their own document: `docs/payments.md`.
+Charging requires that the payments plus the optional `on_account` amount add
+up to the total the server computed. Each payment writes a movement into the
+wallet that method points at, in the same transaction that deducts stock. The
+`on_account` part is different: it is the part the customer leaves owing, so it
+writes one charge in the customer's account ledger instead of a wallet
+movement — still in that same transaction — and it needs an active customer on
+the draft. A sale can therefore be completed with part, or all, of its total
+left owed on the account; `on_account = 0` behaves exactly as a cash sale.
+Wallets, payment methods and their ledger have their own document:
+`docs/payments.md`.
 
 ## Why a charged sale cannot be corrected
 

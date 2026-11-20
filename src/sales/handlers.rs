@@ -99,6 +99,14 @@ pub struct SalePaymentRequest {
 #[derive(Deserialize, ToSchema)]
 pub struct CompleteSaleRequest {
     pub payments: Vec<SalePaymentRequest>,
+    /// Part of the total charged to the customer's account instead of
+    /// collected at the till. Optional and defaults to 0; never negative and
+    /// at most two decimals. The payments plus this amount must equal the
+    /// total the server calculated, and a positive amount needs an active
+    /// customer on the draft.
+    #[serde(default)]
+    #[schema(value_type = String, example = "60.00")]
+    pub on_account: Decimal,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -213,7 +221,9 @@ async fn complete_sale(
         })
         .collect();
 
-    let done = service::complete(&state.pool, id, user.id(), &payments).await?;
+    let done =
+        service::complete_with_on_account(&state.pool, id, user.id(), &payments, body.on_account)
+            .await?;
     Ok(Json(CompletedSaleResponse {
         sale_id: done.sale_id,
         total: format_money(done.total),
@@ -315,13 +325,18 @@ impl From<SalesError> for AppError {
             SalesError::EmptySale => AppError::Validation(err.to_string()),
             SalesError::PaymentAmountNotPositive
             | SalesError::PaymentAmountPrecision
-            | SalesError::PaymentMethodUnavailable => AppError::Validation(err.to_string()),
+            | SalesError::PaymentMethodUnavailable
+            | SalesError::OnAccountNegative
+            | SalesError::OnAccountPrecision
+            | SalesError::OnAccountNeedsCustomer
+            | SalesError::OnAccountNeedsActiveCustomer => AppError::Validation(err.to_string()),
             SalesError::PaymentMismatch { total, paid } => AppError::Validation(format!(
-                "the payments add up to {}, but the sale total is {}",
+                "the payments and the on-account amount add up to {}, but the sale total is {}",
                 format_money(paid),
                 format_money(total)
             )),
             SalesError::CustomerInactive => AppError::Conflict(err.to_string()),
+            SalesError::CustomerAccountBusy => AppError::Conflict(err.to_string()),
             SalesError::CustomerLookup(err) => AppError::Internal(err.to_string()),
             SalesError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
@@ -437,9 +452,11 @@ fn remove_item_doc() {}
 /// Complete the sale.
 ///
 /// In one transaction: validate stock with the product row locked, check that
-/// the payments add up to the total, write an outflow movement per item and a
-/// money movement per payment, then close the sale. Any rejection leaves **no**
-/// movements and no status change.
+/// the payments plus the optional `on_account` amount add up to the total,
+/// write an outflow movement per item, a money movement per payment and, when
+/// part of the total is on account, the charge in the customer's ledger,
+/// then close the sale. Any rejection leaves **no** movements, no ledger
+/// entry and no status change.
 #[utoipa::path(
     post,
     path = "/api/v1/sales/{id}/complete",
@@ -454,7 +471,7 @@ fn remove_item_doc() {}
          content_type = "application/problem+json"),
         (status = 409, description = "Insufficient stock or sale already closed", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 422, description = "Sale empty, payments missing, wrong sum or unusable method", body = crate::openapi::Problem,
+        (status = 422, description = "Sale empty, wrong sum, unusable method, or an on-account amount without an active customer", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]

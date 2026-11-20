@@ -354,9 +354,11 @@ export interface paths {
         /**
          * Complete the sale.
          * @description In one transaction: validate stock with the product row locked, check that
-         *     the payments add up to the total, write an outflow movement per item and a
-         *     money movement per payment, then close the sale. Any rejection leaves **no**
-         *     movements and no status change.
+         *     the payments plus the optional `on_account` amount add up to the total,
+         *     write an outflow movement per item, a money movement per payment and, when
+         *     part of the total is on account, the charge in the customer's ledger,
+         *     then close the sale. Any rejection leaves **no** movements, no ledger
+         *     entry and no status change.
          */
         post: operations["complete_sale_doc"];
         delete?: never;
@@ -575,6 +577,15 @@ export interface components {
          *     money went.
          */
         CompleteSaleRequest: {
+            /**
+             * @description Part of the total charged to the customer's account instead of
+             *     collected at the till. Optional and defaults to 0; never negative and
+             *     at most two decimals. The payments plus this amount must equal the
+             *     total the server calculated, and a positive amount needs an active
+             *     customer on the draft.
+             * @example 60.00
+             */
+            on_account?: string;
             payments: components["schemas"]["SalePaymentRequest"][];
         };
         CompletedSaleResponse: {
@@ -2118,7 +2129,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Sale empty, payments missing, wrong sum or unusable method */
+            /** @description Sale empty, wrong sum, unusable method, or an on-account amount without an active customer */
             422: {
                 headers: {
                     [name: string]: unknown;

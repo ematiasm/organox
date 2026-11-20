@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT status AS \"status: SaleStatus\" FROM sales WHERE id = $1 FOR UPDATE",
+  "query": "SELECT status AS \"status: SaleStatus\", customer_id\n           FROM sales WHERE id = $1 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "status"
           }
         }
+      },
+      {
+        "ordinal": 1,
+        "name": "customer_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "customer_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -32,8 +43,9 @@
       ]
     },
     "nullable": [
-      false
+      false,
+      true
     ]
   },
-  "hash": "72050311fa324753b6bd47c2faa74acd03d3a0243c10f1c3ddc3b1b6367286e8"
+  "hash": "50d7cfec364c87ef4967f63d09b9ab9c06b6485058aa1d1f777a5b203073ec4c"
 }
