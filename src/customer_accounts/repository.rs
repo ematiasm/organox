@@ -63,6 +63,12 @@ pub enum RepoError {
         allocated: Decimal,
     },
 
+    #[error("the allocation of {requested} exceeds the {available} the customer holds in credit")]
+    AllocationExceedsCredit {
+        requested: Decimal,
+        available: Decimal,
+    },
+
     #[error("only a receipt can be allocated to a sale")]
     NotAReceipt,
 
@@ -564,6 +570,21 @@ pub async fn allocate(
         return Err(RepoError::OutstandingExceeded {
             requested: amount,
             outstanding,
+        });
+    }
+
+    // The receipt-level ceiling above is not enough on its own: money already
+    // handed back as a credit refund still sits inside a receipt that its
+    // per-receipt sum cannot see. Allocating it would dispose of the same money
+    // twice — once as cash leaving a wallet, once as a settled sale — and the
+    // balance identity would still hold, so only this customer-level ceiling
+    // catches it. `unapplied_credit` is exactly `collected - allocated -
+    // refunded`, which is what an allocation may still consume.
+    let position = account_position_in(conn, entry.customer_id).await?;
+    if amount > position.unapplied_credit {
+        return Err(RepoError::AllocationExceedsCredit {
+            requested: amount,
+            available: position.unapplied_credit,
         });
     }
 

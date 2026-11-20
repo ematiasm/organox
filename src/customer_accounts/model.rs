@@ -168,12 +168,19 @@ pub struct AccountPosition {
 }
 
 impl AccountPosition {
-    /// The one identity the two books must always satisfy.
+    /// The one identity the two books must always satisfy, plus the floor that
+    /// identity cannot express.
     ///
     /// `balance = outstanding - unapplied credit + adjustments`, rearranged to
     /// avoid a subtraction: a customer who owes 100 and holds 40 in credit has a
     /// balance of 60 and an outstanding total of 100.
+    ///
+    /// The identity alone is not enough: an account that disposed of 30 of money
+    /// it had already refunded ends with `balance + unapplied_credit ==
+    /// outstanding + adjustments` and a **negative** unapplied credit, which
+    /// means money that does not exist. So the floor is part of the invariant.
     pub fn is_consistent(&self) -> bool {
         self.balance + self.unapplied_credit == self.outstanding_total + self.adjustments
+            && self.unapplied_credit >= Decimal::ZERO
     }
 }

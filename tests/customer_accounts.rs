@@ -1556,3 +1556,69 @@ async fn an_adjustment_needs_a_reason(pool: PgPool) {
     .expect("adjustment count");
     assert_eq!(adjustments, 0);
 }
+
+#[sqlx::test]
+async fn refunded_credit_cannot_be_allocated_again(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(150.00)).await;
+
+    // 150 collected and nothing allocated: the whole amount is usable credit.
+    let collected = seed_movement(&pool, dec!(150.00)).await;
+    let mut tx = pool.begin().await.expect("transaction");
+    let receipt = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: customer,
+            wallet_movement_id: collected,
+            amount: dec!(150.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await
+    .expect("receipt")
+    .entry_id;
+    tx.commit().await.expect("commit");
+
+    // 30 of that money is handed back, so only 120 may still pay a sale.
+    let refunded = seed_movement(&pool, dec!(30.00)).await;
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_credit_refund(
+        &mut tx,
+        customer,
+        refunded,
+        dec!(30.00),
+        None,
+        Uuid::now_v7(),
+    )
+    .await
+    .expect("refund");
+    tx.commit().await.expect("commit");
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(150.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    tx.commit().await.expect("commit");
+
+    // Each individual ceiling passes: the receipt collected 150 and the sale
+    // owes 150. Only the customer-level credit says 30 of it is already gone.
+    let mut tx = pool.begin().await.expect("transaction");
+    let result = repository::allocate(&mut tx, receipt, sale, dec!(150.00)).await;
+    assert!(
+        matches!(
+            result,
+            Err(repository::RepoError::AllocationExceedsCredit { .. })
+        ),
+        "allocated money that had already been handed back"
+    );
+    tx.rollback().await.expect("rollback");
+
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.unapplied_credit, dec!(120.00));
+    assert!(position.is_consistent(), "the books stopped balancing");
+}
