@@ -125,6 +125,60 @@ pub async fn create_user(
 /// reason to spend an argon2 round on a request that cannot succeed. The
 /// session making the change is spared; the others are revoked in the same
 /// transaction as the hash update.
+/// What the terminal tool did: the account is new, or its password replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpsertOutcome {
+    Created(Uuid),
+    PasswordReset(Uuid),
+}
+
+/// Create a user, or reset the password of an existing one.
+///
+/// The terminal counterpart of the API, used by `create-user --upsert` so a
+/// development database can carry one known account instead of a new one per
+/// session. It is still a command someone runs deliberately: there is no boot
+/// seed, so nothing resurrects a deleted user or overwrites a password on
+/// restart (`docs/auth.md`).
+///
+/// A reset replaces the hash and revokes every session of that user in one
+/// transaction, because a password that no longer exists must not keep a live
+/// login alive. The role is left alone: a password reset is not a promotion.
+pub async fn create_or_reset_user(
+    pool: &PgPool,
+    email: &str,
+    role: Role,
+    password_plain: &str,
+) -> Result<UpsertOutcome, AuthError> {
+    let email = ValidatedEmail::parse(email)?;
+    let new_hash = hash_off_thread(password_plain.to_string()).await?;
+
+    let Some(existing) = repository::find_user_by_email(pool, &email).await? else {
+        let id = repository::create_user(
+            pool,
+            NewUser {
+                email: &email,
+                password_hash: &new_hash,
+                role,
+            },
+        )
+        .await
+        .map_err(|err| match err {
+            RepoError::EmailTaken => AuthError::EmailTaken,
+            other => AuthError::Internal(other),
+        })?;
+        return Ok(UpsertOutcome::Created(id));
+    };
+
+    let mut tx = pool.begin().await?;
+    if !repository::update_password_hash(&mut *tx, existing.id, &new_hash).await? {
+        return Err(AuthError::NotFound);
+    }
+    repository::delete_sessions_for_user(&mut *tx, existing.id, None).await?;
+    tx.commit().await?;
+
+    Ok(UpsertOutcome::PasswordReset(existing.id))
+}
+
 pub async fn change_password(
     pool: &PgPool,
     user_id: Uuid,

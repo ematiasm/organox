@@ -120,6 +120,31 @@ printf '%s' "$ADMIN_PW" | docker compose exec -T app create-user \
 The password is never passed as an argument: it would be visible in `ps aux` to
 any system user.
 
+### A fixed account for development
+
+Running `create-user` by hand every session is friction with no safety value on a
+local database. `make dev-user` creates the account once and, on later runs,
+**resets its password** and revokes its sessions:
+
+```bash
+make dev-user    # reads the variables below from .env, like every other target
+```
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DEV_PASSWORD` | none, required | The only accepted home for a literal; the file is gitignored. The same 12-character minimum the tool always enforced applies |
+| `DEV_EMAIL` | `owner@pyme.com` | Not a secret |
+| `DEV_ROLE` | `owner` | Applied on creation only; a reset keeps the existing role |
+
+This does **not** reopen the decision in the table above. Nothing here runs at
+startup: `make dev-user` is a command a person types, so it cannot resurrect a
+deleted user between deploys or overwrite a password nobody asked it to touch.
+The password never appears in `argv` — the target pipes it to
+`create-user --password-stdin --upsert`.
+
+Never point it at a deployment database: the target reads `DATABASE_URL` from the
+same file, so the two travel together and the mistake would be a conscious one.
+
 ## Login rate limiting
 
 Implemented, with its own document: `docs/ratelimit.md`. Two layers, applied to

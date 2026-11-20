@@ -23,6 +23,11 @@ make create-user EMAIL=owner@pyme.com ROLE=owner   # create the first user
 make run                  # http://localhost:3000
 ```
 
+For manual testing, `make dev-user` creates that account once and later resets
+its password instead of forcing a new user per session; it reads `DEV_PASSWORD`
+(12 characters minimum) from the same file, so the literal never enters the
+repository. See `docs/auth.md`.
+
 Quick check:
 
 ```bash
@@ -41,6 +46,7 @@ curl -i localhost:3000/readyz    # 204 - the DB responds
 | `make migrate` | Applies pending migrations |
 | `make new-migration NAME=...` | Creates a reversible migration |
 | `make create-user EMAIL=... ROLE=...` | Creates a user (prompts for a password without echo) |
+| `make dev-user` | Creates or resets the development user from `DEV_PASSWORD` |
 | `make prepare` | Regenerates `.sqlx/` (required when queries change) |
 | `make fe-install` | Installs frontend dependencies |
 | `make fe-dev` | Frontend with HMR on `:5173` (proxy `/api` → `:3000`) |
@@ -224,7 +230,7 @@ a stock ledger, sales, payments, credit notes and customers.
   ledger, and a balance read from it rather than stored.
 - **Customers**: a registry with an optional unique document, soft deactivation
   and search; a sale may point at one, and the name is frozen at checkout.
-- **248 tests** (unit + integration against real Postgres).
+- **250 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
   navigation rail** (expandable, with groups and user menu), product list,
   movements, **point of sale with barcode scanner** at `/operations/pos`, users
