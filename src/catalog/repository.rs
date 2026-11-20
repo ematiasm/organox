@@ -161,7 +161,7 @@ pub async fn list_products(
         ) s ON true
         WHERE ($1::product_kind IS NULL OR p.kind = $1::product_kind)
           AND ($2::bool OR p.is_active)
-          AND ($3::text IS NULL OR p.name ILIKE '%' || $3::text || '%')
+          AND ($3::text IS NULL OR p.name ILIKE $3::text ESCAPE E'\\')
         ORDER BY p.name, p.id
         LIMIT $4 OFFSET $5
         "#,
@@ -229,7 +229,7 @@ pub async fn count_products(
         FROM products p
         WHERE ($1::product_kind IS NULL OR p.kind = $1::product_kind)
           AND ($2::bool OR p.is_active)
-          AND ($3::text IS NULL OR p.name ILIKE '%' || $3::text || '%')
+          AND ($3::text IS NULL OR p.name ILIKE $3::text ESCAPE E'\\')
         "#,
         kind as Option<ProductKind>,
         include_inactive,

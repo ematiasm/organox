@@ -148,6 +148,11 @@ operational work: `owner` and `manager` can do it.
 
 `limit` is capped at 200: a `limit` of 10 million is a DoS by query.
 
+`search` is a case-insensitive substring match on the name, and the text is
+escaped before it becomes a `LIKE` pattern (`src/search.rs`): `%` and `_` typed by
+an operator are characters to find, not wildcards, so a product whose name
+contains one is searchable like any other.
+
 The list response is `{ items, limit, offset, total }`. `total` is how many
 products the filters match **ignoring the page**, computed with
 `COUNT(*) OVER ()` in the same query that returns the page — not a second round
