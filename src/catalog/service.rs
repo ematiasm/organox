@@ -91,17 +91,26 @@ pub async fn list_products(
     let offset = offset.max(0);
 
     let search = search.map(str::trim).filter(|s| !s.is_empty());
+    // Escaped here, once, so the SQL binds a finished pattern: `%` and `_`
+    // typed by an operator are text, not wildcards.
+    let pattern = search.map(crate::search::contains);
 
-    let (items, total) =
-        repository::list_products(pool, kind, include_inactive, search, limit, offset)
-            .await
-            .map_err(map_repo_error)?;
+    let (items, total) = repository::list_products(
+        pool,
+        kind,
+        include_inactive,
+        pattern.as_deref(),
+        limit,
+        offset,
+    )
+    .await
+    .map_err(map_repo_error)?;
 
     // An offset past the last product returns an empty page, and a page with no
     // rows carries no `COUNT(*) OVER ()` value. Re-count so a stale page link
     // reports the real total instead of claiming the catalog is empty.
     let total = if total < 0 {
-        repository::count_products(pool, kind, include_inactive, search)
+        repository::count_products(pool, kind, include_inactive, pattern.as_deref())
             .await
             .map_err(map_repo_error)?
     } else {

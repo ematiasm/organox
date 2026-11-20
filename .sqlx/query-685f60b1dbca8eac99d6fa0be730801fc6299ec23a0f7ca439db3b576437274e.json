@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            c.id,\n            c.name,\n            c.tax_id,\n            c.email,\n            c.phone,\n            c.is_active,\n            c.created_at,\n            c.updated_at,\n            COUNT(*) OVER () AS \"total!\"\n        FROM customers c\n        WHERE ($1::bool OR c.is_active)\n          -- One box at the counter: the operator types either a name or a\n          -- document fragment and must not have to say which.\n          AND (\n                $2::text IS NULL\n                OR c.name ILIKE '%' || $2::text || '%'\n                OR c.tax_id ILIKE '%' || $2::text || '%'\n          )\n        ORDER BY c.name, c.id\n        LIMIT $3 OFFSET $4\n        ",
+  "query": "\n        SELECT\n            c.id,\n            c.name,\n            c.tax_id,\n            c.email,\n            c.phone,\n            c.is_active,\n            c.created_at,\n            c.updated_at,\n            COUNT(*) OVER () AS \"total!\"\n        FROM customers c\n        WHERE ($1::bool OR c.is_active)\n          -- One box at the counter: the operator types either a name or a\n          -- document fragment and must not have to say which.\n          AND (\n                $2::text IS NULL\n                OR c.name ILIKE $2::text ESCAPE E'\\\\'\n                OR c.tax_id ILIKE $2::text ESCAPE E'\\\\'\n          )\n        ORDER BY c.name, c.id\n        LIMIT $3 OFFSET $4\n        ",
   "describe": {
     "columns": [
       {
@@ -118,5 +118,5 @@
       null
     ]
   },
-  "hash": "dc38b5d8a4a04d3719091f2831d204204b1c5d53a5afe079f3d47551f6d4907c"
+  "hash": "685f60b1dbca8eac99d6fa0be730801fc6299ec23a0f7ca439db3b576437274e"
 }

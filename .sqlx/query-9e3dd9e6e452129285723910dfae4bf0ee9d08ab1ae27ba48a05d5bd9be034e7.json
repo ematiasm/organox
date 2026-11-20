@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT COUNT(*) AS \"count!\"\n        FROM products p\n        WHERE ($1::product_kind IS NULL OR p.kind = $1::product_kind)\n          AND ($2::bool OR p.is_active)\n          AND ($3::text IS NULL OR p.name ILIKE '%' || $3::text || '%')\n        ",
+  "query": "\n        SELECT COUNT(*) AS \"count!\"\n        FROM products p\n        WHERE ($1::product_kind IS NULL OR p.kind = $1::product_kind)\n          AND ($2::bool OR p.is_active)\n          AND ($3::text IS NULL OR p.name ILIKE $3::text ESCAPE E'\\\\')\n        ",
   "describe": {
     "columns": [
       {
@@ -31,5 +31,5 @@
       null
     ]
   },
-  "hash": "5a7032e39c2205797cdc591499d46be10f21df420ae4cc1e2b23ac557568684f"
+  "hash": "9e3dd9e6e452129285723910dfae4bf0ee9d08ab1ae27ba48a05d5bd9be034e7"
 }

@@ -72,16 +72,20 @@ pub async fn list_customers(
     let offset = offset.max(0);
 
     let search = search.map(str::trim).filter(|value| !value.is_empty());
+    // Escaped here, once, so the SQL binds a finished pattern: `%` and `_`
+    // typed by an operator are text, not wildcards.
+    let pattern = search.map(crate::search::contains);
 
-    let (items, total) = repository::list_customers(pool, include_inactive, search, limit, offset)
-        .await
-        .map_err(map_repo_error)?;
+    let (items, total) =
+        repository::list_customers(pool, include_inactive, pattern.as_deref(), limit, offset)
+            .await
+            .map_err(map_repo_error)?;
 
     // An offset past the last customer returns an empty page, and an empty page
     // carries no `COUNT(*) OVER ()` value. Re-count so a stale link reports the
     // real total instead of claiming the registry is empty.
     let total = if total < 0 {
-        repository::count_customers(pool, include_inactive, search)
+        repository::count_customers(pool, include_inactive, pattern.as_deref())
             .await
             .map_err(map_repo_error)?
     } else {

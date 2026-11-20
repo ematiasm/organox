@@ -921,3 +921,41 @@ async fn decimal_inputs_accept_both_string_and_number(pool: PgPool) {
     let body = body_json(list).await;
     assert_eq!(body["items"][0]["price"], "1500.50");
 }
+
+/// Same rule as the customer search, in the other module: the wildcards an
+/// operator types are text. Duplicated as a test on purpose — the two searches
+/// share one escape helper, and a regression in either must be visible.
+#[sqlx::test]
+async fn search_treats_the_wildcards_literally(pool: PgPool) {
+    seed_product(&pool, ProductKind::Product, "Kiosco 50% Off", None).await;
+    seed_product(&pool, ProductKind::Product, "50X Off", None).await;
+    seed_product(&pool, ProductKind::Product, "under_score", None).await;
+    seed_product(&pool, ProductKind::Product, "underXscore", None).await;
+
+    let (percent, total) = service::list_products(&pool, None, false, Some("%"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(total, 1, "a bare % must not match every product");
+    assert_eq!(percent[0].product.name, "Kiosco 50% Off");
+
+    let (prefixed, _) = service::list_products(&pool, None, false, Some("50%"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(prefixed.len(), 1);
+    assert_eq!(prefixed[0].product.name, "Kiosco 50% Off");
+
+    let (underscore, _) = service::list_products(&pool, None, false, Some("_"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(underscore.len(), 1, "a bare _ must not match every name");
+    assert_eq!(underscore[0].product.name, "under_score");
+
+    let (plain, _) = service::list_products(&pool, None, false, Some("off"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(
+        plain.len(),
+        2,
+        "an ordinary word still matches by substring"
+    );
+}

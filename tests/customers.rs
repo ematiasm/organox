@@ -562,3 +562,52 @@ async fn two_concurrent_creates_with_the_same_document_leave_one_customer(pool: 
     .expect("count");
     assert_eq!(stored, 1);
 }
+
+/// `%` and `_` are LIKE metacharacters, and they used to reach the pattern
+/// untouched: a search for `%` returned the whole registry and a name that
+/// contains one could not be found literally. The escape belongs in the query
+/// the operator meant, not in a second special case at the call site.
+#[sqlx::test]
+async fn search_treats_the_wildcards_literally(pool: PgPool) {
+    seed_customer(&pool, "Kiosco 50% Off", None).await;
+    seed_customer(&pool, "50X Off", None).await;
+    seed_customer(&pool, "under_score", None).await;
+    seed_customer(&pool, "underXscore", None).await;
+
+    // A bare `%` is not "everything": only the row that contains one.
+    let (percent, total) = service::list_customers(&pool, false, Some("%"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(total, 1, "a bare % must not match every customer");
+    assert_eq!(percent[0].name, "Kiosco 50% Off");
+
+    // A `%` after a prefix is not "anything after": `50X` must not match.
+    let (prefixed, _) = service::list_customers(&pool, false, Some("50%"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(prefixed.len(), 1);
+    assert_eq!(prefixed[0].name, "Kiosco 50% Off");
+
+    // `_` means one character in LIKE; typed by an operator it means a dash.
+    let (underscore, _) = service::list_customers(&pool, false, Some("_"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(underscore.len(), 1, "a bare _ must not match every name");
+    assert_eq!(underscore[0].name, "under_score");
+
+    let (underscored, _) = service::list_customers(&pool, false, Some("under_"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(underscored.len(), 1);
+    assert_eq!(underscored[0].name, "under_score");
+
+    // The substring search the counter relies on still works.
+    let (plain, _) = service::list_customers(&pool, false, Some("off"), 50, 0)
+        .await
+        .expect("search");
+    assert_eq!(
+        plain.len(),
+        2,
+        "an ordinary word still matches by substring"
+    );
+}

@@ -162,7 +162,10 @@ page, and when the requested page is past the end the empty result carries no
 window value, so the service re-counts: a stale link reports the real registry
 size instead of claiming it is empty. `search` is trimmed and matches the name
 or the document, case-insensitively, in one box — the operator types either
-and must not have to say which.
+and must not have to say which. `%`, `_` and `\` are escaped before the pattern
+reaches SQL, so a document or a name that contains one is searchable as text
+rather than as a wildcard: `src/search.rs` holds that escape and both searches in
+the tree use it, which is the only way the two cannot drift.
 
 `CustomerResponse` fields: `id`, `name`, `tax_id`, `email`, `phone`,
 `is_active`, `created_at`, `updated_at`.

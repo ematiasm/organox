@@ -94,8 +94,8 @@ pub async fn list_customers(
           -- document fragment and must not have to say which.
           AND (
                 $2::text IS NULL
-                OR c.name ILIKE '%' || $2::text || '%'
-                OR c.tax_id ILIKE '%' || $2::text || '%'
+                OR c.name ILIKE $2::text ESCAPE E'\\'
+                OR c.tax_id ILIKE $2::text ESCAPE E'\\'
           )
         ORDER BY c.name, c.id
         LIMIT $3 OFFSET $4
@@ -143,8 +143,8 @@ pub async fn count_customers(
         WHERE ($1::bool OR c.is_active)
           AND (
                 $2::text IS NULL
-                OR c.name ILIKE '%' || $2::text || '%'
-                OR c.tax_id ILIKE '%' || $2::text || '%'
+                OR c.name ILIKE $2::text ESCAPE E'\\'
+                OR c.tax_id ILIKE $2::text ESCAPE E'\\'
           )
         "#,
         include_inactive,
