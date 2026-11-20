@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COUNT(*) AS \"count!\"\n        FROM customers c\n        WHERE ($1::bool OR c.is_active)\n          AND (\n                $2::text IS NULL\n                OR c.name ILIKE '%' || $2::text || '%'\n                OR c.tax_id ILIKE '%' || $2::text || '%'\n          )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "9d48a16b83c7768bfd9d0207d9db5e5a1558e3f04490da8f5c7c4523b5b1bc73"
+}

@@ -83,6 +83,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/customers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List customers, newest first is not the order: alphabetical by name. */
+        get: operations["list_customers_doc"];
+        put?: never;
+        /**
+         * Register a customer.
+         * @description `tax_id` is optional and unique when present; a duplicate returns 409.
+         */
+        post: operations["create_customer_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/customers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Customer details. */
+        get: operations["get_customer_doc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update only the fields sent.
+         * @description A field left out is not touched. This route cannot clear an optional field:
+         *     that needs an explicit marker and, today, no screen asks for it.
+         */
+        patch: operations["update_customer_doc"];
+        trace?: never;
+    };
+    "/api/v1/customers/{id}/deactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Soft deletion. Idempotent. Never deletes: history points at the customer. */
+        post: operations["deactivate_customer_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/payment-methods": {
         parameters: {
             query?: never;
@@ -519,6 +579,13 @@ export interface components {
             /** @description Why the goods came back. Required, and kept on the document. */
             reason: string;
         };
+        CreateCustomerRequest: {
+            email?: string | null;
+            name: string;
+            phone?: string | null;
+            /** @description Optional and unique when present. An empty string means "no document". */
+            tax_id?: string | null;
+        };
         CreatePaymentMethodRequest: {
             name: string;
             /** Format: uuid */
@@ -604,6 +671,46 @@ export interface components {
             quantity: string;
             returnable_quantity: string;
             unit_price: string;
+        };
+        CustomerIdResponse: {
+            /** Format: uuid */
+            id: string;
+        };
+        CustomerListResponse: {
+            items: components["schemas"]["CustomerResponse"][];
+            /**
+             * Format: int64
+             * @description Page size actually applied (the request defaults to 50, is capped at 200).
+             */
+            limit: number;
+            /**
+             * Format: int64
+             * @description Offset of `items[0]` in the filtered set.
+             */
+            offset: number;
+            /**
+             * Format: int64
+             * @description How many customers the filters match in total, ignoring the page. A client
+             *     needs this to tell a full page from the last one.
+             */
+            total: number;
+        };
+        CustomerResponse: {
+            /** Format: date-time */
+            created_at: string;
+            email?: string | null;
+            /** Format: uuid */
+            id: string;
+            is_active: boolean;
+            name: string;
+            phone?: string | null;
+            /**
+             * @description `null` when the customer was registered without a document, which is a
+             *     normal case: a walk-in buyer is still a customer.
+             */
+            tax_id?: string | null;
+            /** Format: date-time */
+            updated_at: string;
         };
         DraftResponse: {
             /** Format: uuid */
@@ -816,6 +923,14 @@ export interface components {
         SetQuantityRequest: {
             /** @example 3 */
             quantity: string;
+        };
+        UpdateCustomerRequest: {
+            email?: string | null;
+            is_active?: boolean | null;
+            name?: string | null;
+            phone?: string | null;
+            /** @description `null` means "leave the document as it is", never "clear it". */
+            tax_id?: string | null;
         };
         UpdatePaymentMethodRequest: {
             is_active?: boolean | null;
@@ -1041,6 +1156,234 @@ export interface operations {
             };
             /** @description Invalid new password */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_customers_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Include deactivated customers. Absent, the list shows only active ones. */
+                include_inactive: boolean;
+                /** @description Matches the name or the document, case-insensitively. */
+                search: string | null;
+                limit: number | null;
+                offset: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Customer page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerListResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_customer_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCustomerRequest"];
+            };
+        };
+        responses: {
+            /** @description Customer created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerIdResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Document is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_customer_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Customer ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Customer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_customer_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Customer ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCustomerRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Document is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    deactivate_customer_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Customer ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deactivated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
