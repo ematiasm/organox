@@ -214,7 +214,7 @@ and the new `on_account = 0` sibling.
 | T2 | S4 | **done**: `complete` takes `on_account`; the invariant is `payments + on_account == total`; the charge is written by `customer_accounts::record_charge` after the status flip inside the same transaction; `on_account = 0` keeps the old path through a four-argument wrapper; 8 HTTP-level tests plus the renamed empty-payment test | `1dc5a6b` |
 | T3 | S5, S7 + L12 | **next**: `0017` adds `customers.credit_limit`; the customers module exposes it (NULL = unlimited, `0` = cash only, clearable through PATCH); `customer_accounts::authorize_credit` takes the customer lock, reads the row `FOR UPDATE`, checks activity and exposure (`balance + amount` against the limit, floored at zero for the message) and returns the available amount; sales calls it before writing and answers 409 naming the remaining credit. Closes `R1-on-account-credit-unbounded`, `R3-active-check-race` and `R4-on-account-active-gate-race` | feat/customer-accounts-limit |
 | T4 | S3, S5, S6 | **done**: `0018` adds the `account_payment` label alone, `0019` the `wallet_movements.customer_id` column and its two CHECKs; the kind joins both balance `CASE`s and the sign test; `POST /customers/{id}/receipts` answers 201/200 with the replay read under the lock; `ensure_movement_backing` now binds the movement's customer, closing `R1-receipt-backing-not-customer-bound`; 8 HTTP tests plus the ledger one | `4807009` |
-| T5 | S8 | credit application at completion | feat/customer-accounts-apply-credit |
+| T5 | S8 | **done**: `apply_available_credit` spends usable credit oldest-receipt-first inside the completion transaction, capped by the request, the account's credit and the sale's outstanding; `credit_applied` in the response says what the sale no longer owes. Closes the three banked advisories | `781a815` |
 | T6 | S9 | debt-first note split, `allocate_refund` rewrite, `account_payment_refund` kind | feat/customer-accounts-note-split |
 | T7 | S10, S11, S12 | credit refunds, adjustments, deactivation guard | feat/customer-accounts-adjustments |
 | T8 | S13 | statement, receivables with aging, customer read columns | feat/customer-accounts-reads |
@@ -405,3 +405,10 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   published precedence (sign, precision, magnitude) is asserted rather than implied. Two lenses
   (`risk`+`reliability`) at 172 lines; `risk`+`resilience`+`reliability` answered `lenses-invalid`
   for this candidate, the same rejection that pair of combinations showed earlier.
+- L26 — T5 delivered in `781a815`: credit is spent at completion. Three ceilings, in order: what
+  the caller asked, what the account can pay (`unapplied_credit`, which sees refunds where a
+  receipt's paper remainder cannot), and what the sale still owes. FIFO by `created_at, id`. The
+  response carries `credit_applied`, so `on_account - credit_applied` is the debt the sale added.
+  The three banked advisories closed in the same commit, inside this range instead of as a separate
+  candidate — that is the policy adopted after three review rounds were spent on T4's fixes: bank
+  them, then fix them where the next review will see them.
