@@ -373,7 +373,7 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   in a new shape: a guard that says "nothing to authorize" must say exactly zero, and a changed
   sentence needs a test that reads it.
 - L22 — that review of the fixes (`review-a75b458c8f7548eb`, 67 lines, 2 lenses, **approved**) found
-  three nits, all in the new tests themselves, and all closed in `4e1e2f7`: the sentence test was a
+  three nits, all in the new tests themselves, and all closed in `8851144`: the sentence test was a
   `#[sqlx::test]` with an unused pool for a pure formatting assertion, and the negative-amount test
   matched the variant without pinning the payload the sentence reads. A test that pays for a
   database it never touches, and a wildcard match over the values an operator reads, are exactly how
