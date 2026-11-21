@@ -336,7 +336,7 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   `review-147b91d960fa0a81` reached `correction_required` over `R2-001` (CRITICAL, deterministic):
   the payment-mismatch detail was rewritten for **every** completion, including a cash-only one
   that never mentions the account, which contradicts "on_account = 0 behaves exactly as before".
-  Fixed in `db0a1f2`: the enriched sentence is emitted only when `on_account > 0`, the variants now
+  Fixed in `08485a6`: the enriched sentence is emitted only when `on_account > 0`, the variants now
   carry `on_account` so the boundary can decide, and a new HTTP test pins the original wording.
   The finding is real and the previous three-lens pass missed it: no readability lens had run.
   **The correction-plan slot rejected the provider's own binding again**, second lineage, second
