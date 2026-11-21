@@ -388,8 +388,9 @@ export interface paths {
          *     authorize the on-account part against the customer's activity and credit
          *     limit, write an outflow movement per item, a money movement per payment
          *     and, when part of the total is on account, the charge in the customer's
-         *     ledger, then close the sale. Any rejection leaves **no** movements, no
-         *     ledger entry and no status change.
+         *     ledger — which their available credit then pays, oldest receipt first, up
+         *     to the charged part — then close the sale. Any rejection leaves **no**
+         *     movements, no ledger entry and no status change.
          */
         post: operations["complete_sale_doc"];
         delete?: never;
@@ -643,6 +644,13 @@ export interface components {
         CompletedSaleResponse: {
             /** Format: date-time */
             completed_at: string;
+            /**
+             * @description How much of the on-account part the customer's available credit paid
+             *     automatically: `on_account - credit_applied` is the debt the sale
+             *     actually added. Money with two decimals, like `total`; `"0.00"` for
+             *     a sale that never used the account.
+             */
+            credit_applied: string;
             movement_ids: string[];
             /**
              * @description One movement per payment, so the client can follow the money into its

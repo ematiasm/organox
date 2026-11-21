@@ -126,6 +126,16 @@ cash only; what the field means is the registry's rule
 (`docs/customers.md`). A sale can therefore be completed with part, or all, of
 its total left owed on the account, within the limit; `on_account = 0`
 behaves exactly as a cash sale.
+
+When the account takes a part of the total, the customer's available credit
+pays it first, automatically: the same completion transaction allocates from
+the customer's receipts — oldest first, because credit is not earmarked to
+any one receipt — up to the part charged, and the response's `credit_applied`
+says how much of it that credit covered. `on_account - credit_applied` is the
+debt the sale actually added. A customer holding money in the shop's hands
+is never asked for cash again for the same goods, and what the credit did
+not need stays usable for the next sale.
+
 Wallets, payment methods and their ledger have their own document:
 `docs/payments.md`.
 

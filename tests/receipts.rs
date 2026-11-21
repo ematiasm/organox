@@ -687,11 +687,15 @@ async fn a_non_positive_or_sub_cent_amount_is_rejected(pool: PgPool) {
     let cookie = login(&router, "owner@pyme.com", &owner_password).await;
 
     // The precedence is part of what the boundary says: sign first, then
-    // precision, then magnitude. Each sentence is pinned, not just the status.
+    // precision, then magnitude. Each sentence is pinned, not just the status,
+    // and the last row breaks two rules at once — a negative sub-cent amount —
+    // to prove the order is real: the sign sentence wins because the amount
+    // never reaches the domain where precision is measured.
     for (amount, detail) in [
         ("0.00", "the amount must be positive"),
         ("-5.00", "the amount must be positive"),
         ("10.005", "the amount 10.005 carries more than two decimals"),
+        ("-0.005", "the amount must be positive"),
     ] {
         let (status, problem) = send(
             &router,
@@ -770,8 +774,8 @@ async fn a_padded_key_keeps_its_own_identity(pool: PgPool) {
     assert_eq!(account_payment_count(&pool, customer).await, 2);
 }
 
-/// The cap measures the bytes the client sent, so a key of exactly the limit
-/// is accepted. Nothing pinned the accept side before.
+/// The cap measures the characters the client sent, so a key of exactly the
+/// limit is accepted. Nothing pinned the accept side before.
 #[sqlx::test]
 async fn a_key_of_exactly_the_cap_is_accepted(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
@@ -797,4 +801,43 @@ async fn a_key_of_exactly_the_cap_is_accepted(pool: PgPool) {
 
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(account_payment_count(&pool, customer).await, 1);
+}
+
+/// The cap measures the key exactly as sent, padding included: a key whose
+/// raw length is over the limit is refused even when its trimmed length
+/// would fit, because measuring after trimming is the same rewrite of the
+/// key namespace the padded-identity rule exists to prevent.
+#[sqlx::test]
+async fn a_key_that_only_fits_after_trimming_is_rejected(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let (method, _wallet) = seed_method(&pool, "Cash").await;
+
+    let router = app(pool.clone());
+    let (_owner, owner_password) = seed_owner(&pool).await;
+    let cookie = login(&router, "owner@pyme.com", &owner_password).await;
+
+    // 101 characters as sent, two of them the padding; 99 once trimmed.
+    let key = format!(" {} ", "k".repeat(99));
+    assert_eq!(key.chars().count(), 101);
+
+    let (status, problem) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/receipts"),
+        Some(&cookie),
+        Some(json!({
+            "idempotency_key": key,
+            "payment_method_id": method,
+            "amount": "10.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        problem["detail"],
+        "the idempotency key exceeds 100 characters"
+    );
+    assert_eq!(account_payment_count(&pool, customer).await, 0);
 }

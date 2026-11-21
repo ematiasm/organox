@@ -112,11 +112,13 @@ async fn collect_receipt(
     // tell apart from another would make every later blank-key collection
     // answer with the first receipt — money collected and nothing booked.
     //
-    // Only *blank* keys are discarded. A non-blank key keeps its exact bytes:
-    // trimming it would rewrite the key namespace, so a receipt recorded before
-    // this change under a padded key would stop matching its own retry (booking
-    // a duplicate) and two padded variants would collapse onto one receipt. The
-    // cap below measures what the client sent, never what we would have sent.
+    // Only *blank* keys are discarded. A non-blank key keeps exactly what the
+    // client sent: trimming it would rewrite the key namespace, so a receipt
+    // recorded before this change under a padded key would stop matching its
+    // own retry (booking a duplicate) and two padded variants would collapse
+    // onto one receipt. The cap below counts the characters of that string as
+    // sent, padding included — characters, not bytes, matching the contract's
+    // own wording, so a multi-byte key is never refused for its byte length.
     let idempotency_key = body.idempotency_key.filter(|key| !key.trim().is_empty());
     if idempotency_key
         .as_ref()

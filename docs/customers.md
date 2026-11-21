@@ -213,13 +213,18 @@ What it does to the numbers:
   arrives — allocating is saying which sale it pays, not moving the money;
 - each allocation lowers that sale's **outstanding**;
 - whatever no allocation consumed stays as **unapplied credit**: money the
-  shop holds for the customer, usable by the next sale on account, and never a
-  second entry or a second table.
+  shop holds for the customer, and never a second entry or a second table.
+  The next sale that goes on account spends it automatically at completion —
+  oldest receipt first, up to the part charged — so a customer holding money
+  is never asked for cash again for the same goods.
 
 The answer is `201` with the receipt id, the movement id, the balance, the
 usable credit and each allocated sale's outstanding amount. A repeated
 `idempotency_key` answers `200` with the first receipt and writes nothing —
-money that was already collected cannot be collected twice. Unknown or
+money that was already collected cannot be collected twice. The key is
+capped at 100 characters, counted exactly as sent, padding included: a blank
+key is no key at all, but a padded one is its own identity, and the cap must
+measure the same string the retry will send. Unknown or
 inactive method, a bad amount or an allocation the ledger refuses answer `422`
 with a sentence the operator can act on; an unknown customer or sale answers
 `404`; an account busy under another writer's lock answers `409`.

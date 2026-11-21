@@ -383,6 +383,10 @@ pub async fn find_open_draft_for_user(
 pub struct CompletedSale {
     pub sale_id: Uuid,
     pub total: Decimal,
+    /// How much of the on-account part the customer's available credit paid
+    /// at completion. `on_account - credit_applied` is the debt the sale
+    /// actually added.
+    pub credit_applied: Decimal,
     pub movement_ids: Vec<Uuid>,
     pub payment_movement_ids: Vec<Uuid>,
     pub completed_at: DateTime<Utc>,
@@ -501,6 +505,23 @@ fn map_charge_error(err: crate::customer_accounts::repository::RepoError) -> Rep
         ChargeError::CustomerBusy => RepoError::CustomerAccountBusy,
         other => RepoError::Database(sqlx::Error::Protocol(format!(
             "record_charge refused a charge the completion had validated: {other}"
+        ))),
+    }
+}
+
+/// `apply_available_credit` spends money this transaction already proved the
+/// account holds, on the sale it just charged, within caps it re-derives from
+/// the same rows: a guard firing inside it means those caps disagree, which is
+/// a bug, so it surfaces as an internal error and the whole completion dies
+/// rather than committing a charge its own payment could not cover. The busy
+/// lock is the one reachable refusal, inherited from the charge above.
+fn map_apply_error(err: crate::customer_accounts::repository::RepoError) -> RepoError {
+    use crate::customer_accounts::repository::RepoError as ApplyError;
+    match err {
+        ApplyError::Database(sql) => RepoError::Database(sql),
+        ApplyError::CustomerBusy => RepoError::CustomerAccountBusy,
+        other => RepoError::Database(sqlx::Error::Protocol(format!(
+            "apply_available_credit refused an allocation the completion had validated: {other}"
         ))),
     }
 }
@@ -725,6 +746,14 @@ pub async fn complete(
     // transaction wrote, so the charge is by construction exactly the
     // on-account part. Its advisory lock serializes this write against
     // collections on the same account.
+    //
+    // And the moment the charge exists, the customer's available credit pays
+    // it: the same transaction allocates from their receipts, oldest first,
+    // up to the on-account part. Automatic, not a flag — a customer holding
+    // money the shop already collected must not be asked for cash again for
+    // the same goods — and inside the same commit, so the debt and the credit
+    // that covers it never appear as two states an operator could see apart.
+    let mut credit_applied = Decimal::ZERO;
     if let Some(customer_id) = charge_customer {
         crate::customer_accounts::repository::record_charge(
             &mut tx,
@@ -735,6 +764,15 @@ pub async fn complete(
         )
         .await
         .map_err(map_charge_error)?;
+
+        credit_applied = crate::customer_accounts::repository::apply_available_credit(
+            &mut tx,
+            customer_id,
+            sale_id,
+            on_account,
+        )
+        .await
+        .map_err(map_apply_error)?;
     }
 
     tx.commit().await?;
@@ -742,6 +780,7 @@ pub async fn complete(
     Ok(CompletedSale {
         sale_id,
         total,
+        credit_applied,
         movement_ids,
         payment_movement_ids,
         completed_at,

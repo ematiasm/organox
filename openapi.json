@@ -1421,7 +1421,7 @@
           "sales"
         ],
         "summary": "Complete the sale.",
-        "description": "In one transaction: validate stock with the product row locked, check that\nthe payments plus the optional `on_account` amount add up to the total,\nauthorize the on-account part against the customer's activity and credit\nlimit, write an outflow movement per item, a money movement per payment\nand, when part of the total is on account, the charge in the customer's\nledger, then close the sale. Any rejection leaves **no** movements, no\nledger entry and no status change.",
+        "description": "In one transaction: validate stock with the product row locked, check that\nthe payments plus the optional `on_account` amount add up to the total,\nauthorize the on-account part against the customer's activity and credit\nlimit, write an outflow movement per item, a money movement per payment\nand, when part of the total is on account, the charge in the customer's\nledger — which their available credit then pays, oldest receipt first, up\nto the charged part — then close the sale. Any rejection leaves **no**\nmovements, no ledger entry and no status change.",
         "operationId": "complete_sale_doc",
         "parameters": [
           {
@@ -2609,6 +2609,7 @@
         "required": [
           "sale_id",
           "total",
+          "credit_applied",
           "movement_ids",
           "payment_movement_ids",
           "completed_at"
@@ -2617,6 +2618,10 @@
           "completed_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "credit_applied": {
+            "type": "string",
+            "description": "How much of the on-account part the customer's available credit paid\nautomatically: `on_account - credit_applied` is the debt the sale\nactually added. Money with two decimals, like `total`; `\"0.00\"` for\na sale that never used the account."
           },
           "movement_ids": {
             "type": "array",

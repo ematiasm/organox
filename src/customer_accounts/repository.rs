@@ -917,6 +917,91 @@ pub async fn allocate(
     Ok(())
 }
 
+/// Spend the customer's available credit on one sale, oldest receipt first,
+/// and return what was actually applied — `0` when nothing could be.
+///
+/// Oldest first because a customer's credit is not earmarked: money collected
+/// without an allocation belongs to the account as a whole, so picking any
+/// receipt but the oldest would be a decision nobody made. The UI prefills its
+/// allocation suggestions oldest-first for the same reason, so what the sale
+/// applies automatically and what the operator's screen suggests agree on the
+/// rule.
+///
+/// Automatic because a customer holding credit must not be asked for cash:
+/// the shop already has their money, and leaving it idle beside a new charge
+/// would bill them twice for the same goods. The completion calls this inside
+/// its own transaction, so the charge and the payment that covers it commit
+/// together.
+///
+/// The caller must already hold the customer's advisory lock (a completion
+/// holds it from its credit gate): every receipt this reads and every
+/// allocation it writes depends on sums only that lock keeps stable, so this
+/// function never takes the lock itself — a writer that claimed to serialize
+/// what its caller already serialized would be promising a guarantee it
+/// cannot deliver twice.
+pub async fn apply_available_credit(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    sale_id: Uuid,
+    up_to: Decimal,
+) -> Result<Decimal, RepoError> {
+    // Two ceilings decide before any receipt is even read: what the caller
+    // asked for, and what the account can actually pay with. Capping by
+    // `unapplied_credit` up front is what keeps a refunded receipt's paper
+    // remainder from being spent — the per-receipt remainder below cannot see
+    // a refund, but this sum can.
+    let position = account_position_in(conn, customer_id).await?;
+    let cap = up_to.min(position.unapplied_credit);
+    if cap <= Decimal::ZERO {
+        return Ok(Decimal::ZERO);
+    }
+
+    // The sale is the third ceiling: applying more than it owes would turn
+    // credit the customer keeps into a phantom overpayment.
+    let outstanding = outstanding_for_sale_in(conn, sale_id).await?;
+    let mut remaining = cap.min(outstanding);
+    if remaining <= Decimal::ZERO {
+        return Ok(Decimal::ZERO);
+    }
+
+    // The receipts that still carry unallocated money, oldest first. The `id`
+    // tiebreaker keeps the order total: two receipts created in the same
+    // instant are still one before the other, and the ids are time-ordered.
+    let receipts = sqlx::query!(
+        r#"
+        SELECT e.id                                          AS "entry_id!: Uuid",
+               (-e.amount - COALESCE(SUM(a.amount), 0))::numeric(14, 2)
+                                                          AS "available!: Decimal"
+        FROM customer_account_entries e
+        LEFT JOIN customer_account_allocations a ON a.entry_id = e.id
+        WHERE e.customer_id = $1 AND e.kind = 'receipt'
+        GROUP BY e.id
+        HAVING -e.amount - COALESCE(SUM(a.amount), 0) > 0
+        ORDER BY e.created_at, e.id
+        "#,
+        customer_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut applied = Decimal::ZERO;
+    for receipt in receipts {
+        if remaining.is_zero() {
+            break;
+        }
+        let take = remaining.min(receipt.available);
+        // `allocate` keeps every guard — receipt, sale, credit — and a guard
+        // firing here means the caps above lied about what could be applied.
+        // That is a bug, so the error propagates and the caller's transaction
+        // dies rather than quietly applying less than the books say.
+        allocate(conn, receipt.entry_id, sale_id, take).await?;
+        applied += take;
+        remaining -= take;
+    }
+
+    Ok(applied)
+}
+
 /// Cancel part of a sale's debt with a credit note. The note is the document,
 /// the entry is the ledger's copy of it: one note writes one entry, once, and
 /// the unique index on `credit_note_id` is what keeps that true.
