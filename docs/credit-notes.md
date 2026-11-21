@@ -22,13 +22,23 @@ Why:
    `stock_movements` row with reason `return`, in the same transaction as the
    note. `stock_movements` stays append-only: stock is still the signed sum of
    its ledger, not a column to adjust.
-3. **Money leaves the wallets that received it.** The sale's original payments
-   decide the split: each share is computed in cents in proportion to the
-   amount that went into that wallet, and the last payment absorbs the rounding
-   remainder so the shares add up to the note total exactly. Zero shares are
-   never written. Every `sale_refund` row names the sale it reverses, the
-   payment method that collected the money and the credit note that caused it,
-   so a reader can follow the refund without re-deriving the split.
+3. **Debt is cancelled before cash is refunded.** The note first cancels
+   what the sale still owes on the customer's account — `min(note,
+   outstanding)` written as one `credit_note` entry, nothing when the sale
+   owes nothing — and only the remainder is refunded as cash, through the
+   tenders that actually collected money for that sale: its original
+   `sale_payment` movements, then the receipts whose allocations paid it,
+   each capped at what it collected. The split is computed in integer cents
+   in proportion to what each tender collected, with the rounding leftovers
+   going to the largest fractional remainders, and the shares add up to the
+   cash part exactly — computed cumulatively across the sale's notes, so
+   three notes of 33.33 on a 100 sale refund 99.99, never a cent more. A
+   fully unpaid credit sale therefore produces no wallet movement at all:
+   no wallet ever took any money for it. Zero shares are never written, and
+   a note whose cash part no tender collected is refused whole. Every
+   `sale_refund` row names the sale it reverses, the payment method that
+   collected the money and the credit note that caused it, so a reader can
+   follow the refund without re-deriving the split.
 4. **The total is the server's number.** The note copies the `unit_price`
    frozen on each `sale_items` line, computes the subtotals and the total, and
    stores it. The client sends only a reason and `{product_id, quantity}`

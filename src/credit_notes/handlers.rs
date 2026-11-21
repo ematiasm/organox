@@ -249,6 +249,7 @@ impl From<CreditNotesError> for AppError {
             | CreditNotesError::IdempotencyKeyTooLong
             | CreditNotesError::ProductNotInSale => AppError::Validation(err.to_string()),
             CreditNotesError::RefundExceedsSale { .. } => AppError::Conflict(err.to_string()),
+            CreditNotesError::CustomerBusy => AppError::Conflict(err.to_string()),
             CreditNotesError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
     }

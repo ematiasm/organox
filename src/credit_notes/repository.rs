@@ -12,9 +12,10 @@ use uuid::Uuid;
 
 use super::model::{
     CreatedCreditNote, CreditNote, CreditNoteDetail, CreditNoteItem, CreditNoteRefund,
-    CreditableLine, ReturnLine, allocate_refund,
+    CreditableLine, ReturnLine, split_cash_refund,
 };
 use crate::catalog::model::MovementReason;
+use crate::customer_accounts::repository as customer_accounts;
 use crate::payments::model::WalletMovementKind;
 use crate::payments::repository::{self as wallet, NewWalletMovement};
 use crate::sales::model::SaleStatus;
@@ -26,6 +27,12 @@ pub enum RepoError {
 
     #[error("the sale is not completed")]
     SaleNotCreditable,
+
+    /// The customer's account is being written by somebody else. Retryable,
+    /// never an internal failure: the same account answers the same way on the
+    /// collection route.
+    #[error("the customer account is busy, retry")]
+    CustomerBusy,
 
     #[error("the product {product_id} is not a line of this sale")]
     ProductNotInSale { product_id: Uuid },
@@ -59,11 +66,11 @@ pub enum RepoError {
     #[error("the note from a concurrent create is no longer available")]
     ConcurrentReplayMissing,
 
-    /// The refund split must add up to the note total to the cent. It is
-    /// computed, never trusted, so a mismatch is a bug and must not reach the
-    /// ledger.
-    #[error("the refund does not add up to the note total: total {total}, refunded {refunded}")]
-    RefundDoesNotAddUp { total: Decimal, refunded: Decimal },
+    /// The cash part of a note must be refunded by the tenders that collected
+    /// money for the sale, to the cent. It is computed, never trusted, so a
+    /// mismatch is a bug and must not reach the ledger.
+    #[error("the refund does not add up to the note's cash part: cash {cash}, refunded {refunded}")]
+    RefundDoesNotAddUp { cash: Decimal, refunded: Decimal },
 
     #[error(transparent)]
     Wallet(#[from] wallet::RepoError),
@@ -88,6 +95,32 @@ fn violated_constraint(err: &sqlx::Error) -> Option<&str> {
         sqlx::Error::Database(db_err) => db_err.constraint(),
         _ => None,
     }
+}
+
+/// `lock_customer` and `record_credit_note` re-validate, under the customer
+/// lock this transaction already holds, facts it has just read or written
+/// itself: the note belongs to this sale, the cancellation fits the
+/// outstanding, the entry is new. A typed refusal from them is therefore an
+/// invariant violation, not a client error, and surfaces as an internal
+/// error the same way the completion's own re-validations do.
+fn map_account_error(err: customer_accounts::RepoError) -> RepoError {
+    match err {
+        customer_accounts::RepoError::CustomerBusy => RepoError::CustomerBusy,
+        customer_accounts::RepoError::Database(sql) => RepoError::Database(sql),
+        other => RepoError::Database(sqlx::Error::Protocol(format!(
+            "the customer account refused a note this transaction had validated: {other}"
+        ))),
+    }
+}
+
+/// One tender that collected money for the sale: where the money went, and
+/// how much of it this sale's refunds may hand back.
+struct Tender {
+    wallet_id: Uuid,
+    wallet_name: String,
+    payment_method_id: Uuid,
+    payment_method_name: String,
+    collected: Decimal,
 }
 
 const IDEMPOTENCY_KEY_UNIQUE: &str = "credit_notes_sale_idempotency_key_unique";
@@ -467,7 +500,7 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
 
     let sale = sqlx::query!(
         r#"
-        SELECT status AS "status: SaleStatus", total
+        SELECT status AS "status: SaleStatus", total, customer_id
         FROM sales
         WHERE id = $1
         FOR UPDATE
@@ -651,68 +684,202 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
         });
     }
 
-    // Pass 3: the money. Refund each original payment in proportion, into the
-    // wallet that received it.
-    let payments = sqlx::query!(
-        r#"
-        SELECT m.wallet_id,
-               w.name AS "wallet_name!",
-               m.payment_method_id AS "payment_method_id!",
-               pm.name AS "payment_method_name!",
-               m.amount
-        FROM wallet_movements m
-        JOIN wallets w ON w.id = m.wallet_id
-        JOIN payment_methods pm ON pm.id = m.payment_method_id
-        WHERE m.sale_id = $1 AND m.kind = 'sale_payment'
-        ORDER BY m.created_at, m.id
-        "#,
-        new.sale_id
-    )
-    .fetch_all(&mut *tx)
-    .await?;
+    // Pass 3: the account. Debt first: the note cancels what the sale still
+    // owes, and only the remainder is refunded as cash, through the tenders
+    // that actually collected money for this sale. A note on a fully unpaid
+    // credit sale cancels debt and moves no money at all.
+    let cancel = match sale.customer_id {
+        // A sale with no customer was never charged, so it owes nothing: the
+        // whole note is cash, exactly the refund every older test knows.
+        None => Decimal::ZERO,
+        Some(customer) => {
+            // One lock for the whole account phase, before any account state
+            // is read. The transaction already holds the sale row lock; taking
+            // the customer's advisory lock now fixes the order sale →
+            // customer — the same order the completion established, and a
+            // collection takes only the advisory lock, so the two cannot
+            // deadlock. The lock also freezes the account between the reads
+            // below and the writes they justify: a collection allocating to
+            // this sale cannot change the outstanding or the tender list
+            // under us.
+            customer_accounts::lock_customer(&mut tx, customer)
+                .await
+                .map_err(map_account_error)?;
 
-    let amounts: Vec<Decimal> = payments.iter().map(|payment| payment.amount).collect();
-    let shares = allocate_refund(total, &amounts);
+            // Clamped at zero: a hand-written ledger can drift past the
+            // guards, and a negative "outstanding" would mint debt back.
+            let outstanding = customer_accounts::outstanding_for_sale_in(&mut tx, new.sale_id)
+                .await
+                .map_err(map_account_error)?
+                .max(Decimal::ZERO);
+            let cancel = total.min(outstanding);
 
-    let refunded: Decimal = shares.iter().copied().sum();
-    if refunded != total {
-        return Err(RepoError::RefundDoesNotAddUp { total, refunded });
-    }
-
-    let mut refunds = Vec::with_capacity(payments.len());
-
-    for (payment, share) in payments.iter().zip(shares) {
-        // A zero share would violate `wallet_movements.amount > 0`, and a
-        // movement of nothing explains nothing.
-        if share <= Decimal::ZERO {
-            continue;
+            // The ledger's copy of the cancellation. `record_credit_note`
+            // re-checks, under the lock this transaction already holds,
+            // everything just read here, so a refusal from it is an internal
+            // error, never a typed rejection the client could act on.
+            if cancel > Decimal::ZERO {
+                customer_accounts::record_credit_note(
+                    &mut tx,
+                    customer,
+                    new.sale_id,
+                    note_id,
+                    cancel,
+                    new.created_by,
+                )
+                .await
+                .map_err(map_account_error)?;
+            }
+            cancel
         }
+    };
 
-        wallet::insert_movement(
-            &mut *tx,
-            NewWalletMovement {
-                wallet_id: payment.wallet_id,
-                kind: WalletMovementKind::SaleRefund,
-                amount: share,
-                sale_id: Some(new.sale_id),
-                payment_method_id: Some(payment.payment_method_id),
-                credit_note_id: Some(note_id),
-                // Refund money leaves through the sale's own tenders, never
-                // through a customer's account.
-                customer_id: None,
-                note: Some(&label),
-                created_by: Some(new.created_by),
-            },
+    // Pass 4: the money. `cash` is what the note still owes after the debt
+    // was cancelled; it is refunded through the tenders that actually
+    // collected money for this sale, each capped at what it collected.
+    let cash = total - cancel;
+    let mut refunds = Vec::new();
+
+    if cash > Decimal::ZERO {
+        // The tenders, in one deterministic order: the payments taken at the
+        // till first, then the receipts whose allocations paid this sale —
+        // for those, what was collected FOR THIS SALE is the allocation
+        // amount, not the receipt's paper total. Ordered by `created_at, id`
+        // within each group, so the split is stable across notes.
+        let mut tenders: Vec<Tender> = sqlx::query!(
+            r#"
+            SELECT m.wallet_id,
+                   w.name AS "wallet_name!",
+                   m.payment_method_id AS "payment_method_id!",
+                   pm.name AS "payment_method_name!",
+                   m.amount
+            FROM wallet_movements m
+            JOIN wallets w ON w.id = m.wallet_id
+            JOIN payment_methods pm ON pm.id = m.payment_method_id
+            WHERE m.sale_id = $1 AND m.kind = 'sale_payment'
+            ORDER BY m.created_at, m.id
+            "#,
+            new.sale_id
         )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|payment| Tender {
+            wallet_id: payment.wallet_id,
+            wallet_name: payment.wallet_name,
+            payment_method_id: payment.payment_method_id,
+            payment_method_name: payment.payment_method_name,
+            collected: payment.amount,
+        })
+        .collect();
+
+        let collected_by_receipt = sqlx::query!(
+            r#"
+            SELECT m.wallet_id,
+                   w.name AS "wallet_name!",
+                   m.payment_method_id AS "payment_method_id!",
+                   pm.name AS "payment_method_name!",
+                   a.amount
+            FROM customer_account_allocations a
+            JOIN customer_account_entries e ON e.id = a.entry_id
+            JOIN wallet_movements m ON m.id = e.wallet_movement_id
+            JOIN wallets w ON w.id = m.wallet_id
+            JOIN payment_methods pm ON pm.id = m.payment_method_id
+            WHERE a.sale_id = $1 AND e.kind = 'receipt'
+            ORDER BY e.created_at, e.id
+            "#,
+            new.sale_id
+        )
+        .fetch_all(&mut *tx)
         .await?;
 
-        refunds.push(CreditNoteRefund {
-            wallet_id: payment.wallet_id,
-            wallet_name: payment.wallet_name.clone(),
-            payment_method_id: payment.payment_method_id,
-            payment_method_name: payment.payment_method_name.clone(),
-            amount: share,
-        });
+        tenders.extend(collected_by_receipt.into_iter().map(|receipt| Tender {
+            wallet_id: receipt.wallet_id,
+            wallet_name: receipt.wallet_name,
+            payment_method_id: receipt.payment_method_id,
+            payment_method_name: receipt.payment_method_name,
+            collected: receipt.amount,
+        }));
+
+        // The cash the earlier notes already refunded for this sale: notes
+        // carry `total`, the ledger's `credit_note` entries carry the
+        // cancelled part, so the difference is what already left the wallets.
+        // Both sums exclude the note being created — its row exists, its
+        // cancellation may already exist too, and counting either would
+        // subtract this note from itself.
+        let cash_before = sqlx::query_scalar!(
+            r#"
+            SELECT (COALESCE((SELECT SUM(total) FROM credit_notes
+                              WHERE sale_id = $1 AND id <> $2), 0)
+                  - COALESCE((SELECT -SUM(amount) FROM customer_account_entries
+                              WHERE sale_id = $1 AND kind = 'credit_note'
+                                AND credit_note_id <> $2), 0))::numeric(14, 2)
+                   AS "cash_before!: Decimal"
+            "#,
+            new.sale_id,
+            note_id
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // Refunds are not tagged with the tender they came from, so the
+        // split cannot be recomputed per note: it is computed cumulatively
+        // and subtracted. `after` is every note so far including this one,
+        // `before` every note before it, and the difference is what THIS
+        // note adds per tender. Three notes of 33.33 on a 100 sale refund
+        // 99.99 whatever order they arrive in, and never a cent more.
+        let collected: Vec<Decimal> = tenders.iter().map(|t| t.collected).collect();
+        let after = split_cash_refund(cash_before + cash, &collected);
+        let before = split_cash_refund(cash_before, &collected);
+
+        let increments: Vec<Decimal> = after
+            .iter()
+            .zip(&before)
+            .map(|(after_share, before_share)| *after_share - *before_share)
+            .collect();
+
+        // The increments must be this note's cash, to the cent, and each one
+        // must be writable: a negative increment would ask a wallet to take
+        // money back, and a short sum means no tender collected what the
+        // note promises in cash. Refusing whole is the only honest answer.
+        let refunded: Decimal = increments.iter().copied().sum();
+        if refunded != cash || increments.iter().any(|share| *share < Decimal::ZERO) {
+            return Err(RepoError::RefundDoesNotAddUp { cash, refunded });
+        }
+
+        for (tender, share) in tenders.iter().zip(increments) {
+            // A zero share would violate `wallet_movements.amount > 0`, and a
+            // movement of nothing explains nothing.
+            if share <= Decimal::ZERO {
+                continue;
+            }
+
+            wallet::insert_movement(
+                &mut *tx,
+                NewWalletMovement {
+                    wallet_id: tender.wallet_id,
+                    kind: WalletMovementKind::SaleRefund,
+                    amount: share,
+                    sale_id: Some(new.sale_id),
+                    payment_method_id: Some(tender.payment_method_id),
+                    credit_note_id: Some(note_id),
+                    // Refund money leaves through the sale's own tenders, never
+                    // through a customer's account.
+                    customer_id: None,
+                    note: Some(&label),
+                    created_by: Some(new.created_by),
+                },
+            )
+            .await?;
+
+            refunds.push(CreditNoteRefund {
+                wallet_id: tender.wallet_id,
+                wallet_name: tender.wallet_name.clone(),
+                payment_method_id: tender.payment_method_id,
+                payment_method_name: tender.payment_method_name.clone(),
+                amount: share,
+            });
+        }
     }
 
     tx.commit().await?;
