@@ -75,13 +75,15 @@ matching the drawer.
 
 An `account_payment` is the wallet side of a collection: money a customer
 handed over against what their account owes (`POST /customers/{id}/receipts`,
-see `docs/customers.md`). Its counterpart `account_payment_refund` is the
-outflow written when collected credit is handed back
+see `docs/customer-accounts.md`). Its counterpart `account_payment_refund` is
+the outflow written when collected credit is handed back
 (`POST /customers/{id}/credit-refunds`). Both movements carry the
-`customer_id` and `payment_method_id` used, and never a `sale_id` or a
-`credit_note_id`. The same transaction writes the movement and its ledger
-entry (`receipt` or `credit_refund`), so the wallet and the debt ledger never
-disagree.
+`customer_id` and `payment_method_id` used, copy the method's default
+`wallet_id` at write time (the same attribution rule as `sale_payment`), impose
+no wallet-balance floor (a wallet balance may go negative), and never carry a
+`sale_id` or a `credit_note_id`. The same transaction writes the movement and
+its ledger entry (`receipt` or `credit_refund`), so the wallet and the debt
+ledger never disagree.
 
 The database keeps the attribution honest: only `account_payment` and
 `account_payment_refund` may carry a customer
@@ -123,13 +125,17 @@ entry.
 
 ## Refunding a sale
 
-A charged sale is not reversed or edited: a return is a credit note. Each
-refund writes a `sale_refund` movement — an outflow, never written by hand —
-that names the sale it reverses, the payment method that collected the money
-and the credit note that caused it. Money leaves the wallets that received the
-payment, split in proportion to it in cents, with the last payment absorbing
-the remainder. The note reports the refunds it produced; see
-`docs/credit-notes.md`.
+A charged sale is not reversed or edited: a return is a credit note. When a
+credit note is issued against a sale, it cancels open debt on the customer's
+account first (`min(note, outstanding)`), and only the remaining cash surplus
+writes `sale_refund` movements — outflows, never written by hand — naming the
+sale reversed, the payment method that collected the money, and the credit note
+that caused it. Money leaves the tenders that actually collected for that sale
+(its original `sale_payment` movements plus receipts allocated to it), split
+proportionally in integer cents with largest remainders computed cumulatively
+across notes. A fully unpaid credit sale therefore writes no `sale_refund`
+movement at all. The note reports the refunds it produced; see
+`docs/credit-notes.md` and `docs/customer-accounts.md`.
 
 ## API
 
@@ -152,9 +158,12 @@ row back. The POS never asks for inactive rows.
 
 - **Transfers between wallets**: moving cash to the bank. The ledger can express
   it (two movements, one per wallet) but there is no endpoint yet.
-- **Fiscal numbering and customer credit balance**: refunds are recorded, but
-  there is no numbered fiscal note and no balance in favor of the customer. See
-  `docs/credit-notes.md`.
+- **Fiscal numbering**: refunds are recorded, but there is no numbered fiscal
+  note. See `docs/credit-notes.md`.
+- **Store credit from cash returns**: customer accounts hold credit balances
+  from overpayments and apply them automatically to future on-account sales
+  (`docs/customer-accounts.md`), but a credit note's cash surplus above debt
+  still refunds the original tenders rather than staying as store credit.
 - **Cash shift / register close**: there is no opening count, closing count or
   expected-vs-counted reconciliation per shift.
 - **Multi-currency**: one implicit currency, no exchange rates.

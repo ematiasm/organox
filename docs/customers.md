@@ -8,10 +8,13 @@ sale ↔ customer link is documented from the registry's side. The sale's side
 
 There is no route that deletes a customer, and there never will be one without
 a fresh decision. The only mutation that takes a customer out of circulation is
-`POST /customers/{id}/deactivate`, which sets `is_active = false` and answers
-`204` — idempotent: an already-inactive customer answers `204` again, not an
-error. Reactivation exists, but only as a field: `PATCH {"is_active": true}`;
-there is no dedicated activate route.
+`POST /customers/{id}/deactivate` (or `PATCH {"is_active": false}`), which
+first checks the customer's account under the customer advisory lock and
+answers `409` while `balance != 0` or `unapplied_credit != 0` — even if an
+already-inactive customer still carries an open position. Once settled, it sets
+`is_active = false` and answers `204`, and repeated deactivation calls are
+idempotent (`204`). Reactivation exists only as a field:
+`PATCH {"is_active": true}`; there is no dedicated activate route.
 
 Why: `sales.customer_id` points at this row (`0014_sales_customer.sql`), and
 credit notes hang off sales. History points at a customer, and a row that
@@ -54,11 +57,12 @@ form the operator fills for the database's sake; each one is justified the day
 a feature reads it, not before. The registry has since gained exactly one
 more field, `credit_limit`, and for the same reason: the checkout reads it.
 
-A customer still carries no derived state: what it bought, returned or owes
-is read from `sales`, `credit_notes` and the account ledger when such a view
-exists, never stored twice here. The credit limit is not derived state either
-— it is the operator's decision about how much may be owed, a policy rather
-than a balance.
+A customer still carries no stored balance: `balance` and `available_credit`
+returned by `GET /customers` and `GET /customers/{id}` are derived from
+`customer_account_entries` on read, never written to `customers`
+(`docs/customer-accounts.md`). The credit limit is not derived state either —
+it is the operator's decision about how much may be owed, a policy rather than
+a balance.
 
 The optional fields are deliberately loose where the cost of being wrong is a
 blocked sale:
@@ -170,14 +174,18 @@ rewrite this feature exists to prevent. The database pins the pair with
 `sales_customer_name_needs_its_customer`: a snapshot cannot exist without the
 customer it froze.
 
-## A customer deactivated mid-draft does not block the checkout
+## A customer deactivated mid-draft does not block a cash checkout
 
-Attaching requires an active customer; completing does not re-check. If the
-customer is deactivated after the attach, the sale still charges and still
-takes the snapshot. The reason: the goods already left, and refusing the
-checkout would deadlock the counter on a back-office event neither the cashier
-nor the buyer caused. The rejected alternative — re-validating at completion —
-turns a registry cleanup into a reason a register cannot close a sale.
+Attaching requires an active customer; completing a cash sale (`on_account = 0`)
+does not re-check. If the customer is deactivated after the attach, a cash sale
+still charges and still takes the snapshot: the goods already left, and
+refusing the checkout would deadlock the counter on a back-office event neither
+the cashier nor the buyer caused. An **on-account** checkout (`on_account > 0`)
+is different: it takes the customer advisory lock, locks the customer row
+`FOR UPDATE`, and refuses an inactive customer (`409`) so new debt is never
+extended to a deactivated account (`docs/sales.md`,
+`docs/customer-accounts.md`). Deactivation follows the same lock order, so the
+two operations cannot deadlock or race past each other.
 
 ## Collecting money against the account
 
@@ -220,14 +228,20 @@ What it does to the numbers:
 
 The answer is `201` with the receipt id, the movement id, the balance, the
 usable credit and each allocated sale's outstanding amount. A repeated
-`idempotency_key` answers `200` with the first receipt and writes nothing —
-money that was already collected cannot be collected twice. The key is
-capped at 100 characters, counted exactly as sent, padding included: a blank
-key is no key at all, but a padded one is its own identity, and the cap must
-measure the same string the retry will send. Unknown or
+`idempotency_key` answers `200` with the first receipt (paired with the
+account's **current** balance, usable credit and sale outstandings at replay
+time) and writes nothing — money that was already collected cannot be collected
+twice. The key is capped at 100 characters, counted exactly as sent, padding
+included: a blank key is no key at all, but a padded one is its own identity,
+and the cap must measure the same string the retry will send. Unknown or
 inactive method, a bad amount or an allocation the ledger refuses answer `422`
 with a sentence the operator can act on; an unknown customer or sale answers
 `404`; an account busy under another writer's lock answers `409`.
+
+The full debt ledger, invariants, read endpoints (`GET /customers/{id}/account`,
+`GET /customers/{id}/receipts`, `GET /customers/{id}/adjustments`) and
+receivables aging (`GET /accounts/receivables`) are documented in
+`docs/customer-accounts.md`.
 
 ## Credit refunds, adjustments and deactivation
 
@@ -287,7 +301,9 @@ the tree use it, which is the only way the two cannot drift.
 
 `CustomerResponse` fields: `id`, `name`, `tax_id`, `email`, `phone`,
 `is_active`, `credit_limit` (`null` = unlimited, `"0.00"` = cash only, money
-as a string), `created_at`, `updated_at`.
+as a string), `balance` (derived signed balance; positive = owes, negative =
+credit), `available_credit` (derived unapplied credit `U`), `created_at`,
+`updated_at`.
 
 ## Validation rules
 
@@ -308,11 +324,10 @@ duplicate document) are enforced by the database as well.
 
 - **Mandatory customer**: the link is optional by decision; there is no mode
   that refuses an anonymous sale.
-- **Per-customer history / statement**: no route answers "what did this
-  customer buy, return, or owe".
-- **`sales_customer_id_idx` serves no query yet**: created in `0014` for the
-  customer-side lookup, and nothing reads it until per-customer history
-  exists.
+- **Per-customer cash-sale history**: debt, collections, credit notes against
+  debt, adjustments and open sales live on `GET /customers/{id}/account`
+  (`docs/customer-accounts.md`), but there is still no per-customer listing of
+  cash-only sales and cash-only returns that never touched the account ledger.
 - **Merge / deduplicate**: the same person registered twice under two
   spellings cannot be merged; the unique document is the only deduplicator,
   and only when present.

@@ -137,7 +137,8 @@ is never asked for cash again for the same goods, and what the credit did
 not need stays usable for the next sale.
 
 Wallets, payment methods and their ledger have their own document:
-`docs/payments.md`.
+`docs/payments.md`. The debt ledger, collections, credit refunds, adjustments,
+statements and receivables aging are documented in `docs/customer-accounts.md`.
 
 ## Why a charged sale cannot be corrected
 
@@ -154,8 +155,9 @@ routes and the refund ledger.
 - **Cash shift / register close**: there is no shift opening or closing, so cash
   counts are not reconciled against the wallets of `docs/payments.md`.
 - **VAT**: the sale stores the total; the tax is not broken out.
-- **Mandatory customer / account statement**: the customer on a sale is optional
-  (`docs/customers.md`; a walk-in buyer is still a sale), and there is no
-  per-customer account statement — what each customer bought, returned or owes
-  is not viewable yet.
+- **Mandatory customer**: the customer on a sale is optional
+  (`docs/customers.md`; a walk-in buyer is still a sale). Debt, collections,
+  credit notes against debt and the per-customer account statement live in
+  `docs/customer-accounts.md`, though there is still no per-customer view of
+  cash-only sales.
 - **Orphan drafts**: there is no cleanup of old drafts.

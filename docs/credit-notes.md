@@ -120,8 +120,12 @@ explicitly future work.
 - **Fiscal numbering**: a note has an internal id, not a numbered fiscal
   document.
 - **Customer on the note**: the sale may name a customer (`docs/customers.md`),
-  but the note itself carries no customer reference or name; there is no
-  per-customer view of returns.
-- **Credit balance in favor of the customer**: a note always refunds the
-  original wallets; money cannot stay as store credit.
+  and any debt cancelled by a note appears as a `credit_note` entry on that
+  customer's account statement (`docs/customer-accounts.md`), but the note
+  document itself carries no customer reference and there is no per-customer
+  list of cash-only returns.
+- **Store credit from cash returns**: a note cancels open account debt first
+  (`docs/customer-accounts.md`), and customer accounts hold credit balances
+  from overpayments; however, any cash surplus above debt always refunds the
+  original tenders and cannot be left as store credit.
 - **VAT breakdown**: totals are stored without a tax breakdown.
