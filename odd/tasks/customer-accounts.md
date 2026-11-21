@@ -215,7 +215,7 @@ and the new `on_account = 0` sibling.
 | T3 | S5, S7 + L12 | **done**: `0017` adds `customers.credit_limit`; the customers module exposes it (NULL = unlimited, `0` = cash only, clearable through PATCH); `customer_accounts::authorize_credit` takes the customer lock, reads the row `FOR UPDATE`, checks activity and exposure (`balance + amount` against the limit, floored at zero for the message) and returns the available amount; sales calls it before writing and answers 409 naming the remaining credit. Closes `R1-on-account-credit-unbounded`, `R3-active-check-race` and `R4-on-account-active-gate-race` | `82e9633`, `ba262f0`, `d28ae60`, `8851144` |
 | T4 | S3, S5, S6 | **done**: `0018` adds the `account_payment` label alone, `0019` the `wallet_movements.customer_id` column and its two CHECKs; the kind joins both balance `CASE`s and the sign test; `POST /customers/{id}/receipts` answers 201/200 with the replay read under the lock; `ensure_movement_backing` now binds the movement's customer, closing `R1-receipt-backing-not-customer-bound`; 8 HTTP tests plus the ledger one | `4807009` |
 | T5 | S8 | **done**: `apply_available_credit` spends usable credit oldest-receipt-first inside the completion transaction, capped by the request, the account's credit and the sale's outstanding; `credit_applied` in the response says what the sale no longer owes. Closes the three banked advisories | `781a815` |
-| T6 | S9 | **done**: the note cancels `min(N, outstanding)` through the ledger and refunds only the surplus over the tenders that collected it (till payments, then receipt allocations), split in integer cents with largest remainders and computed cumulatively; `split_cash_refund` replaces `allocate_refund`; a busy account answers 409. Closes the four banked advisories | `2beefe1` |
+| T6 | S9 | **done**: the note cancels `min(N, outstanding)` through the ledger and refunds only the surplus over the tenders that collected it (till payments, then receipt allocations), split in integer cents with largest remainders and computed cumulatively; `split_cash_refund` replaces `allocate_refund`; a busy account answers 409. Closes the four banked advisories. **Verified** by `gentle-ai-verify` (7/7 S9 rules MET, see L32); no native receipt: the provider refuses this candidate at preflight (`lens_context_budget_exceeded`) | `2beefe1`, plus the cache fix recorded in L32 |
 | T7 | S10, S11, S12 | **done**: `0020` adds the `account_payment_refund` label alone, `0021` extends both wallet customer-link CHECKs; `POST /customers/{id}/credit-refunds` (201/200, cross-kind key collision 409) writes the outflow movement and `credit_refund` entry under the customer lock bounded by `min(U, -balance)`; `POST /customers/{id}/adjustments` (`in`/`out`, non-blank note, never crosses zero, touches no wallet); `POST /customers/{id}/deactivate` and `PATCH /customers/{id}` (`is_active: false`) guard `balance == 0 && U == 0` under the customer lock and answer 409 naming the open position; 10 HTTP tests plus wallet/ledger tests | `38f674e` |
 | T8 | S13 | **done**: `GET /customers/{id}/account` (entries oldest first with running balance, position and open sales in one `REPEATABLE READ READ ONLY` snapshot), `GET /customers/{id}/receipts` and `GET /customers/{id}/adjustments` (write logs newest first with `limit` 1..=200), `GET /accounts/receivables` (`balance != 0 OR U != 0`, aging buckets `0-30`/`31-60`/`61-90`/`90+` from `sales.completed_at`, portfolio totals), `GET /customers` and `GET /customers/{id}` exposing derived `balance` and `available_credit` alongside `credit_limit`; 7 HTTP tests in `tests/account_reads.rs` plus OpenAPI checks | `778e1e7` |
 | T9 | S14 | **done**: POS `on_account` field with till amount, remaining credit limit and apply-credit line (`money.ts`, `client.ts`, `operations/pos`); customers list balance column + customer drawer credit limit (tri-state PATCH), account KPIs, oldest-first statement, open sales and receipt form (`customers/+page.svelte`, `customer-drawer.svelte`, `customer-account-panel.svelte`); receivables aging page + rail entry + updated `nav-shell.cjs` (`receivables/`, `app-shell.svelte`). `make check` green (372 Rust tests, `svelte-check` 0/0), `make fe-build` green, `gentle-ai-verify` MET on all S14 surfaces | `b365ca3`, `a661dd9`, `9664236` |
@@ -223,7 +223,8 @@ and the new `on_account = 0` sibling.
 | T11 | S2, S3, S9, S10 + L12 | **done**: close the T1 review advisories — bound a charge to the sale's unpaid part, verify a credit note against its own sale and total, reject a repeated sale in one receipt and a sale-kind movement as backing, map the remaining unique violations, bound the advisory lock wait, fold `outstanding_total` into one statement, add the `allocate` success test, and enforce the per-sale ceiling with a deferred trigger | `56eb16f` |
 
 T1, T2 and T6 are the high-risk slices (irreversible money data, contract change): independent
-verification per slice, and each slice stays under roughly 400 authored lines.
+verification per slice, and each slice stays under roughly 400 authored lines. T6 closed on that
+verification alone: its native receipt could not be created (L32).
 
 ## Log
 
@@ -492,3 +493,36 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   over `32fc04f..67e86cd` returned `nativeRisk: unassessable` due to untracked
   `skills/system/run-workflow/SKILL.md` (`plan.independentVerifier: false`); docs-only change
   (`Risk: none`).
+- L32 — **T6 closes verified, without a native receipt.** The provider could not freeze this slice:
+  T6 is 66,339 diff bytes over 14 files, and every route to it stops before authority exists. A
+  `gentle_review` start with an explicit `baseRef` answers `candidate-target-projection-drift`,
+  because the workspace target is derived from the checkout and not from the ref; `gentle_review_run`
+  from the main worktree answers `lens_context_budget_exceeded` at preflight, because that checkout
+  projects the whole branch (728,486 bytes); and the same candidate from `.worktrees/t6-review`
+  answers `not-due` (`medium`, `reviewDueReason: under_budget`), because the only target on offer
+  there is `4fa1a8b..2beefe1` (510,085 bytes, 10,354 lines). The binary did not change —
+  `gentle-ai 4.6.0`, installed 2026-11-18 — so this is the projection route, not an upgrade. Rather
+  than rewrite an atomic commit into buildable halves, the operator abandoned the authority
+  (`abandon {actor: operator, reason: operator_disposition}`, quarantine
+  `review-transactions/quarantine/review-255cf9177c6cd364-269392576`, nothing captured, nothing lost)
+  and closed the slice on independent verification. `gentle-ai-verify` returned **MET on all seven S9
+  rules** with `path:line` evidence and its own probes: `cargo test --test credit_notes` 37/37,
+  `--test customer_accounts` 58/58, `--test receipts` 15/15, `cargo test --lib credit_notes::model`
+  10/10; three notes of 33.33 refunded exactly 99.99 over five tender layouts; a one-cent note landed
+  on the larger tender only; a busy account answered 409 on the note route with no note and no
+  movement written. Two of its findings are real and change-caused. **A1, fixed in `9b45e40`**: the
+  two queries the T6 tests added (`tests/credit_notes.rs:2047`, `:2253`) had no `.sqlx` entry, so
+  `SQLX_OFFLINE=true cargo test --no-run` failed — and CI (`ci.yml:22`) and the `Dockerfile` both
+  build offline, so the branch would have gone red on its first push. The cause is the cache recipe:
+  `make prepare` ran `cargo sqlx prepare --workspace`, which checks the library and binary targets
+  and ignores `tests/`, so the Makefile now passes `-- --all-targets`, and
+  `cargo sqlx prepare --check --workspace -- --all-targets` is idempotent green.
+  **A2, documented, not fixed**: with three or more tenders the cumulative largest-remainder split is
+  not componentwise monotone (the Alabama paradox), so a note whose surplus lands exactly on a step
+  is refused by the split's own safety check and answers 500 on a well-formed note — fail-safe, no
+  partial write and no tender ever over-refunded, and two-tender sales are unaffected. Fixing it
+  means changing the money allocation to be monotone against remaining capacity, which is surgery
+  with no native review available at this gate; it is recorded in `docs/credit-notes.md` as a known
+  limitation. A3 (`2beefe1` also carries the FIFO `LIMIT 100` bound and the typed
+  `CreditApplicationBroken` error, both fail-safe) and A4 (the note route's OpenAPI 409 description
+  does not name the busy case, unlike the sales route) are recorded, not fixed.
