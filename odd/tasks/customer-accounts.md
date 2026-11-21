@@ -332,3 +332,14 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   **T4** `R1-receipt-backing-not-customer-bound`; **accepted, documented** `R4-advisory-wait-holds-checkout-locks`
   and `R4-busy-409-contract-gap` (the 409 is now documented; the checkout serialization is the
   deliberate price of one lock order).
+- L17 — second review of the same range, this time with `readability` + `reliability`: lineage
+  `review-147b91d960fa0a81` reached `correction_required` over `R2-001` (CRITICAL, deterministic):
+  the payment-mismatch detail was rewritten for **every** completion, including a cash-only one
+  that never mentions the account, which contradicts "on_account = 0 behaves exactly as before".
+  Fixed in `db0a1f2`: the enriched sentence is emitted only when `on_account > 0`, the variants now
+  carry `on_account` so the boundary can decide, and a new HTTP test pins the original wording.
+  The finding is real and the previous three-lens pass missed it: no readability lens had run.
+  **The correction-plan slot rejected the provider's own binding again**, second lineage, second
+  revision, both accepted shapes, `mutation_performed: false` — same class of facade defect as
+  `review-9bdabf97b891d543`. Two independent occurrences make it reproducible, not a transcription
+  error. The lineage is left for the operator's disposition rather than looped.

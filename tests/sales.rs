@@ -864,9 +864,14 @@ async fn a_payment_that_does_not_add_up_leaves_no_trace(pool: PgPool) {
     .expect_err("150 is not the 200 total");
 
     match err {
-        SalesError::PaymentMismatch { total, paid } => {
+        SalesError::PaymentMismatch {
+            total,
+            paid,
+            on_account,
+        } => {
             assert_eq!(total, dec!(200));
             assert_eq!(paid, dec!(150));
+            assert_eq!(on_account, Decimal::ZERO);
         }
         other => panic!("unexpected error: {other:?}"),
     }
@@ -904,8 +909,8 @@ async fn an_empty_payment_list_cannot_cover_a_positive_total_on_its_own(pool: Pg
         .expect_err("a sale cannot close without saying how it was paid");
     assert!(matches!(
         err,
-        SalesError::PaymentMismatch { total, paid }
-            if total == dec!(100) && paid == Decimal::ZERO
+        SalesError::PaymentMismatch { total, paid, on_account }
+            if total == dec!(100) && paid == Decimal::ZERO && on_account == Decimal::ZERO
     ));
     assert_eq!(current_stock(&pool, product).await, dec!(10));
     assert_eq!(payment_movement_count(&pool).await, 0);
@@ -1913,4 +1918,39 @@ async fn a_busy_customer_account_answers_409(pool: PgPool) {
     assert_eq!(stock_outflow_count(&pool).await, 0);
     assert_eq!(ledger_entry_count(&pool).await, 0);
     assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// The mismatch detail is part of the contract. A completion that never used
+/// the account has to keep the sentence it always answered with: a change that
+/// claims `on_account = 0` behaves as before must not quietly rewrite it.
+#[sqlx::test]
+async fn a_cash_only_mismatch_keeps_its_original_message(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [ { "payment_method_id": method, "amount": "90.00" } ] }),
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "the payments do not add up to the sale total"
+    );
+
+    assert_eq!(
+        sales::get(&pool, draft).await.unwrap().status,
+        SaleStatus::Draft
+    );
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(wallet_balance(&pool, wallet).await, Decimal::ZERO);
+    assert_eq!(payment_movement_count(&pool).await, 0);
 }

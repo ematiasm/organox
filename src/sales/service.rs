@@ -51,7 +51,11 @@ pub enum SalesError {
     PaymentAmountPrecision,
 
     #[error("the payments do not add up to the sale total")]
-    PaymentMismatch { total: Decimal, paid: Decimal },
+    PaymentMismatch {
+        total: Decimal,
+        paid: Decimal,
+        on_account: Decimal,
+    },
 
     #[error("the on-account amount cannot be negative")]
     OnAccountNegative,
@@ -100,7 +104,15 @@ fn map_repo_error(err: RepoError) -> SalesError {
         RepoError::NotEditable => SalesError::NotEditable,
         RepoError::PaymentAmountNotPositive => SalesError::PaymentAmountNotPositive,
         RepoError::PaymentAmountPrecision => SalesError::PaymentAmountPrecision,
-        RepoError::PaymentMismatch { total, paid } => SalesError::PaymentMismatch { total, paid },
+        RepoError::PaymentMismatch {
+            total,
+            paid,
+            on_account,
+        } => SalesError::PaymentMismatch {
+            total,
+            paid,
+            on_account,
+        },
         RepoError::PaymentMethodUnavailable => SalesError::PaymentMethodUnavailable,
         RepoError::OnAccountNegative => SalesError::OnAccountNegative,
         RepoError::OnAccountPrecision => SalesError::OnAccountPrecision,

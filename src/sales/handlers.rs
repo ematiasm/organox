@@ -330,11 +330,25 @@ impl From<SalesError> for AppError {
             | SalesError::OnAccountPrecision
             | SalesError::OnAccountNeedsCustomer
             | SalesError::OnAccountNeedsActiveCustomer => AppError::Validation(err.to_string()),
-            SalesError::PaymentMismatch { total, paid } => AppError::Validation(format!(
-                "the payments and the on-account amount add up to {}, but the sale total is {}",
-                format_money(paid),
-                format_money(total)
-            )),
+            SalesError::PaymentMismatch {
+                total,
+                paid,
+                on_account,
+            } => {
+                // The wording is part of the contract. A completion that never
+                // mentions the account keeps the sentence it has always had;
+                // only a request that actually used it may say so.
+                let detail = if on_account > Decimal::ZERO {
+                    format!(
+                        "the payments and the on-account amount add up to {}, but the sale total is {}",
+                        format_money(paid),
+                        format_money(total)
+                    )
+                } else {
+                    "the payments do not add up to the sale total".to_string()
+                };
+                AppError::Validation(detail)
+            }
             SalesError::CustomerInactive => AppError::Conflict(err.to_string()),
             SalesError::CustomerAccountBusy => AppError::Conflict(err.to_string()),
             SalesError::CustomerLookup(err) => AppError::Internal(err.to_string()),

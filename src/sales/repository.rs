@@ -41,7 +41,11 @@ pub enum RepoError {
     PaymentAmountPrecision,
 
     #[error("the payments do not add up to the sale total")]
-    PaymentMismatch { total: Decimal, paid: Decimal },
+    PaymentMismatch {
+        total: Decimal,
+        paid: Decimal,
+        on_account: Decimal,
+    },
 
     #[error("the on-account amount cannot be negative")]
     OnAccountNegative,
@@ -440,12 +444,14 @@ async fn resolve_payments(
     // The completion invariant: what the wallets collect plus what the
     // account takes must equal the total the server computed, exactly.
     // `paid` carries both parts together, so the rejection names the amount
-    // the request actually covered.
+    // the request actually covered; `on_account` travels separately because
+    // only a request that used the account may mention it in the message.
     let covered = paid + on_account;
     if covered != total {
         return Err(RepoError::PaymentMismatch {
             total,
             paid: covered,
+            on_account,
         });
     }
 
