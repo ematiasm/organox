@@ -217,7 +217,7 @@ and the new `on_account = 0` sibling.
 | T5 | S8 | **done**: `apply_available_credit` spends usable credit oldest-receipt-first inside the completion transaction, capped by the request, the account's credit and the sale's outstanding; `credit_applied` in the response says what the sale no longer owes. Closes the three banked advisories | `781a815` |
 | T6 | S9 | **done**: the note cancels `min(N, outstanding)` through the ledger and refunds only the surplus over the tenders that collected it (till payments, then receipt allocations), split in integer cents with largest remainders and computed cumulatively; `split_cash_refund` replaces `allocate_refund`; a busy account answers 409. Closes the four banked advisories | `2beefe1` |
 | T7 | S10, S11, S12 | **done**: `0020` adds the `account_payment_refund` label alone, `0021` extends both wallet customer-link CHECKs; `POST /customers/{id}/credit-refunds` (201/200, cross-kind key collision 409) writes the outflow movement and `credit_refund` entry under the customer lock bounded by `min(U, -balance)`; `POST /customers/{id}/adjustments` (`in`/`out`, non-blank note, never crosses zero, touches no wallet); `POST /customers/{id}/deactivate` and `PATCH /customers/{id}` (`is_active: false`) guard `balance == 0 && U == 0` under the customer lock and answer 409 naming the open position; 10 HTTP tests plus wallet/ledger tests | `38f674e` |
-| T8 | S13 | statement, receivables with aging, customer read columns | feat/customer-accounts-reads |
+| T8 | S13 | **done**: `GET /customers/{id}/account` (entries oldest first with running balance, position and open sales in one `REPEATABLE READ READ ONLY` snapshot), `GET /customers/{id}/receipts` and `GET /customers/{id}/adjustments` (write logs newest first with `limit` 1..=200), `GET /accounts/receivables` (`balance != 0 OR U != 0`, aging buckets `0-30`/`31-60`/`61-90`/`90+` from `sales.completed_at`, portfolio totals), `GET /customers` and `GET /customers/{id}` exposing derived `balance` and `available_credit` alongside `credit_limit`; 7 HTTP tests in `tests/account_reads.rs` plus OpenAPI checks | `778e1e7` |
 | T9 | S14 | POS field, drawer, list column, receivables page, regenerated schema | feat/customer-accounts-ui |
 | T10 | S14 | docs, README, openapi regeneration | feat/customer-accounts-docs |
 | T11 | S2, S3, S9, S10 + L12 | **next**: close the T1 review advisories — bound a charge to the sale's unpaid part, verify a credit note against its own sale and total, reject a repeated sale in one receipt and a sale-kind movement as backing, map the remaining unique violations, bound the advisory lock wait, fold `outstanding_total` into one statement, add the `allocate` success test, and enforce the per-sale ceiling with a deferred trigger | feat/customer-accounts-advisories |
@@ -444,3 +444,18 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   contracts (clarify explicitly in T10 docs); adjustments carry no idempotency key per S11; and
   re-deactivating an already-inactive legacy customer with an open position now answers 409 rather
   than a 204 no-op (evaluate in T8/T10 if needed).
+- L29 — T8 delivered in `778e1e7`: read surfaces of S13. `GET /customers/{id}/account` opens a
+  `REPEATABLE READ READ ONLY` transaction so customer existence, `account_position_in`,
+  `list_entries_in` (oldest first with running balance), and `outstanding_by_sale_in` share one
+  consistent snapshot with zero write locks. `GET /customers/{id}/receipts` and
+  `GET /customers/{id}/adjustments` return newest-first write logs (`limit` default 50, clamped
+  1..=200), with receipts reading their note, wallet and payment method from the linked
+  `wallet_movements` row and batch-loading allocations via `ANY($1)`. `GET /accounts/receivables`
+  lists every customer with `balance != 0 OR unapplied_credit != 0` in one statement with aging
+  buckets (`0-30`, `31-60`, `61-90`, `90+`) computed from `FLOOR(EXTRACT(EPOCH FROM (NOW() -
+  s.completed_at)) / 86400)` plus portfolio totals. `GET /customers` and `GET /customers/{id}`
+  now expose derived `balance` and `available_credit` via `LEFT JOIN LATERAL` in the same query
+  that paginates/loads customers. `.sqlx`, `openapi.json`, and `frontend/src/lib/api/schema.d.ts`
+  regenerated. `make check` green at 372 tests (`account_reads.rs` 7/7, `openapi` 5/5), clippy
+  `-D warnings`, `svelte-check` 0 errors / 0 warnings. Native `assess` over `0064999..778e1e7`
+  returned `medium` (`reviewDue: false`, `independentVerifier: false`); no native review started.
