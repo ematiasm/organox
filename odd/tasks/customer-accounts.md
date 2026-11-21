@@ -351,3 +351,17 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   the finding was fixed and before any further edit: quarantine
   `review-transactions/quarantine/review-147b91d960fa0a81-2968810132`. Its fix (`08485a6`) enters
   the next review's range together with T3, so nothing it found is lost.
+- L19 — T3 reviewed: lineage `review-4c1e09c2daa1a08f`, **approved**, authority burned. Three of its
+  five advisories were closed immediately in `d2f5f1a`; the other two are cosmetic or theoretical
+  and stay recorded. Closed: `R1/R3/R4-credit-limit-magnitude-gap` — the trio all flagged that a
+  well-formed limit above `numeric(14,2)` reached Postgres and answered an internal error instead of
+  a 422, so the boundary now owns the column's magnitude; and
+  `R4-credit-limit-display-mislabels-exposure` — `CreditLimitExceeded` said "the charge of" while
+  carrying the post-charge exposure; and `R3-authorize-credit-zero-amount` — authorizing nothing is
+  always allowed, which matters exactly for the over-limit customers the feature keeps reachable.
+  Remaining: nothing actionable beyond the T4 items already listed in L12.
+- L20 — **review budget**: the whole branch (`f06a2a6..HEAD`, ~2.9k lines) is over the provider's
+  per-lens context budget (`lens_context_budget_exceeded`, no authority created), so reviews must
+  name an explicit narrower `baseRef`. The facade also rejects some lens sets with a bare
+  `lenses-invalid` before the budget check; the accepted recipe is three lenses
+  (`risk`+`resilience`+`reliability`) with a full 40-character commit sha as `baseRef`.

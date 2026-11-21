@@ -73,7 +73,10 @@ blocked sale:
 ## The credit limit: NULL unlimited, 0 cash only
 
 `credit_limit` is the ceiling the shop is willing to be owed by one customer:
-`numeric(14, 2)`, optional, never negative, at most two decimals. `NULL` — the
+`numeric(14, 2)`, optional, never negative, at most two decimals and never
+above `999999999999.99` — the column's own magnitude, refused at the boundary so
+an out-of-range limit answers a sentence instead of a database error. `NULL` —
+the
 column default, and what every customer created before the field exists has —
 means **no limit**: the customer can owe any amount. `0` means **cash only**:
 the customer may still buy, but nothing on account. `0` is a limit, not the

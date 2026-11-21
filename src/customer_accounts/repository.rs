@@ -127,7 +127,7 @@ pub enum RepoError {
     #[error("the customer is deactivated")]
     CustomerInactive,
 
-    #[error("the charge of {requested} exceeds the {available} the customer still has available")]
+    #[error("the account would reach {requested} and only {available} is available")]
     CreditLimitExceeded {
         requested: Decimal,
         available: Decimal,
@@ -460,6 +460,14 @@ pub async fn authorize_credit(
         // No limit: the registry imposed no ceiling, only the activity rule.
         return Ok(());
     };
+
+    // Authorizing nothing is always allowed: the ceiling compares an exposure
+    // that a zero charge does not raise. Without this, a customer whose limit
+    // was lowered below what they already owe would answer "refused" to a
+    // no-op, which says nothing about the charge and everything about the past.
+    if amount <= Decimal::ZERO {
+        return Ok(());
+    }
 
     let position = account_position_in(conn, customer_id).await?;
 

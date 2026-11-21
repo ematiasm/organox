@@ -2202,3 +2202,36 @@ async fn lowering_the_limit_below_the_balance_blocks_only_new_credit(pool: PgPoo
     assert_eq!(entry_count(&pool, customer).await, 1);
     assert!(position.is_consistent());
 }
+
+/// Authorizing nothing is always allowed. A customer whose limit was lowered
+/// below what they already owe is over it by definition, and a no-op charge
+/// must not answer "refused": that sentence says nothing about this charge.
+#[sqlx::test]
+async fn authorizing_nothing_is_allowed_even_over_the_limit(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(120.00)).await;
+    insert_entry(&pool, NewEntry::charge(customer, sale, dec!(120.00)))
+        .await
+        .expect("charge");
+
+    sqlx::query("UPDATE customers SET credit_limit = 100.00 WHERE id = $1")
+        .bind(customer)
+        .execute(&pool)
+        .await
+        .expect("limit");
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::authorize_credit(&mut tx, customer, Decimal::ZERO)
+        .await
+        .expect("a zero charge needs no credit");
+
+    let refused = repository::authorize_credit(&mut tx, customer, dec!(1.00)).await;
+    assert!(
+        matches!(
+            refused,
+            Err(repository::RepoError::CreditLimitExceeded { .. })
+        ),
+        "the limit stopped applying once the customer was already over it"
+    );
+    tx.rollback().await.expect("rollback");
+}
