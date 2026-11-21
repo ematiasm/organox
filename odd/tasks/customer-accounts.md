@@ -216,10 +216,10 @@ and the new `on_account = 0` sibling.
 | T4 | S3, S5, S6 | **done**: `0018` adds the `account_payment` label alone, `0019` the `wallet_movements.customer_id` column and its two CHECKs; the kind joins both balance `CASE`s and the sign test; `POST /customers/{id}/receipts` answers 201/200 with the replay read under the lock; `ensure_movement_backing` now binds the movement's customer, closing `R1-receipt-backing-not-customer-bound`; 8 HTTP tests plus the ledger one | `4807009` |
 | T5 | S8 | **done**: `apply_available_credit` spends usable credit oldest-receipt-first inside the completion transaction, capped by the request, the account's credit and the sale's outstanding; `credit_applied` in the response says what the sale no longer owes. Closes the three banked advisories | `781a815` |
 | T6 | S9 | **done**: the note cancels `min(N, outstanding)` through the ledger and refunds only the surplus over the tenders that collected it (till payments, then receipt allocations), split in integer cents with largest remainders and computed cumulatively; `split_cash_refund` replaces `allocate_refund`; a busy account answers 409. Closes the four banked advisories. **Verified** by `gentle-ai-verify` (7/7 S9 rules MET, see L32); no native receipt: the provider refuses this candidate at preflight (`lens_context_budget_exceeded`) | `2beefe1`, plus the cache fix recorded in L32 |
-| T7 | S10, S11, S12 | **done**: `0020` adds the `account_payment_refund` label alone, `0021` extends both wallet customer-link CHECKs; `POST /customers/{id}/credit-refunds` (201/200, cross-kind key collision 409) writes the outflow movement and `credit_refund` entry under the customer lock bounded by `min(U, -balance)`; `POST /customers/{id}/adjustments` (`in`/`out`, non-blank note, never crosses zero, touches no wallet); `POST /customers/{id}/deactivate` and `PATCH /customers/{id}` (`is_active: false`) guard `balance == 0 && U == 0` under the customer lock and answer 409 naming the open position; 10 HTTP tests plus wallet/ledger tests | `38f674e` |
-| T8 | S13 | **done**: `GET /customers/{id}/account` (entries oldest first with running balance, position and open sales in one `REPEATABLE READ READ ONLY` snapshot), `GET /customers/{id}/receipts` and `GET /customers/{id}/adjustments` (write logs newest first with `limit` 1..=200), `GET /accounts/receivables` (`balance != 0 OR U != 0`, aging buckets `0-30`/`31-60`/`61-90`/`90+` from `sales.completed_at`, portfolio totals), `GET /customers` and `GET /customers/{id}` exposing derived `balance` and `available_credit` alongside `credit_limit`; 7 HTTP tests in `tests/account_reads.rs` plus OpenAPI checks | `778e1e7` |
-| T9 | S14 | **done**: POS `on_account` field with till amount, remaining credit limit and apply-credit line (`money.ts`, `client.ts`, `operations/pos`); customers list balance column + customer drawer credit limit (tri-state PATCH), account KPIs, oldest-first statement, open sales and receipt form (`customers/+page.svelte`, `customer-drawer.svelte`, `customer-account-panel.svelte`); receivables aging page + rail entry + updated `nav-shell.cjs` (`receivables/`, `app-shell.svelte`). `make check` green (372 Rust tests, `svelte-check` 0/0), `make fe-build` green, `gentle-ai-verify` MET on all S14 surfaces | `b365ca3`, `a661dd9`, `9664236` |
-| T10 | S14 | **done**: new `docs/customer-accounts.md`, rewrote stale contracts in `docs/sales.md`, `docs/payments.md`, `docs/credit-notes.md` and `docs/customers.md`, updated `README.md`, verified `make fe-schema` (zero diff on `openapi.json` and `frontend/src/lib/api/schema.d.ts`) and `make check` green (372 Rust tests, `svelte-check` 0/0) | `67e86cd` |
+| T7 | S10, S11, S12 | **done**: `0020` adds the `account_payment_refund` label alone, `0021` extends both wallet customer-link CHECKs; `POST /customers/{id}/credit-refunds` (201/200, cross-kind key collision 409) writes the outflow movement and `credit_refund` entry under the customer lock bounded by `min(U, -balance)`; `POST /customers/{id}/adjustments` (`in`/`out`, non-blank note, never crosses zero, touches no wallet); `POST /customers/{id}/deactivate` and `PATCH /customers/{id}` (`is_active: false`) guard `balance == 0 && U == 0` under the customer lock and answer 409 naming the open position; 10 HTTP tests plus wallet/ledger tests | `f829cd1` |
+| T8 | S13 | **done**: `GET /customers/{id}/account` (entries oldest first with running balance, position and open sales in one `REPEATABLE READ READ ONLY` snapshot), `GET /customers/{id}/receipts` and `GET /customers/{id}/adjustments` (write logs newest first with `limit` 1..=200), `GET /accounts/receivables` (`balance != 0 OR U != 0`, aging buckets `0-30`/`31-60`/`61-90`/`90+` from `sales.completed_at`, portfolio totals), `GET /customers` and `GET /customers/{id}` exposing derived `balance` and `available_credit` alongside `credit_limit`; 7 HTTP tests in `tests/account_reads.rs` plus OpenAPI checks | `b2b8714` |
+| T9 | S14 | **done**: POS `on_account` field with till amount, remaining credit limit and apply-credit line (`money.ts`, `client.ts`, `operations/pos`); customers list balance column + customer drawer credit limit (tri-state PATCH), account KPIs, oldest-first statement, open sales and receipt form (`customers/+page.svelte`, `customer-drawer.svelte`, `customer-account-panel.svelte`); receivables aging page + rail entry + updated `nav-shell.cjs` (`receivables/`, `app-shell.svelte`). `make check` green (372 Rust tests, `svelte-check` 0/0), `make fe-build` green, `gentle-ai-verify` MET on all S14 surfaces | `7a09192`, `42b8bdd`, `492c556` |
+| T10 | S14 | **done**: new `docs/customer-accounts.md`, rewrote stale contracts in `docs/sales.md`, `docs/payments.md`, `docs/credit-notes.md` and `docs/customers.md`, updated `README.md`, verified `make fe-schema` (zero diff on `openapi.json` and `frontend/src/lib/api/schema.d.ts`) and `make check` green (372 Rust tests, `svelte-check` 0/0) | `7951bb8` |
 | T11 | S2, S3, S9, S10 + L12 | **done**: close the T1 review advisories — bound a charge to the sale's unpaid part, verify a credit note against its own sale and total, reject a repeated sale in one receipt and a sale-kind movement as backing, map the remaining unique violations, bound the advisory lock wait, fold `outstanding_total` into one statement, add the `allocate` success test, and enforce the per-sale ceiling with a deferred trigger | `56eb16f` |
 
 T1, T2 and T6 are the high-risk slices (irreversible money data, contract change): independent
@@ -423,7 +423,7 @@ verification alone: its native receipt could not be created (L32).
   same commit so the review sees it. `allocate_refund`'s seven unit tests were replaced by eight for
   `split_cash_refund`; one deliberate difference is pinned: a cent over [1.00, 2.00] now goes to the
   larger tender instead of whichever came last, which is the Hamilton rule.
-- L28 — T7 delivered in `38f674e`: credit refunds, manual adjustments and the deactivation guard.
+- L28 — T7 delivered in `f829cd1`: credit refunds, manual adjustments and the deactivation guard.
   Two migrations (`0020` adds `account_payment_refund` alone; `0021` extends both `wallet_movements`
   customer-link CHECKs), outflow movement (`-1`) + `credit_refund` entry (`+amount`) written in one
   transaction under the customer advisory lock bounded by `min(U, -balance)`, and `record_receipt`
@@ -445,7 +445,7 @@ verification alone: its native receipt could not be created (L32).
   contracts (clarify explicitly in T10 docs); adjustments carry no idempotency key per S11; and
   re-deactivating an already-inactive legacy customer with an open position now answers 409 rather
   than a 204 no-op (evaluate in T8/T10 if needed).
-- L29 — T8 delivered in `778e1e7`: read surfaces of S13. `GET /customers/{id}/account` opens a
+- L29 — T8 delivered in `b2b8714`: read surfaces of S13. `GET /customers/{id}/account` opens a
   `REPEATABLE READ READ ONLY` transaction so customer existence, `account_position_in`,
   `list_entries_in` (oldest first with running balance), and `outstanding_by_sale_in` share one
   consistent snapshot with zero write locks. `GET /customers/{id}/receipts` and
@@ -458,28 +458,28 @@ verification alone: its native receipt could not be created (L32).
   now expose derived `balance` and `available_credit` via `LEFT JOIN LATERAL` in the same query
   that paginates/loads customers. `.sqlx`, `openapi.json`, and `frontend/src/lib/api/schema.d.ts`
   regenerated. `make check` green at 372 tests (`account_reads.rs` 7/7, `openapi` 5/5), clippy
-  `-D warnings`, `svelte-check` 0 errors / 0 warnings. Native `assess` over `0064999..778e1e7`
+  `-D warnings`, `svelte-check` 0 errors / 0 warnings. Native `assess` over `acdc432..b2b8714`
   returned `medium` (`reviewDue: false`, `independentVerifier: false`); no native review started.
-- L30 — T9 delivered in three reviewable slices: `b365ca3` (exact `BigInt` cent helpers in
+- L30 — T9 delivered in three reviewable slices: `7a09192` (exact `BigInt` cent helpers in
   `frontend/src/lib/money.ts`, customer-account wrappers + optional `on_account` and `credit_limit`
   in `frontend/src/lib/api/client.ts`, and POS on-account checkout with till charge preview,
   remaining credit limit and automatic credit-application line in `operations/pos/+page.{ts,svelte}`),
-  `a661dd9` (customers list Balance column, tri-state `credit_limit` create/edit clearing to `NULL`,
+  `42b8bdd` (customers list Balance column, tri-state `credit_limit` create/edit clearing to `NULL`,
   balance/available-credit/limit summary cards, and `CustomerAccountPanel` with open sales,
   oldest-first running-balance statement and receipt form with oldest-first convenience prefill and
-  plain-HTTP-safe lazy idempotency key), and `9664236` (`/receivables` aging page with portfolio
+  plain-HTTP-safe lazy idempotency key), and `492c556` (`/receivables` aging page with portfolio
   totals, 0–30/31–60/61–90/90+ buckets, search and links to `/customers?id=...`, plus Receivables
   nav link in `app-shell.svelte` and updated `frontend/e2e/nav-shell.cjs`). `openapi.json` confirmed
   up to date (zero diff with `cargo run --bin openapi`). `make check` green (372 Rust tests, clippy
   `-D warnings`, `svelte-check` 0 errors / 0 warnings) and `make fe-build` green. Native `assess`
-  over `3851a60..9664236` returned `nativeRisk: medium`, `reviewDue: false`; escalated `item 6`
+  over `588c65f..492c556` returned `nativeRisk: medium`, `reviewDue: false`; escalated `item 6`
   (no automated runtime frontend test suite in `make check`) → `independentVerifier: true`.
   Independent `gentle-ai-verify` returned MET on every S14 requirement, clean `fe-check`/`fe-build`
   and `money.ts` edge-case probes; one non-blocking advisory banked (**A1**: `allocateOldestFirst`
   uses `localeCompare` on ISO timestamps where chrono's `AutoSi` omits `.000000`, so two sales in
   the exact same second with one at zero microseconds can sort inverted — convenience prefill only,
   server-validated). Live Playwright `nav-shell.cjs` run not executed (requires live credentials).
-- L31 — T10 delivered in `67e86cd`: created `docs/customer-accounts.md` covering the debt ledger,
+- L31 — T10 delivered in `7951bb8`: created `docs/customer-accounts.md` covering the debt ledger,
   derived quantities and invariant, per-sale allocations, advisory-lock ordering, on-account
   checkout and credit limits, debt-first credit notes, collections/refunds/adjustments/deactivation
   (explicitly documenting T7 advisories: session-only authz, wallet-side default attribution with
@@ -490,7 +490,7 @@ verification alone: its native receipt could not be created (L32).
   (zero diff on `openapi.json` and `frontend/src/lib/api/schema.d.ts`) and `make check` green
   (372 Rust tests, clippy `-D warnings`, `svelte-check` 0 errors / 0 warnings). Also reconciled
   `T3` and `T11` rows in the Tasks table to `done` with their delivered commits. Native `assess`
-  over `32fc04f..67e86cd` returned `nativeRisk: unassessable` due to untracked
+  over `2015774..7951bb8` returned `nativeRisk: unassessable` due to untracked
   `skills/system/run-workflow/SKILL.md` (`plan.independentVerifier: false`); docs-only change
   (`Risk: none`).
 - L32 — **T6 closes verified, without a native receipt.** The provider could not freeze this slice:
@@ -510,7 +510,7 @@ verification alone: its native receipt could not be created (L32).
   `--test customer_accounts` 58/58, `--test receipts` 15/15, `cargo test --lib credit_notes::model`
   10/10; three notes of 33.33 refunded exactly 99.99 over five tender layouts; a one-cent note landed
   on the larger tender only; a busy account answered 409 on the note route with no note and no
-  movement written. Two of its findings are real and change-caused. **A1, fixed in `9b45e40`**: the
+  movement written. Two of its findings are real and change-caused. **A1, fixed in `9eb7c23`**: the
   two queries the T6 tests added (`tests/credit_notes.rs:2047`, `:2253`) had no `.sqlx` entry, so
   `SQLX_OFFLINE=true cargo test --no-run` failed — and CI (`ci.yml:22`) and the `Dockerfile` both
   build offline, so the branch would have gone red on its first push. The cause is the cache recipe:
@@ -526,3 +526,9 @@ verification alone: its native receipt could not be created (L32).
   limitation. A3 (`2beefe1` also carries the FIFO `LIMIT 100` bound and the typed
   `CreditApplicationBroken` error, both fail-safe) and A4 (the note route's OpenAPI 409 description
   does not name the busy case, unlike the sales route) are recorded, not fixed.
+- L33 — the branch was reordered once, for delivery, before anything was pushed: the `.sqlx` cache fix
+  (`9eb7c23`) moved to sit immediately after `438913f`, so the credit-note slice carries its own cache
+  and every slice of the chain is CI-green on its own instead of inheriting a red offline build. Only
+  that commit was relocated — no Log entry moved, so the log stays chronological — and the tree is
+  unchanged: `git diff` against the pre-reorder head is empty. Every commit after `438913f` got a new
+  sha, and the shas recorded in the rows and the log above are reconciled in this commit.
