@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { api, ApiError, type Customer, type Product, type Sale } from '$lib/api/client';
+	import { formatCents, minCents, parseCents } from '$lib/money';
 	import * as Select from '$lib/components/ui/select';
 
 	let { data } = $props();
@@ -10,11 +11,20 @@
 	// `data.sale` is copied to local state because mutations replace it without
 	// navigation. A derived value would require a page reload for each response.
 	let sale = $state<Sale>(untrack(() => data.sale));
+	let selectedCustomer = $state<Customer | null>(untrack(() => data.selectedCustomer));
+	let onAccountInput = $state('');
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 	let search = $state('');
 	let scanInput: HTMLInputElement | undefined = $state();
-	let completed = $state<{ total: string; method: string; destination: string } | null>(null);
+	let completed = $state<{
+		total: string;
+		paid: string | null;
+		method: string | null;
+		destination: string | null;
+		onAccount: string | null;
+		creditApplied: string | null;
+	} | null>(null);
 	// Nothing is preselected: a charge must name a method explicitly.
 	let paymentMethodId = $state('');
 
@@ -46,6 +56,67 @@
 	);
 
 	const selectedMethod = $derived(data.methods.find((m) => m.id === paymentMethodId) ?? null);
+
+	// --- On-account preview (exact integer cents) ---
+	//
+	// The server still validates every amount and ceiling on completion. These
+	// derivations exist only so the cashier sees what will be charged at the
+	// till, how much available credit applies automatically (S8), and what
+	// remains of the customer's limit (S7) before clicking Charge.
+	const totalCents = $derived(parseCents(sale.total) ?? 0n);
+	const onAccountTrimmed = $derived(onAccountInput.trim());
+	const onAccountCents = $derived(
+		!sale.customer_id || !selectedCustomer || onAccountTrimmed === ''
+			? 0n
+			: parseCents(onAccountTrimmed)
+	);
+	const onAccountError = $derived.by(() => {
+		if (!sale.customer_id || !selectedCustomer || onAccountTrimmed === '') return null;
+		if (onAccountCents === null) return 'Enter an amount with up to two decimals.';
+		if (onAccountCents < 0n) return 'Amount cannot be negative.';
+		if (onAccountCents > totalCents) return 'Cannot exceed the sale total.';
+		return null;
+	});
+	const activeOnAccountCents = $derived(
+		onAccountError === null && onAccountCents !== null ? onAccountCents : 0n
+	);
+	const toChargeCents = $derived(totalCents - activeOnAccountCents);
+	const toChargeDisplay = $derived(
+		onAccountError === null ? formatCents(toChargeCents) : '—'
+	);
+	const needsPaymentMethod = $derived(toChargeCents > 0n || activeOnAccountCents === 0n);
+	const availableCreditCents = $derived(
+		selectedCustomer ? (parseCents(selectedCustomer.available_credit) ?? 0n) : 0n
+	);
+	const creditAppliedPreviewCents = $derived(
+		activeOnAccountCents > 0n && availableCreditCents > 0n
+			? minCents(activeOnAccountCents, availableCreditCents)
+			: 0n
+	);
+	const debtAddedPreviewCents = $derived(activeOnAccountCents - creditAppliedPreviewCents);
+	const limitPreview = $derived.by(() => {
+		if (!selectedCustomer) return null;
+		if (selectedCustomer.credit_limit === null || selectedCustomer.credit_limit === undefined) {
+			return { unlimited: true as const };
+		}
+		const limit = parseCents(selectedCustomer.credit_limit) ?? 0n;
+		const balance = parseCents(selectedCustomer.balance) ?? 0n;
+		const remaining = limit - (balance + activeOnAccountCents);
+		return {
+			unlimited: false as const,
+			cashOnly: limit === 0n,
+			limitText: selectedCustomer.credit_limit,
+			remainingCents: remaining > 0n ? remaining : 0n,
+			exceedsByCents: remaining < 0n ? -remaining : 0n
+		};
+	});
+	const canComplete = $derived(
+		!busy &&
+			!completed &&
+			sale.item_count > 0 &&
+			onAccountError === null &&
+			(!needsPaymentMethod || selectedMethod !== null)
+	);
 
 	/** Apply the server response, the cart's only source of truth. */
 	function apply(next: Sale) {
@@ -80,20 +151,31 @@
 	}
 
 	async function complete() {
-		if (busy || sale.item_count === 0 || !selectedMethod) return;
+		if (!canComplete) return;
 		busy = true;
 		try {
-			const done = await api.completeSale(sale.id, [
-				{ payment_method_id: selectedMethod.id, amount: sale.total }
-			]);
+			const hasOnAccount = activeOnAccountCents > 0n;
+			const onAccountParam = hasOnAccount ? formatCents(activeOnAccountCents) : undefined;
+			const payments =
+				needsPaymentMethod && selectedMethod
+					? [{ payment_method_id: selectedMethod.id, amount: formatCents(toChargeCents) }]
+					: [];
+
+			const done = await api.completeSale(sale.id, payments, onAccountParam);
+			const creditAppliedCents = parseCents(done.credit_applied) ?? 0n;
+			const tillPayment = payments[0] ?? null;
 			completed = {
 				total: done.total,
-				method: selectedMethod.name,
-				destination: selectedMethod.wallet_name
+				paid: tillPayment ? tillPayment.amount : null,
+				method: tillPayment ? (selectedMethod?.name ?? null) : null,
+				destination: tillPayment ? (selectedMethod?.wallet_name ?? null) : null,
+				onAccount: onAccountParam ?? null,
+				creditApplied: creditAppliedCents > 0n ? done.credit_applied : null
 			};
+			error = null;
 		} catch (e) {
-			// The server checks the sum and the method. A 422's `problem.detail`
-			// is displayed verbatim, never replaced by a client-side guess.
+			// The server checks the sum, the method and the credit limit. A 409/422's
+			// `problem.detail` is displayed verbatim, never replaced by a client-side guess.
 			error =
 				e instanceof ApiError
 					? (e.problem?.detail ?? `The server rejected the charge (HTTP ${e.status}).`)
@@ -171,7 +253,13 @@
 		busy = true;
 		try {
 			await api.setSaleCustomer(sale.id, customerId);
-			apply(await api.getSale(sale.id));
+			const [nextSale, nextCustomer] = await Promise.all([
+				api.getSale(sale.id),
+				customerId ? api.getCustomer(customerId) : Promise.resolve(null)
+			]);
+			apply(nextSale);
+			selectedCustomer = nextCustomer;
+			onAccountInput = '';
 			pickerOpen = false;
 		} catch (e) {
 			error = e instanceof ApiError ? e.message : 'Could not set the customer.';
@@ -192,8 +280,18 @@
 
 		{#if completed}
 			<div class="done" role="status">
-				<strong>Sale charged.</strong> Total {completed.total}. Paid with {completed.method} into
-				{completed.destination}. Stock has been deducted.
+				<strong>Sale charged.</strong> Total {completed.total}.
+				{#if completed.paid && completed.method && completed.destination}
+					Paid{completed.onAccount ? ` ${completed.paid}` : ''} with {completed.method} into
+					{completed.destination}.
+				{/if}
+				{#if completed.onAccount}
+					On account: {completed.onAccount}.
+				{/if}
+				{#if completed.creditApplied}
+					Credit applied: {completed.creditApplied}.
+				{/if}
+				Stock has been deducted.
 				<button type="button" onclick={() => (window.location.href = '/operations/pos')}>New sale</button>
 			</div>
 		{/if}
@@ -352,9 +450,110 @@
 
 			<div class="trow big"><span>Total</span><span>{sale.total}</span></div>
 
+			{#if sale.customer_id && selectedCustomer}
+				<div class="acct-box">
+					<div class="acct-head">
+						<label class="pm-label" for="on-account">On account</label>
+						<div class="acct-quick">
+							{#if availableCreditCents > 0n && totalCents > 0n}
+								<button
+									type="button"
+									class="acct-chip"
+									disabled={busy}
+									onclick={() =>
+										(onAccountInput = formatCents(minCents(totalCents, availableCreditCents)))}
+								>
+									Use credit
+								</button>
+							{/if}
+							{#if totalCents > 0n}
+								<button
+									type="button"
+									class="acct-chip"
+									disabled={busy}
+									onclick={() => (onAccountInput = sale.total)}
+								>
+									Full
+								</button>
+							{/if}
+							{#if onAccountTrimmed !== ''}
+								<button
+									type="button"
+									class="acct-chip"
+									disabled={busy}
+									onclick={() => (onAccountInput = '')}
+								>
+									Clear
+								</button>
+							{/if}
+						</div>
+					</div>
+					<input
+						id="on-account"
+						class="acct-input"
+						type="text"
+						inputmode="decimal"
+						placeholder="0.00"
+						bind:value={onAccountInput}
+						disabled={busy || sale.item_count === 0}
+					/>
+					{#if onAccountError}
+						<p class="acct-warn" role="alert">{onAccountError}</p>
+					{/if}
+
+					<div class="acct-meta">
+						{#if activeOnAccountCents > 0n}
+							<div class="trow acct-charge">
+								<span>To charge now</span>
+								<span>{toChargeDisplay}</span>
+							</div>
+						{/if}
+						{#if availableCreditCents > 0n}
+							<div class="trow acct-credit">
+								<span>
+									{activeOnAccountCents > 0n ? 'Apply available credit' : 'Available credit'}
+								</span>
+								<span>
+									{activeOnAccountCents > 0n
+										? `−${formatCents(creditAppliedPreviewCents)}`
+										: selectedCustomer.available_credit}
+								</span>
+							</div>
+							{#if activeOnAccountCents > 0n}
+								<p class="pm-hint">
+									{#if debtAddedPreviewCents > 0n}
+										Adds {formatCents(debtAddedPreviewCents)} to customer debt.
+									{:else}
+										Fully covered by the customer's available credit.
+									{/if}
+								</p>
+							{/if}
+						{/if}
+						{#if limitPreview}
+							<div class="trow" class:acct-warn={!limitPreview.unlimited && limitPreview.exceedsByCents > 0n}>
+								<span>Remaining limit</span>
+								<span>
+									{#if limitPreview.unlimited}
+										Unlimited
+									{:else if limitPreview.cashOnly && activeOnAccountCents === 0n}
+										0.00 (cash only)
+									{:else if limitPreview.exceedsByCents > 0n}
+										0.00 (exceeds by {formatCents(limitPreview.exceedsByCents)})
+									{:else}
+										{formatCents(limitPreview.remainingCents)}
+									{/if}
+								</span>
+							</div>
+						{/if}
+					</div>
+				</div>
+			{/if}
+
 			<div class="pay-method">
 				<label class="pm-label" for="payment-method">Payment method</label>
-				{#if data.methods.length === 0}
+				{#if !needsPaymentMethod}
+					<p class="pm-hint">Covered by customer account — no till payment required.</p>
+				{:else if data.methods.length === 0}
 					<p class="pm-empty">
 						No active payment methods. <a href="/settings/payments">Add one in payment settings</a>
 						before charging a sale.
@@ -374,7 +573,10 @@
 						</Select.Content>
 					</Select.Root>
 					{#if selectedMethod}
-						<p class="pm-hint">Pays into {selectedMethod.wallet_name}</p>
+						<p class="pm-hint">
+							Pays {activeOnAccountCents > 0n ? `${toChargeDisplay} ` : ''}into
+							{selectedMethod.wallet_name}
+						</p>
 					{/if}
 				{/if}
 			</div>
@@ -388,8 +590,8 @@
 					type="button"
 					class="primary"
 					onclick={complete}
-					disabled={busy || sale.item_count === 0 || !selectedMethod}
-					title={!selectedMethod ? 'Choose a payment method first' : undefined}
+					disabled={!canComplete}
+					title={needsPaymentMethod && !selectedMethod ? 'Choose a payment method first' : undefined}
 				>
 					{busy ? 'Processing…' : 'Charge'}
 				</button>
@@ -725,7 +927,65 @@
 	.trow.big {
 		font-size: 1.3rem;
 		font-weight: 700;
-		margin-bottom: 0.4rem;
+		margin-bottom: 0.5rem;
+	}
+
+	.acct-box {
+		display: grid;
+		gap: 0.4rem;
+		padding: 0.6rem 0.7rem;
+		margin-bottom: 0.75rem;
+		background: var(--color-card);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius);
+	}
+
+	.acct-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+
+	.acct-quick {
+		display: flex;
+		gap: 0.25rem;
+	}
+
+	.acct-chip {
+		padding: 0.15rem 0.45rem;
+		font-size: 0.72rem;
+		line-height: 1.3;
+	}
+
+	.acct-input {
+		width: 100%;
+		padding: 0.4rem 0.55rem;
+		font-size: 0.9rem;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.acct-meta {
+		display: grid;
+		gap: 0.25rem;
+		font-size: 0.8rem;
+		color: var(--color-muted-foreground);
+	}
+
+	.acct-charge {
+		font-weight: 600;
+		color: var(--color-foreground);
+	}
+
+	.acct-credit {
+		color: var(--color-primary);
+		font-weight: 500;
+	}
+
+	.acct-warn {
+		margin: 0;
+		font-size: 0.78rem;
+		color: var(--color-destructive);
 	}
 
 	.pay-method {

@@ -1,4 +1,4 @@
-import { api, type Product, type Sale } from '$lib/api/client';
+import { api, ApiError, type Customer, type Product, type Sale } from '$lib/api/client';
 
 /**
  * Load the sale screen. The draft is opened on the server: on reload,
@@ -16,6 +16,15 @@ export async function load() {
 	]);
 	const sale: Sale = await api.getSale(draft.id);
 
+	let selectedCustomer: Customer | null = null;
+	if (sale.customer_id) {
+		try {
+			selectedCustomer = await api.getCustomer(sale.customer_id);
+		} catch (error) {
+			if (!(error instanceof ApiError && error.status === 404)) throw error;
+		}
+	}
+
 	const sellable: Product[] = list.items.filter(
 		(p) => p.kind === 'product' && p.is_active
 	);
@@ -24,6 +33,7 @@ export async function load() {
 		products: sellable,
 		saleId: draft.id,
 		sale,
+		selectedCustomer,
 		methods: methods.filter((method) => method.is_active)
 	};
 }
