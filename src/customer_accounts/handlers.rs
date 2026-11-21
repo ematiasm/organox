@@ -24,6 +24,11 @@ use crate::auth::AuthUser;
 use crate::customer_accounts::service::{self, CollectedReceipt, ReceiptsError};
 use crate::error::AppError;
 
+/// The published contract caps the idempotency key at this many characters.
+/// utoipa attributes do not validate, and the ledger stores the key as text,
+/// so the boundary is the only place the bound can be true.
+const MAX_IDEMPOTENCY_KEY_LEN: usize = 100;
+
 pub fn router() -> Router<AppState> {
     Router::new().route("/customers/{id}/receipts", post(collect_receipt))
 }
@@ -103,6 +108,24 @@ async fn collect_receipt(
         .map(|note| note.trim().to_string())
         .filter(|note| !note.is_empty());
 
+    // A blank key is "no key", never a key of spaces: a key a client cannot
+    // tell apart from another would make every later blank-key collection
+    // answer with the first receipt — money collected and nothing booked. The
+    // bound mirrors the `maxLength` the contract publishes; utoipa attributes
+    // are documentation only, so the boundary is where it becomes true.
+    let idempotency_key = body
+        .idempotency_key
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty());
+    if idempotency_key
+        .as_ref()
+        .is_some_and(|key| key.chars().count() > MAX_IDEMPOTENCY_KEY_LEN)
+    {
+        return Err(AppError::Validation(format!(
+            "the idempotency key exceeds {MAX_IDEMPOTENCY_KEY_LEN} characters"
+        )));
+    }
+
     let collected = service::collect(
         &state.pool,
         id,
@@ -110,7 +133,7 @@ async fn collect_receipt(
             payment_method_id: body.payment_method_id,
             amount: body.amount,
             allocations: &allocations,
-            idempotency_key: body.idempotency_key.as_deref(),
+            idempotency_key: idempotency_key.as_deref(),
             note: note.as_deref(),
             actor: user.id(),
         },

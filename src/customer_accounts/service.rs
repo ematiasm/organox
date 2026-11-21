@@ -126,9 +126,9 @@ pub struct CollectedReceipt {
 }
 
 /// The balance, the usable credit and what each allocated sale still owes,
-/// read inside the transaction that answered the request — so a fresh
-/// collection reports the state it produced, and a replay reports the state
-/// the first collection left, never a snapshot from in between.
+/// read inside the transaction that answered the request, so the response
+/// reports one consistent snapshot rather than two reads that could straddle
+/// a commit.
 async fn position_with_outstanding(
     conn: &mut PgConnection,
     customer_id: Uuid,
@@ -161,6 +161,17 @@ pub async fn collect(
     customer_id: Uuid,
     input: CollectInput<'_>,
 ) -> Result<CollectedReceipt, ReceiptsError> {
+    // The ledger rejects these too, but only after the movement exists: a
+    // boundary that publishes a 422 owns the sentence, and the transaction is
+    // better off never opening.
+    if input.amount <= Decimal::ZERO {
+        return Err(ReceiptsError::Validation(RepoError::NonPositiveAmount));
+    }
+    if input.amount.round_dp(2) != input.amount {
+        return Err(ReceiptsError::Validation(RepoError::TooManyDecimals {
+            amount: input.amount,
+        }));
+    }
     if input.amount > max_amount() {
         return Err(ReceiptsError::AmountTooLarge { max: max_amount() });
     }
@@ -180,8 +191,11 @@ pub async fn collect(
         && let Some(existing) = repository::receipt_by_key_in(&mut tx, customer_id, key).await?
     {
         // The sales the first receipt paid are read back from its own
-        // allocations, not re-derived from the request: a replay answers
-        // with what happened, not with what was asked the second time.
+        // allocations, not re-derived from the request: a replay answers with
+        // what happened, not with what was asked the second time. The balance
+        // and the credit are the account as it stands when the retry arrives —
+        // another writer may have moved it since — which is what the response
+        // documents.
         let (balance, unapplied_credit, allocations) =
             position_with_outstanding(&mut tx, customer_id, existing.sale_ids.iter().copied())
                 .await?;

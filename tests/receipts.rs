@@ -594,3 +594,117 @@ async fn send(
     };
     (status, value)
 }
+
+/// A blank key is no key. Accepting one would make every later blank-key
+/// collection answer with the first receipt: money collected, nothing booked,
+/// and a success reported for both.
+#[sqlx::test]
+async fn a_blank_idempotency_key_does_not_replay_the_first_collection(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    charge_sale(&pool, customer, sale, dec!(100.00)).await;
+    let (method, wallet) = seed_method(&pool, "Cash").await;
+
+    let router = app(pool.clone());
+    let (_owner, owner_password) = seed_owner(&pool).await;
+    let cookie = login(&router, "owner@pyme.com", &owner_password).await;
+
+    for attempt in 0..2 {
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/api/v1/customers/{customer}/receipts"),
+            Some(&cookie),
+            Some(json!({
+                "idempotency_key": "   ",
+                "payment_method_id": method,
+                "amount": "10.00",
+                "allocations": [],
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "collection {attempt} answered as a replay of the previous one"
+        );
+    }
+
+    assert_eq!(
+        account_payment_count(&pool, customer).await,
+        2,
+        "one of the two collections was swallowed as a replay"
+    );
+    let wallet_balance = wallets::get_wallet(&pool, wallet)
+        .await
+        .expect("wallet")
+        .balance;
+    assert_eq!(wallet_balance, dec!(20.00), "the cash did not arrive twice");
+}
+
+/// The contract publishes a 100-character cap. utoipa attributes do not
+/// validate, so the endpoint has to.
+#[sqlx::test]
+async fn an_idempotency_key_beyond_the_contract_is_rejected(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let (method, _wallet) = seed_method(&pool, "Cash").await;
+
+    let router = app(pool.clone());
+    let (_owner, owner_password) = seed_owner(&pool).await;
+    let cookie = login(&router, "owner@pyme.com", &owner_password).await;
+
+    let (status, problem) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/receipts"),
+        Some(&cookie),
+        Some(json!({
+            "idempotency_key": "k".repeat(101),
+            "payment_method_id": method,
+            "amount": "10.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        problem["detail"],
+        "the idempotency key exceeds 100 characters"
+    );
+    assert_eq!(account_payment_count(&pool, customer).await, 0);
+}
+
+/// The endpoint publishes a 422 for a bad amount, so it owes the sentence: the
+/// ledger's own guards run only after the movement exists.
+#[sqlx::test]
+async fn a_non_positive_or_sub_cent_amount_is_rejected(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let (method, _wallet) = seed_method(&pool, "Cash").await;
+
+    let router = app(pool.clone());
+    let (_owner, owner_password) = seed_owner(&pool).await;
+    let cookie = login(&router, "owner@pyme.com", &owner_password).await;
+
+    for amount in ["0.00", "-5.00", "10.005"] {
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/api/v1/customers/{customer}/receipts"),
+            Some(&cookie),
+            Some(json!({
+                "payment_method_id": method,
+                "amount": amount,
+                "allocations": [],
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{amount} was accepted as a collection"
+        );
+    }
+
+    assert_eq!(account_payment_count(&pool, customer).await, 0);
+}
