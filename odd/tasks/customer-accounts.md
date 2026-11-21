@@ -218,7 +218,7 @@ and the new `on_account = 0` sibling.
 | T6 | S9 | **done**: the note cancels `min(N, outstanding)` through the ledger and refunds only the surplus over the tenders that collected it (till payments, then receipt allocations), split in integer cents with largest remainders and computed cumulatively; `split_cash_refund` replaces `allocate_refund`; a busy account answers 409. Closes the four banked advisories | `2beefe1` |
 | T7 | S10, S11, S12 | **done**: `0020` adds the `account_payment_refund` label alone, `0021` extends both wallet customer-link CHECKs; `POST /customers/{id}/credit-refunds` (201/200, cross-kind key collision 409) writes the outflow movement and `credit_refund` entry under the customer lock bounded by `min(U, -balance)`; `POST /customers/{id}/adjustments` (`in`/`out`, non-blank note, never crosses zero, touches no wallet); `POST /customers/{id}/deactivate` and `PATCH /customers/{id}` (`is_active: false`) guard `balance == 0 && U == 0` under the customer lock and answer 409 naming the open position; 10 HTTP tests plus wallet/ledger tests | `38f674e` |
 | T8 | S13 | **done**: `GET /customers/{id}/account` (entries oldest first with running balance, position and open sales in one `REPEATABLE READ READ ONLY` snapshot), `GET /customers/{id}/receipts` and `GET /customers/{id}/adjustments` (write logs newest first with `limit` 1..=200), `GET /accounts/receivables` (`balance != 0 OR U != 0`, aging buckets `0-30`/`31-60`/`61-90`/`90+` from `sales.completed_at`, portfolio totals), `GET /customers` and `GET /customers/{id}` exposing derived `balance` and `available_credit` alongside `credit_limit`; 7 HTTP tests in `tests/account_reads.rs` plus OpenAPI checks | `778e1e7` |
-| T9 | S14 | POS field, drawer, list column, receivables page, regenerated schema | feat/customer-accounts-ui |
+| T9 | S14 | **done**: POS `on_account` field with till amount, remaining credit limit and apply-credit line (`money.ts`, `client.ts`, `operations/pos`); customers list balance column + customer drawer credit limit (tri-state PATCH), account KPIs, oldest-first statement, open sales and receipt form (`customers/+page.svelte`, `customer-drawer.svelte`, `customer-account-panel.svelte`); receivables aging page + rail entry + updated `nav-shell.cjs` (`receivables/`, `app-shell.svelte`). `make check` green (372 Rust tests, `svelte-check` 0/0), `make fe-build` green, `gentle-ai-verify` MET on all S14 surfaces | `b365ca3`, `a661dd9`, `9664236` |
 | T10 | S14 | docs, README, openapi regeneration | feat/customer-accounts-docs |
 | T11 | S2, S3, S9, S10 + L12 | **next**: close the T1 review advisories — bound a charge to the sale's unpaid part, verify a credit note against its own sale and total, reject a repeated sale in one receipt and a sale-kind movement as backing, map the remaining unique violations, bound the advisory lock wait, fold `outstanding_total` into one statement, add the `allocate` success test, and enforce the per-sale ceiling with a deferred trigger | feat/customer-accounts-advisories |
 
@@ -459,3 +459,22 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   regenerated. `make check` green at 372 tests (`account_reads.rs` 7/7, `openapi` 5/5), clippy
   `-D warnings`, `svelte-check` 0 errors / 0 warnings. Native `assess` over `0064999..778e1e7`
   returned `medium` (`reviewDue: false`, `independentVerifier: false`); no native review started.
+- L30 — T9 delivered in three reviewable slices: `b365ca3` (exact `BigInt` cent helpers in
+  `frontend/src/lib/money.ts`, customer-account wrappers + optional `on_account` and `credit_limit`
+  in `frontend/src/lib/api/client.ts`, and POS on-account checkout with till charge preview,
+  remaining credit limit and automatic credit-application line in `operations/pos/+page.{ts,svelte}`),
+  `a661dd9` (customers list Balance column, tri-state `credit_limit` create/edit clearing to `NULL`,
+  balance/available-credit/limit summary cards, and `CustomerAccountPanel` with open sales,
+  oldest-first running-balance statement and receipt form with oldest-first convenience prefill and
+  plain-HTTP-safe lazy idempotency key), and `9664236` (`/receivables` aging page with portfolio
+  totals, 0–30/31–60/61–90/90+ buckets, search and links to `/customers?id=...`, plus Receivables
+  nav link in `app-shell.svelte` and updated `frontend/e2e/nav-shell.cjs`). `openapi.json` confirmed
+  up to date (zero diff with `cargo run --bin openapi`). `make check` green (372 Rust tests, clippy
+  `-D warnings`, `svelte-check` 0 errors / 0 warnings) and `make fe-build` green. Native `assess`
+  over `3851a60..9664236` returned `nativeRisk: medium`, `reviewDue: false`; escalated `item 6`
+  (no automated runtime frontend test suite in `make check`) → `independentVerifier: true`.
+  Independent `gentle-ai-verify` returned MET on every S14 requirement, clean `fe-check`/`fe-build`
+  and `money.ts` edge-case probes; one non-blocking advisory banked (**A1**: `allocateOldestFirst`
+  uses `localeCompare` on ISO timestamps where chrono's `AutoSi` omits `.000000`, so two sales in
+  the exact same second with one at zero microseconds can sort inverted — convenience prefill only,
+  server-validated). Live Playwright `nav-shell.cjs` run not executed (requires live credentials).
