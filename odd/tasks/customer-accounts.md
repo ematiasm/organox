@@ -396,3 +396,12 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   exists, and a boundary that publishes a 422 owns the sentence. The replay comment stopped claiming
   a snapshot it never took. Lenses were `risk`+`resilience` only: three lenses no longer fit the
   provider's per-lens budget at 2.4k lines.
+- L25 — the blank-key fix was reviewed on its own: lineage `review-465945f2104e6007`, **approved**,
+  authority burned, and it caught an over-correction of mine — trimming *every* key, not only the
+  blank ones, which rewrote the key namespace: a receipt recorded under a padded key would stop
+  matching its own retry and book a second collection, the very double-booking the rule existed to
+  prevent. Fixed in `82f02ba`: only keys blank after trimming are dropped; anything else keeps its
+  exact bytes and the cap measures those. The amount guards now pin their sentences, so the
+  published precedence (sign, precision, magnitude) is asserted rather than implied. Two lenses
+  (`risk`+`reliability`) at 172 lines; `risk`+`resilience`+`reliability` answered `lenses-invalid`
+  for this candidate, the same rejection that pair of combinations showed earlier.
