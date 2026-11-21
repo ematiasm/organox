@@ -37,7 +37,8 @@
                 "expense",
                 "adjustment_in",
                 "adjustment_out",
-                "sale_refund"
+                "sale_refund",
+                "account_payment"
               ]
             }
           }

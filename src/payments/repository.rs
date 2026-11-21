@@ -111,6 +111,7 @@ pub async fn list_wallets(
                    CASE m.kind
                        WHEN 'sale_payment' THEN m.amount
                        WHEN 'sale_refund'  THEN -m.amount
+                       WHEN 'account_payment' THEN m.amount
                        WHEN 'adjustment_in' THEN m.amount
                        WHEN 'expense' THEN -m.amount
                        WHEN 'adjustment_out' THEN -m.amount
@@ -155,6 +156,7 @@ pub async fn get_wallet(pool: &PgPool, id: Uuid) -> Result<WalletWithBalance, Re
                    CASE m.kind
                        WHEN 'sale_payment' THEN m.amount
                        WHEN 'sale_refund'  THEN -m.amount
+                       WHEN 'account_payment' THEN m.amount
                        WHEN 'adjustment_in' THEN m.amount
                        WHEN 'expense' THEN -m.amount
                        WHEN 'adjustment_out' THEN -m.amount
@@ -340,6 +342,10 @@ pub struct NewWalletMovement<'a> {
     pub payment_method_id: Option<Uuid>,
     /// The credit note that caused a `sale_refund`; `None` for every other kind.
     pub credit_note_id: Option<Uuid>,
+    /// The customer an `account_payment` was collected for; `None` for every
+    /// other kind, enforced by the `wallet_movements_customer_link_only_for_account_kinds`
+    /// constraint. The collection endpoint is the only writer that sets it.
+    pub customer_id: Option<Uuid>,
     pub note: Option<&'a str>,
     pub created_by: Option<Uuid>,
 }
@@ -361,8 +367,9 @@ where
     sqlx::query!(
         r#"
         INSERT INTO wallet_movements
-            (id, wallet_id, kind, amount, sale_id, payment_method_id, credit_note_id, note, created_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            (id, wallet_id, kind, amount, sale_id, payment_method_id, credit_note_id,
+             customer_id, note, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         "#,
         id,
         new.wallet_id,
@@ -371,6 +378,7 @@ where
         new.sale_id,
         new.payment_method_id,
         new.credit_note_id,
+        new.customer_id,
         new.note,
         new.created_by,
     )

@@ -37,6 +37,7 @@
 	const KIND_LABELS: Record<WalletMovementKind, string> = {
 		sale_payment: 'Sale payment',
 		sale_refund: 'Sale refund',
+		account_payment: 'Account payment',
 		expense: 'Expense',
 		adjustment_in: 'Adjustment in',
 		adjustment_out: 'Adjustment out'

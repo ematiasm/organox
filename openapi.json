@@ -489,6 +489,100 @@
         }
       }
     },
+    "/api/v1/customers/{id}/receipts": {
+      "post": {
+        "tags": [
+          "customer_accounts"
+        ],
+        "summary": "Collect money against a customer's account.",
+        "description": "One request, one transaction: the money enters a wallet as a single\n`account_payment` movement carrying the customer and the method, and the\ncustomer's ledger records one receipt linked to it. The allocations are the\noperator's — the server never invents or applies them — and the money no\nallocation consumes becomes the customer's usable credit. An optional\nidempotency key makes a retry return the first receipt with `200` instead\nof collecting twice.",
+        "operationId": "collect_receipt_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectReceiptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Existing receipt returned for a repeated idempotency key; nothing was written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReceiptResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Money collected: the wallet movement and the receipt are written together",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReceiptResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown customer, or an allocation names an unknown sale",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The customer account is busy, retry",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown or inactive payment method, a non-positive, too precise or too large amount, or allocations beyond what the sales owe",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/payment-methods": {
       "get": {
         "tags": [
@@ -2348,7 +2442,7 @@
           "payments"
         ],
         "summary": "Record money leaving or entering a wallet by hand.",
-        "description": "`sale_payment` is rejected with 422: a collection enters the ledger only by\ncharging a sale.",
+        "description": "`sale_payment` and `account_payment` are rejected with 422: money that\nbelongs to a sale or a customer's account enters the ledger only through\nthe flow that also writes its counterpart, never by hand.",
         "operationId": "record_manual_movement_doc",
         "parameters": [
           {
@@ -2448,6 +2542,45 @@
           },
           "new_password": {
             "type": "string"
+          }
+        }
+      },
+      "CollectReceiptRequest": {
+        "type": "object",
+        "description": "A collection: money that arrived, and the sales it pays.\n\nThe allocations are the operator's decision; the server never invents one\nand never applies the remainder — that remainder becomes the customer's\nusable credit exactly by carrying no row.",
+        "required": [
+          "payment_method_id",
+          "amount",
+          "allocations"
+        ],
+        "properties": {
+          "allocations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReceiptAllocationRequest"
+            }
+          },
+          "amount": {
+            "type": "string",
+            "example": "150.00"
+          },
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional retry key. A repeated collection with the same key returns\nthe first receipt with `200` instead of collecting twice.",
+            "maxLength": 100
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payment_method_id": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },
@@ -3003,7 +3136,7 @@
           },
           "kind": {
             "$ref": "#/components/schemas/WalletMovementKind",
-            "description": "`expense`, `adjustment_in` or `adjustment_out`. `sale_payment` is\nrejected: that money is recorded by charging a sale."
+            "description": "`expense`, `adjustment_in` or `adjustment_out`. `sale_payment` and\n`account_payment` are rejected: that money is recorded by charging a\nsale or collecting against a customer's account, not by hand."
           },
           "note": {
             "type": [
@@ -3257,6 +3390,81 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ReceiptAllocationRequest": {
+        "type": "object",
+        "description": "Which sale one slice of the collected money pays.",
+        "required": [
+          "sale_id",
+          "amount"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "150.00"
+          },
+          "sale_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "ReceiptAllocationResponse": {
+        "type": "object",
+        "description": "One allocated sale with what it still owes after the receipt.",
+        "required": [
+          "sale_id",
+          "outstanding"
+        ],
+        "properties": {
+          "outstanding": {
+            "type": "string",
+            "description": "The sale's outstanding amount after this receipt's allocation.",
+            "example": "40.00"
+          },
+          "sale_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "ReceiptResponse": {
+        "type": "object",
+        "required": [
+          "receipt_id",
+          "wallet_movement_id",
+          "balance",
+          "unapplied_credit",
+          "allocations"
+        ],
+        "properties": {
+          "allocations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReceiptAllocationResponse"
+            }
+          },
+          "balance": {
+            "type": "string",
+            "description": "The customer's balance after the collection. Positive: they still\nowe. Negative: they hold money in their favour.",
+            "example": "40.00"
+          },
+          "receipt_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The ledger entry that recorded the collection."
+          },
+          "unapplied_credit": {
+            "type": "string",
+            "description": "Money collected that no allocation consumed yet, and no refund has\nreturned: what the next sale on account may consume.",
+            "example": "90.00"
+          },
+          "wallet_movement_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The `account_payment` movement that carried the money into the wallet."
           }
         }
       },
@@ -3644,6 +3852,7 @@
         "enum": [
           "sale_payment",
           "sale_refund",
+          "account_payment",
           "expense",
           "adjustment_in",
           "adjustment_out"
@@ -3758,6 +3967,10 @@
     {
       "name": "customers",
       "description": "Customers and their documents"
+    },
+    {
+      "name": "customer_accounts",
+      "description": "Customer accounts: debt and collections"
     },
     {
       "name": "sales",

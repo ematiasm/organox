@@ -1859,6 +1859,101 @@ async fn a_receipt_cannot_be_backed_by_a_sale_payment(pool: PgPool) {
     assert_eq!(entries, 0, "the rejected receipt left an entry behind");
 }
 
+/// A wallet movement that belongs to a customer's account: the kind the
+/// collection endpoint writes, carrying the customer it collected for. Raw SQL
+/// on purpose, like every fixture here — at the ledger's layer of the stack no
+/// repository writer exists for it yet, and a fixture must not depend on the
+/// slice being tested.
+async fn seed_account_payment(pool: &PgPool, customer_id: Uuid, amount: Decimal) -> Uuid {
+    let wallet = Uuid::now_v7();
+    let method = Uuid::now_v7();
+    let movement = Uuid::now_v7();
+    let suffix = Uuid::new_v4();
+
+    sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, $2)")
+        .bind(wallet)
+        .bind(format!("Wallet {suffix}"))
+        .execute(pool)
+        .await
+        .expect("wallet");
+    sqlx::query("INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, $2, $3)")
+        .bind(method)
+        .bind(format!("Method {suffix}"))
+        .bind(wallet)
+        .execute(pool)
+        .await
+        .expect("method");
+    sqlx::query(
+        r#"
+        INSERT INTO wallet_movements (id, wallet_id, kind, amount, customer_id, payment_method_id)
+        VALUES ($1, $2, 'account_payment', $3, $4, $5)
+        "#,
+    )
+    .bind(movement)
+    .bind(wallet)
+    .bind(amount)
+    .bind(customer_id)
+    .bind(method)
+    .execute(pool)
+    .await
+    .expect("account payment");
+
+    movement
+}
+
+#[sqlx::test]
+async fn a_receipt_backed_by_another_customers_movement_is_rejected(pool: PgPool) {
+    let ana = seed_customer(&pool, "Ana").await;
+    let beto = seed_customer(&pool, "Beto").await;
+    let movement = seed_account_payment(&pool, beto, dec!(60.00)).await;
+
+    // The money exists, the amount agrees and the kind is not the till's own
+    // accounting of a sale: only the customer binding can refuse this, and it
+    // is the one a receipt cannot live without — collecting Beto's money
+    // against Ana's debt would move money between two people's accounts.
+    let mut tx = pool.begin().await.expect("transaction");
+    let result = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: movement,
+            amount: dec!(60.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            result,
+            Err(repository::RepoError::MovementOfAnotherCustomer)
+        ),
+        "a receipt was backed by another customer's movement"
+    );
+    tx.rollback().await.expect("rollback");
+
+    // The rejection must leave nothing behind: no entry for Ana, and Beto's
+    // movement still backs nothing.
+    let entries: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM customer_account_entries WHERE customer_id = $1")
+            .bind(ana)
+            .fetch_one(&pool)
+            .await
+            .expect("entry count");
+    assert_eq!(entries, 0, "the rejected receipt left an entry behind");
+
+    let backing: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customer_account_entries WHERE wallet_movement_id = $1",
+    )
+    .bind(movement)
+    .fetch_one(&pool)
+    .await
+    .expect("backing count");
+    assert_eq!(backing, 0);
+}
+
 #[sqlx::test]
 async fn allocating_a_receipt_succeeds_and_moves_the_debt(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;

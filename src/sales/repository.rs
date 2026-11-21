@@ -684,6 +684,9 @@ pub async fn complete(
                 sale_id: Some(sale_id),
                 payment_method_id: Some(charge.payment_method_id),
                 credit_note_id: None,
+                // Till money is never an account payment: the customer link
+                // belongs to the collection endpoint alone.
+                customer_id: None,
                 note: Some(note.as_str()),
                 created_by: Some(actor),
             },
