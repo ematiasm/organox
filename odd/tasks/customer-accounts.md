@@ -365,3 +365,10 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   name an explicit narrower `baseRef`. The facade also rejects some lens sets with a bare
   `lenses-invalid` before the budget check; the accepted recipe is three lenses
   (`risk`+`resilience`+`reliability`) with a full 40-character commit sha as `baseRef`.
+- L21 — the advisory fixes were reviewed on their own, with the small candidate (93 lines) and two
+  lenses: lineage `review-8980ab8f447a98f8`, **approved**, authority burned. It found three things
+  about the fix itself, all closed in `38a1e1e`: the no-op guard used `<= 0` and therefore also
+  blessed negative amounts, out of domain for every money writer; and the reworded refusal sentence
+  had no assertion of its own, so it could have relapsed without failing a test. The lesson repeats
+  in a new shape: a guard that says "nothing to authorize" must say exactly zero, and a changed
+  sentence needs a test that reads it.

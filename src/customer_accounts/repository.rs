@@ -461,11 +461,14 @@ pub async fn authorize_credit(
         return Ok(());
     };
 
-    // Authorizing nothing is always allowed: the ceiling compares an exposure
-    // that a zero charge does not raise. Without this, a customer whose limit
-    // was lowered below what they already owe would answer "refused" to a
-    // no-op, which says nothing about the charge and everything about the past.
-    if amount <= Decimal::ZERO {
+    // Authorizing exactly nothing is always allowed: the ceiling compares an
+    // exposure that a zero charge does not raise. Without this, a customer
+    // whose limit was lowered below what they already owe would answer
+    // "refused" to a no-op, which says nothing about the charge and everything
+    // about the past. A negative amount is out of domain — every money writer
+    // rejects it — so it falls through to the ceiling rather than being
+    // silently blessed here.
+    if amount.is_zero() {
         return Ok(());
     }
 

@@ -2235,3 +2235,50 @@ async fn authorizing_nothing_is_allowed_even_over_the_limit(pool: PgPool) {
     );
     tx.rollback().await.expect("rollback");
 }
+
+/// The refusal sentence is part of what a reviewer and an operator read. It
+/// names the exposure the charge would produce, never the charge itself: the
+/// value it carries includes the balance the customer already had.
+#[sqlx::test]
+async fn the_refusal_sentence_names_the_exposure_not_the_charge(_pool: PgPool) {
+    let sentence = repository::RepoError::CreditLimitExceeded {
+        requested: dec!(121.00),
+        available: Decimal::ZERO,
+    }
+    .to_string();
+
+    assert!(sentence.contains("the account would reach"), "{sentence}");
+    assert!(sentence.contains("is available"), "{sentence}");
+    assert!(
+        !sentence.contains("the charge of"),
+        "the sentence calls the post-charge exposure a charge: {sentence}"
+    );
+}
+
+/// A negative amount is out of domain and every money writer rejects it, so the
+/// gate must not bless it as "nothing to authorize": only an exact zero is a
+/// no-op.
+#[sqlx::test]
+async fn a_negative_amount_is_not_authorized_as_nothing(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(120.00)).await;
+    insert_entry(&pool, NewEntry::charge(customer, sale, dec!(120.00)))
+        .await
+        .expect("charge");
+    sqlx::query("UPDATE customers SET credit_limit = 100.00 WHERE id = $1")
+        .bind(customer)
+        .execute(&pool)
+        .await
+        .expect("limit");
+
+    let mut tx = pool.begin().await.expect("transaction");
+    let refused = repository::authorize_credit(&mut tx, customer, dec!(-1.00)).await;
+    assert!(
+        matches!(
+            refused,
+            Err(repository::RepoError::CreditLimitExceeded { .. })
+        ),
+        "a negative amount slipped through the ceiling as if it were zero"
+    );
+    tx.rollback().await.expect("rollback");
+}
