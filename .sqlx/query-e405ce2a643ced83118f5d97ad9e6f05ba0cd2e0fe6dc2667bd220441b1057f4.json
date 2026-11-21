@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            c.id,\n            c.name,\n            c.tax_id,\n            c.email,\n            c.phone,\n            c.is_active,\n            c.created_at,\n            c.updated_at,\n            COUNT(*) OVER () AS \"total!\"\n        FROM customers c\n        WHERE ($1::bool OR c.is_active)\n          -- One box at the counter: the operator types either a name or a\n          -- document fragment and must not have to say which.\n          AND (\n                $2::text IS NULL\n                OR c.name ILIKE $2::text ESCAPE E'\\\\'\n                OR c.tax_id ILIKE $2::text ESCAPE E'\\\\'\n          )\n        ORDER BY c.name, c.id\n        LIMIT $3 OFFSET $4\n        ",
+  "query": "\n        SELECT\n            c.id,\n            c.name,\n            c.tax_id,\n            c.email,\n            c.phone,\n            c.is_active,\n            c.credit_limit AS \"credit_limit?: Decimal\",\n            c.created_at,\n            c.updated_at,\n            COUNT(*) OVER () AS \"total!\"\n        FROM customers c\n        WHERE ($1::bool OR c.is_active)\n          -- One box at the counter: the operator types either a name or a\n          -- document fragment and must not have to say which.\n          AND (\n                $2::text IS NULL\n                OR c.name ILIKE $2::text ESCAPE E'\\\\'\n                OR c.tax_id ILIKE $2::text ESCAPE E'\\\\'\n          )\n        ORDER BY c.name, c.id\n        LIMIT $3 OFFSET $4\n        ",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,17 @@
       },
       {
         "ordinal": 6,
+        "name": "credit_limit?: Decimal",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "credit_limit"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "total!",
         "type_info": "Int8",
         "origin": "Expression"
@@ -113,10 +124,11 @@
       true,
       true,
       false,
+      true,
       false,
       false,
       null
     ]
   },
-  "hash": "685f60b1dbca8eac99d6fa0be730801fc6299ec23a0f7ca439db3b576437274e"
+  "hash": "e405ce2a643ced83118f5d97ad9e6f05ba0cd2e0fe6dc2667bd220441b1057f4"
 }

@@ -123,6 +123,15 @@ pub enum RepoError {
 
     #[error("the customer account is busy, retry")]
     CustomerBusy,
+
+    #[error("the customer is deactivated")]
+    CustomerInactive,
+
+    #[error("the charge of {requested} exceeds the {available} the customer still has available")]
+    CreditLimitExceeded {
+        requested: Decimal,
+        available: Decimal,
+    },
 }
 
 /// The customer's account as of now: balance, usable credit, what is owed.
@@ -394,6 +403,73 @@ pub async fn lock_customer(conn: &mut PgConnection, customer_id: Uuid) -> Result
     sqlx::query!("SET LOCAL lock_timeout = 0")
         .execute(&mut *conn)
         .await?;
+
+    Ok(())
+}
+
+/// Authorize one charge before it is written: the gate a completion passes
+/// through, and the only place the registry's decisions about credit are
+/// enforced.
+///
+/// The order of the two locks is the whole point. The advisory lock is taken
+/// first, so this gate serializes with every other balance-changing writer on
+/// the account; then the customer's row is read `FOR UPDATE`, so a
+/// deactivation racing the checkout cannot slip between the gate and the
+/// charge — it waits for the row lock, and when it finally runs the next
+/// completion sees `is_active = false`. The two orders cannot invert, because
+/// a deactivation takes only the row lock and never the advisory one.
+///
+/// The rejection is on exposure, not on the single sale: `balance + amount`
+/// against `credit_limit`, where `NULL` means no limit at all and `0` means
+/// cash only. A customer holding credit (a negative balance) absorbs the new
+/// charge before the limit applies, with no special case: adding a negative
+/// balance to the amount is exactly "spending money already in their favour",
+/// and using that money is not credit. The message names what is left,
+/// floored at zero because a customer whose exposure already exceeds the
+/// limit has nothing available, not something negative.
+///
+/// The position is only read when a limit exists: with no limit the activity
+/// gate above is the whole rule, and reading sums nobody will compare is
+/// cost without a decision.
+pub async fn authorize_credit(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    amount: Decimal,
+) -> Result<(), RepoError> {
+    lock_customer(conn, customer_id).await?;
+
+    let customer = sqlx::query!(
+        r#"
+        SELECT is_active,
+               credit_limit::numeric(14, 2) AS "credit_limit?: Decimal"
+        FROM customers
+        WHERE id = $1
+        FOR UPDATE
+        "#,
+        customer_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(RepoError::CustomerNotFound)?;
+
+    if !customer.is_active {
+        return Err(RepoError::CustomerInactive);
+    }
+
+    let Some(limit) = customer.credit_limit else {
+        // No limit: the registry imposed no ceiling, only the activity rule.
+        return Ok(());
+    };
+
+    let position = account_position_in(conn, customer_id).await?;
+
+    let exposure = position.balance + amount;
+    if exposure > limit {
+        return Err(RepoError::CreditLimitExceeded {
+            requested: exposure,
+            available: (limit - position.balance).max(Decimal::ZERO),
+        });
+    }
 
     Ok(())
 }

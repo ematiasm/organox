@@ -6,7 +6,7 @@
 //!  * a completed sale is immutable;
 //!  * a deactivated customer cannot be attached;
 //!  * part of a total can go on the customer's account, but only with an
-//!    active customer on the draft;
+//!    active customer on the draft and room under their credit limit;
 //!  * the server calculates the total.
 
 use rust_decimal::Decimal;
@@ -69,6 +69,9 @@ pub enum SalesError {
     #[error("an on-account amount needs an active customer")]
     OnAccountNeedsActiveCustomer,
 
+    #[error("the on-account amount exceeds the {available} the customer still has available")]
+    OnAccountExceedsCreditLimit { available: Decimal },
+
     #[error("the customer account is busy, retry")]
     CustomerAccountBusy,
 
@@ -118,6 +121,9 @@ fn map_repo_error(err: RepoError) -> SalesError {
         RepoError::OnAccountPrecision => SalesError::OnAccountPrecision,
         RepoError::OnAccountNeedsCustomer => SalesError::OnAccountNeedsCustomer,
         RepoError::OnAccountNeedsActiveCustomer => SalesError::OnAccountNeedsActiveCustomer,
+        RepoError::OnAccountExceedsCreditLimit { available } => {
+            SalesError::OnAccountExceedsCreditLimit { available }
+        }
         RepoError::CustomerAccountBusy => SalesError::CustomerAccountBusy,
         other => SalesError::Internal(other),
     }
@@ -246,8 +252,8 @@ pub async fn complete(
 ///
 /// Reject an empty cart here rather than in SQL: charging zero makes no
 /// business sense and the message matters. The on-account rules themselves —
-/// the invariant, a customer, an active one — live in the completion
-/// transaction, where a rejection leaves no trace.
+/// the invariant, a customer, an active one, a credit limit that fits — live
+/// in the completion transaction, where a rejection leaves no trace.
 pub async fn complete_with_on_account(
     pool: &PgPool,
     sale_id: Uuid,

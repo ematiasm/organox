@@ -520,6 +520,13 @@ async fn completed_sales_are_listed_newest_first(pool: PgPool) {
 // --- Customer -----------------------------------------------------------
 
 async fn seed_customer(pool: &PgPool, name: &str) -> Uuid {
+    seed_customer_with_limit(pool, name, None).await
+}
+
+/// A customer whose credit limit is already on the registry: the state the
+/// limit tests start from, written the way the route that owns the field
+/// writes it.
+async fn seed_customer_with_limit(pool: &PgPool, name: &str, limit: Option<Decimal>) -> Uuid {
     customers::create_customer(
         pool,
         CreateCustomerInput {
@@ -527,6 +534,7 @@ async fn seed_customer(pool: &PgPool, name: &str) -> Uuid {
             tax_id: None,
             email: None,
             phone: None,
+            credit_limit: limit,
         },
     )
     .await
@@ -543,6 +551,7 @@ async fn rename_customer(pool: &PgPool, id: Uuid, name: &str) {
             email: None,
             phone: None,
             is_active: None,
+            credit_limit: None,
         },
     )
     .await
@@ -1953,4 +1962,151 @@ async fn a_cash_only_mismatch_keeps_its_original_message(pool: PgPool) {
     assert_eq!(current_stock(&pool, product).await, dec!(10));
     assert_eq!(wallet_balance(&pool, wallet).await, Decimal::ZERO);
     assert_eq!(payment_movement_count(&pool).await, 0);
+}
+
+// --- The credit limit ---------------------------------------------------
+
+/// The limit is a hard ceiling, not a warning: an on-account part that does
+/// not fit is refused whole, with `409` naming the credit that remains — the
+/// same status the stock rejection uses, because both are "retry with less".
+#[sqlx::test]
+async fn an_on_account_amount_beyond_the_limit_answers_409(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer_with_limit(&pool, "Ana Pérez", Some(dec!(40.00))).await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "40.00" } ],
+            "on_account": "60.00"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        problem_detail(response).await,
+        "the on-account amount exceeds the 40.00 the customer still has available"
+    );
+
+    // Rejected whole: the sale never closed, the stock never left, no wallet
+    // saw money and the ledger holds no charge.
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(wallet_balance(&pool, wallet).await, Decimal::ZERO);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// `0` is a limit, not the absence of one: the customer may still buy, but
+/// everything the sale costs has to be collected at the till.
+#[sqlx::test]
+async fn a_customer_with_a_zero_limit_cannot_buy_on_account(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer_with_limit(&pool, "Ana Pérez", Some(Decimal::ZERO)).await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [], "on_account": "100.00" }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        problem_detail(response).await,
+        "the on-account amount exceeds the 0.00 the customer still has available"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+
+    // Cash only, not "no sales": the same draft completes the moment the
+    // till collects it in full.
+    let method = cash(&pool).await;
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [ { "payment_method_id": method, "amount": "100.00" } ] }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(current_stock(&pool, product).await, dec!(9));
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// The ceiling counts the balance the customer already carries, so it is on
+/// total exposure, never on the single sale: owing 60 of a 100 limit leaves
+/// 40, and a second sale that asks for 50 on account is refused.
+#[sqlx::test]
+async fn the_credit_limit_counts_the_debt_the_customer_already_has(pool: PgPool) {
+    let (actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer_with_limit(&pool, "Ana Pérez", Some(dec!(100.00))).await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let method = cash(&pool).await;
+
+    // The first sale leaves 60 owed: it fits, and the account says so.
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "40.00" } ],
+            "on_account": "60.00"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(account_balance(&pool, customer).await, dec!(60.00));
+
+    // A second sale on the same account: 50 more would put the exposure at
+    // 110 against the 100 limit.
+    let second = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, second, product, dec!(1))
+        .await
+        .unwrap();
+    sales::set_customer(&pool, second, Some(customer))
+        .await
+        .unwrap();
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        second,
+        serde_json::json!({ "payments": [], "on_account": "100.00" }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        problem_detail(response).await,
+        "the on-account amount exceeds the 40.00 the customer still has available"
+    );
+
+    // Only the first sale's trace is in the books.
+    let sale = sales::get(&pool, second).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(9));
+    assert_eq!(stock_outflow_count(&pool).await, 1);
+    assert_eq!(ledger_entry_count(&pool).await, 1);
+    assert_eq!(account_balance(&pool, customer).await, dec!(60.00));
 }

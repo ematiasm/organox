@@ -59,6 +59,9 @@ pub enum RepoError {
     #[error("an on-account amount needs an active customer")]
     OnAccountNeedsActiveCustomer,
 
+    #[error("the on-account amount exceeds the {available} the customer still has available")]
+    OnAccountExceedsCreditLimit { available: Decimal },
+
     #[error("the customer account is busy, retry")]
     CustomerAccountBusy,
 
@@ -465,6 +468,26 @@ fn map_payment_error(err: payments::RepoError) -> RepoError {
     }
 }
 
+/// `authorize_credit` re-runs, under the customer's lock, what this
+/// transaction is about to act on. Its typed refusals keep the answers the
+/// completion already gives: an inactive customer stays the 422 it has
+/// always been, and a limit rejection joins the stock conflict as a 409 that
+/// names what is left. The busy lock and database errors pass through.
+fn map_authorize_error(err: crate::customer_accounts::repository::RepoError) -> RepoError {
+    use crate::customer_accounts::repository::RepoError as AuthorizeError;
+    match err {
+        AuthorizeError::Database(sql) => RepoError::Database(sql),
+        AuthorizeError::CustomerBusy => RepoError::CustomerAccountBusy,
+        AuthorizeError::CustomerInactive => RepoError::OnAccountNeedsActiveCustomer,
+        AuthorizeError::CreditLimitExceeded { available, .. } => {
+            RepoError::OnAccountExceedsCreditLimit { available }
+        }
+        other => RepoError::Database(sqlx::Error::Protocol(format!(
+            "authorize_credit refused a charge the completion had validated: {other}"
+        ))),
+    }
+}
+
 /// `record_charge` re-validates what this transaction already proved — the
 /// sale is completed and belongs to the customer, the amount is cents, and
 /// the ceiling it re-derives is the uncollected remainder — so its typed
@@ -598,24 +621,23 @@ pub async fn complete(
     // Checked before any write.
     let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
 
-    // An on-account part is debt, and debt needs someone the registry still
-    // vouches for: the draft must carry a customer, and that customer must
-    // be active. Checked inside the transaction, so a rejection leaves no
-    // trace. The check runs ONLY when something is on account: a customer
-    // deactivated mid-draft must not block a sale the till collects in full.
+    // An on-account part is debt, and debt is extended only within what the
+    // registry still vouches for: the draft must carry a customer, that
+    // customer must be active, and the exposure the sale would leave must fit
+    // the customer's credit limit. One gate, `authorize_credit`, decides all
+    // three under the customer's lock, before any write, so a rejection
+    // leaves no trace and a deactivation racing the checkout cannot slip
+    // between the gate and the charge. The gate runs ONLY when something is
+    // on account: a customer deactivated mid-draft must not block a sale the
+    // till collects in full.
     let charge_customer = if on_account > Decimal::ZERO {
         let customer_id = sale_row
             .customer_id
             .ok_or(RepoError::OnAccountNeedsCustomer)?;
 
-        let is_active =
-            sqlx::query_scalar!("SELECT is_active FROM customers WHERE id = $1", customer_id)
-                .fetch_one(&mut *tx)
-                .await?;
-
-        if !is_active {
-            return Err(RepoError::OnAccountNeedsActiveCustomer);
-        }
+        crate::customer_accounts::repository::authorize_credit(&mut tx, customer_id, on_account)
+            .await
+            .map_err(map_authorize_error)?;
 
         Some(customer_id)
     } else {

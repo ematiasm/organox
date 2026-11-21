@@ -5,6 +5,8 @@
 //! document, unique document) are also enforced by the database: validation at
 //! the boundary is not the last line of defense.
 
+use rust_decimal::Decimal;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
     #[error("the name cannot be blank")]
@@ -24,6 +26,12 @@ pub enum ValidationError {
 
     #[error("the phone exceeds {max} characters")]
     PhoneTooLong { max: usize },
+
+    #[error("the credit limit cannot be negative")]
+    CreditLimitNegative,
+
+    #[error("the credit limit {amount} carries more than two decimals")]
+    CreditLimitTooManyDecimals { amount: Decimal },
 }
 
 pub const MAX_NAME_LEN: usize = 200;
@@ -96,9 +104,25 @@ pub fn validate_phone(raw: Option<&str>) -> Result<Option<String>, ValidationErr
     Ok(Some(trimmed.to_string()))
 }
 
+/// A credit limit is money the shop is willing to be owed, so it follows the
+/// two rules every money amount in this tree follows: never negative, and no
+/// finer than cents. `numeric(14, 2)` would silently round a third decimal,
+/// and a limit that rounds is a limit the operator never set. `0` is a valid
+/// limit — cash only — so only the sign and the scale are checked here.
+pub fn validate_credit_limit(raw: Decimal) -> Result<Decimal, ValidationError> {
+    if raw < Decimal::ZERO {
+        return Err(ValidationError::CreditLimitNegative);
+    }
+    if raw.round_dp(2) != raw {
+        return Err(ValidationError::CreditLimitTooManyDecimals { amount: raw });
+    }
+    Ok(raw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     #[test]
     fn name_is_trimmed_and_blank_rejected() {
@@ -156,6 +180,23 @@ mod tests {
         assert_eq!(
             validate_phone(Some(&long)).unwrap_err(),
             ValidationError::PhoneTooLong { max: MAX_PHONE_LEN }
+        );
+    }
+
+    #[test]
+    fn a_credit_limit_is_never_negative_nor_finer_than_cents() {
+        assert_eq!(validate_credit_limit(dec!(100.00)).unwrap(), dec!(100.00));
+        // Zero is a limit — cash only — not the absence of one.
+        assert_eq!(validate_credit_limit(Decimal::ZERO).unwrap(), Decimal::ZERO);
+        assert_eq!(
+            validate_credit_limit(dec!(-1.00)).unwrap_err(),
+            ValidationError::CreditLimitNegative
+        );
+        assert_eq!(
+            validate_credit_limit(dec!(10.005)).unwrap_err(),
+            ValidationError::CreditLimitTooManyDecimals {
+                amount: dec!(10.005)
+            }
         );
     }
 }

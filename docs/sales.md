@@ -55,10 +55,17 @@ one wins and the other gets `409` with the exact available quantity. Covered by
 If stock is missing **nothing is written**: no movements, no status, no modified
 cart. Covered by `insufficient_stock_leaves_no_state_change`.
 
-When part of the total is on account, the same transaction also writes the charge
-in the customer's ledger, so the goods, the money and the debt commit together.
-That charge serializes against collections on the same account: a busy account
-answers `409` and the operator retries, instead of queueing behind it.
+When part of the total is on account, the same transaction also authorizes
+that part and then writes the charge in the customer's ledger, so the goods,
+the money and the debt commit together. The authorization is one gate under
+the customer's account lock: the customer must still be active, and the
+balance plus the new amount must fit the customer's credit limit. The gate
+runs only when something is on account — a customer deactivated mid-draft
+does not block a sale the till collects in full — and it holds the customer's
+row locked, so a deactivation racing the checkout cannot slip between the gate
+and the charge. The charge also serializes against collections on the same
+account: a busy account answers `409` and the operator retries, instead of
+queueing behind it.
 
 ## A service is not sold as an item
 
@@ -110,8 +117,15 @@ wallet that method points at, in the same transaction that deducts stock. The
 `on_account` part is different: it is the part the customer leaves owing, so it
 writes one charge in the customer's account ledger instead of a wallet
 movement — still in that same transaction — and it needs an active customer on
-the draft. A sale can therefore be completed with part, or all, of its total
-left owed on the account; `on_account = 0` behaves exactly as a cash sale.
+the draft whose credit limit still fits it. The limit counts the balance the
+customer already carries, so it is a ceiling on total exposure, and it is
+refused whole: `409`, the same status the stock rejection uses, with the
+remaining credit named in the message — the operator retries with a smaller
+on-account part or collects at the till. `NULL` means no limit and `0` means
+cash only; what the field means is the registry's rule
+(`docs/customers.md`). A sale can therefore be completed with part, or all, of
+its total left owed on the account, within the limit; `on_account = 0`
+behaves exactly as a cash sale.
 Wallets, payment methods and their ledger have their own document:
 `docs/payments.md`.
 

@@ -15,6 +15,7 @@ use organox::auth::{password, validation};
 use organox::customers::service::{self, CreateCustomerInput, CustomerError, UpdateCustomerInput};
 use organox::customers::validation::ValidationError;
 use organox::routes::router;
+use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -53,6 +54,7 @@ fn new_customer(name: &str) -> CreateCustomerInput {
         tax_id: None,
         email: None,
         phone: None,
+        credit_limit: None,
     }
 }
 
@@ -64,6 +66,7 @@ async fn seed_customer(pool: &PgPool, name: &str, tax_id: Option<&str>) -> Uuid 
             tax_id: tax_id.map(str::to_string),
             email: None,
             phone: None,
+            credit_limit: None,
         },
     )
     .await
@@ -81,6 +84,7 @@ async fn creates_a_customer_and_trims_its_fields(pool: PgPool) {
             tax_id: Some("  20-12345678-9 ".to_string()),
             email: Some(" ana@example.com ".to_string()),
             phone: Some(" 555-0100 ".to_string()),
+            credit_limit: None,
         },
     )
     .await
@@ -111,6 +115,7 @@ async fn rejects_a_blank_name_and_a_blank_document(pool: PgPool) {
             tax_id: Some("    ".to_string()),
             email: None,
             phone: None,
+            credit_limit: None,
         },
     )
     .await
@@ -137,6 +142,7 @@ async fn a_document_exists_at_most_once_but_many_customers_have_none(pool: PgPoo
             tax_id: Some("20-12345678-9".to_string()),
             email: None,
             phone: None,
+            credit_limit: None,
         },
     )
     .await;
@@ -151,6 +157,7 @@ async fn a_document_exists_at_most_once_but_many_customers_have_none(pool: PgPoo
             tax_id: Some("ab-123".to_string()),
             email: None,
             phone: None,
+            credit_limit: None,
         },
     )
     .await
@@ -164,6 +171,7 @@ async fn a_document_exists_at_most_once_but_many_customers_have_none(pool: PgPoo
             tax_id: Some("AB-123".to_string()),
             email: None,
             phone: None,
+            credit_limit: None,
         },
     )
     .await;
@@ -179,6 +187,7 @@ async fn rejects_an_email_without_at_and_a_too_long_name(pool: PgPool) {
             tax_id: None,
             email: Some("ana.example.com".to_string()),
             phone: None,
+            credit_limit: None,
         },
     )
     .await;
@@ -272,6 +281,7 @@ async fn update_touches_only_the_fields_sent(pool: PgPool) {
             email: None,
             phone: None,
             is_active: None,
+            credit_limit: None,
         },
     )
     .await
@@ -300,6 +310,7 @@ async fn update_rejects_a_document_another_customer_already_has(pool: PgPool) {
             email: None,
             phone: None,
             is_active: None,
+            credit_limit: None,
         },
     )
     .await;
@@ -315,6 +326,7 @@ async fn update_rejects_a_document_another_customer_already_has(pool: PgPool) {
             email: None,
             phone: None,
             is_active: None,
+            credit_limit: None,
         },
     )
     .await
@@ -643,4 +655,165 @@ async fn a_page_past_the_end_recounts_with_the_escaped_pattern(pool: PgPool) {
         .expect("page");
     assert!(empty.is_empty());
     assert_eq!(total, 1, "the re-count uses the escaped pattern too");
+}
+
+// --- The credit limit ---------------------------------------------------
+
+/// The limit is optional, readable and clearable. Clearing is the one case
+/// the text fields do not have, so it goes through HTTP on purpose: the
+/// omitted-field / explicit-`null` distinction is serde's, and only the
+/// route can prove it survived the wire.
+#[sqlx::test]
+async fn a_credit_limit_is_optional_and_can_be_cleared(pool: PgPool) {
+    // Created without one: unlimited is the column default, not a value.
+    let id = service::create_customer(&pool, new_customer("Ana"))
+        .await
+        .expect("customer");
+    let customer = service::get_customer(&pool, id).await.expect("customer");
+    assert_eq!(customer.credit_limit, None);
+
+    let (_actor, password) = seed_user_with_password(&pool, "owner@pyme.com", Role::Owner).await;
+    let router = app(pool.clone());
+    let cookie = login(&router, "owner@pyme.com", &password).await;
+
+    // Set through PATCH, read back through the service and through the
+    // route: money is a string with its cents, like every other amount.
+    let (status, _) = send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/customers/{id}"),
+        Some(&cookie),
+        Some(json!({ "credit_limit": "100.00" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let customer = service::get_customer(&pool, id).await.expect("customer");
+    assert_eq!(customer.credit_limit, Some(dec!(100.00)));
+
+    let (status, body) = send(
+        &router,
+        "GET",
+        &format!("/api/v1/customers/{id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["credit_limit"], "100.00");
+
+    // An absent field leaves the limit untouched, exactly like every other
+    // PATCH field.
+    let (status, _) = send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/customers/{id}"),
+        Some(&cookie),
+        Some(json!({ "name": "Ana María" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let customer = service::get_customer(&pool, id).await.expect("customer");
+    assert_eq!(customer.credit_limit, Some(dec!(100.00)));
+    assert_eq!(customer.name, "Ana María");
+
+    // The explicit `null` is the one body that returns the customer to
+    // unlimited, and the response says so.
+    let (status, _) = send(
+        &router,
+        "PATCH",
+        &format!("/api/v1/customers/{id}"),
+        Some(&cookie),
+        Some(json!({ "credit_limit": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let customer = service::get_customer(&pool, id).await.expect("customer");
+    assert_eq!(customer.credit_limit, None);
+
+    let (status, body) = send(
+        &router,
+        "GET",
+        &format!("/api/v1/customers/{id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["credit_limit"], Value::Null);
+}
+
+/// A limit is money the shop is willing to be owed, so it follows the two
+/// rules every money amount here follows: never negative, never finer than
+/// cents — and a rejected value never reaches the row.
+#[sqlx::test]
+async fn a_negative_credit_limit_is_rejected(pool: PgPool) {
+    let negative = service::create_customer(
+        &pool,
+        CreateCustomerInput {
+            name: "Ana".to_string(),
+            tax_id: None,
+            email: None,
+            phone: None,
+            credit_limit: Some(dec!(-10.00)),
+        },
+    )
+    .await;
+    assert!(matches!(
+        negative,
+        Err(CustomerError::Validation(
+            ValidationError::CreditLimitNegative
+        ))
+    ));
+
+    // `numeric(14, 2)` would round a third decimal away; rejecting it is the
+    // point, the same rule the payments and the ledger follow.
+    let third_decimal = service::create_customer(
+        &pool,
+        CreateCustomerInput {
+            name: "Ana".to_string(),
+            tax_id: None,
+            email: None,
+            phone: None,
+            credit_limit: Some(dec!(10.005)),
+        },
+    )
+    .await;
+    assert!(matches!(
+        third_decimal,
+        Err(CustomerError::Validation(ValidationError::CreditLimitTooManyDecimals {
+            amount
+        })) if amount == dec!(10.005)
+    ));
+
+    // The update path validates through the same rule, so a limit already
+    // on the row cannot be replaced with a value that never fit it.
+    let id = seed_customer(&pool, "Beto", None).await;
+    let result = service::update_customer(
+        &pool,
+        id,
+        UpdateCustomerInput {
+            name: None,
+            tax_id: None,
+            email: None,
+            phone: None,
+            is_active: None,
+            credit_limit: Some(Some(dec!(-1.00))),
+        },
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(CustomerError::Validation(
+            ValidationError::CreditLimitNegative
+        ))
+    ));
+
+    // None of the rejected values reached the registry.
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM customers")
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+    assert_eq!(stored, 1, "only Beto, without a limit");
+    let beto = service::get_customer(&pool, id).await.expect("customer");
+    assert_eq!(beto.credit_limit, None);
 }

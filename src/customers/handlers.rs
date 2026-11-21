@@ -10,6 +10,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -39,6 +40,9 @@ pub struct CustomerResponse {
     pub email: Option<String>,
     pub phone: Option<String>,
     pub is_active: bool,
+    /// `null` means no limit (the default), `"0.00"` means cash only. Money as
+    /// a string with its cents, like every other amount in the tree.
+    pub credit_limit: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -67,6 +71,10 @@ pub struct CreateCustomerRequest {
     pub tax_id: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
+    /// Optional credit limit: absent or `null` means unlimited, `0` means
+    /// cash only. Never negative, at most two decimals.
+    #[schema(value_type = Option<String>, example = "100.00")]
+    pub credit_limit: Option<Decimal>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -77,6 +85,24 @@ pub struct UpdateCustomerRequest {
     pub email: Option<String>,
     pub phone: Option<String>,
     pub is_active: Option<bool>,
+    /// The one clearable field: absent leaves the limit untouched, an explicit
+    /// `null` returns the customer to unlimited, a value sets it. The double
+    /// `Option` keeps the three cases apart the same way `PUT
+    /// /sales/{id}/customer` keeps attach and clear apart.
+    #[serde(default, deserialize_with = "present_decimal_option")]
+    #[schema(value_type = Option<String>, example = "100.00")]
+    pub credit_limit: Option<Option<Decimal>>,
+}
+
+/// Distinguishes an omitted field (`None`) from an explicit `null`
+/// (`Some(None)`): serde collapses both to `None` for a plain `Option`, and
+/// the limit needs the difference — omitted is "leave it as it is", `null` is
+/// "back to unlimited".
+fn present_decimal_option<'de, D>(deserializer: D) -> Result<Option<Option<Decimal>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Decimal>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -129,6 +155,7 @@ async fn create_customer(
             tax_id: body.tax_id,
             email: body.email,
             phone: body.phone,
+            credit_limit: body.credit_limit,
         },
     )
     .await?;
@@ -160,6 +187,7 @@ async fn update_customer(
             email: body.email,
             phone: body.phone,
             is_active: body.is_active,
+            credit_limit: body.credit_limit,
         },
     )
     .await?;
@@ -178,6 +206,11 @@ async fn deactivate_customer(
 
 // --- Conversions --------------------------------------------------------
 
+/// Money with exactly 2 decimals (`"100.00"`), as in the catalog and sales.
+fn format_money(value: Decimal) -> String {
+    format!("{value:.2}")
+}
+
 fn to_response(customer: Customer) -> CustomerResponse {
     CustomerResponse {
         id: customer.id,
@@ -186,6 +219,7 @@ fn to_response(customer: Customer) -> CustomerResponse {
         email: customer.email,
         phone: customer.phone,
         is_active: customer.is_active,
+        credit_limit: customer.credit_limit.map(format_money),
         created_at: customer.created_at,
         updated_at: customer.updated_at,
     }
@@ -229,6 +263,8 @@ fn list_customers_doc() {}
 /// Register a customer.
 ///
 /// `tax_id` is optional and unique when present; a duplicate returns 409.
+/// `credit_limit` is optional too: absent or `null` means unlimited, `0`
+/// means cash only, and a negative or three-decimal value is a 422.
 #[utoipa::path(
     post,
     path = "/api/v1/customers",
@@ -266,8 +302,10 @@ fn get_customer_doc() {}
 
 /// Update only the fields sent.
 ///
-/// A field left out is not touched. This route cannot clear an optional field:
-/// that needs an explicit marker and, today, no screen asks for it.
+/// A text field left out is not touched and cannot be cleared: there is no
+/// body that removes a document, an email or a phone. `credit_limit` is the
+/// one exception — an explicit `null` returns the customer to unlimited —
+/// because it is the only field a real case has asked to clear.
 #[utoipa::path(
     patch,
     path = "/api/v1/customers/{id}",

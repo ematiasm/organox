@@ -1981,3 +1981,224 @@ async fn an_allocation_beyond_the_sale_charge_is_rejected_by_the_engine(pool: Pg
         "an allocation paid a sale that was never charged"
     );
 }
+
+// --- Credit limits ------------------------------------------------------
+
+/// Set the customer's credit limit straight on the row. These tests exercise
+/// the gate, not the registry route that writes the field, so the limit is
+/// fixture state like the customer itself.
+async fn set_credit_limit(pool: &PgPool, customer: Uuid, limit: Option<Decimal>) {
+    sqlx::query("UPDATE customers SET credit_limit = $2 WHERE id = $1")
+        .bind(customer)
+        .bind(limit)
+        .execute(pool)
+        .await
+        .expect("credit limit");
+}
+
+/// How many entries one customer's ledger carries: the "nothing was written"
+/// assertion of every rejected gate below.
+async fn entry_count(pool: &PgPool, customer: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM customer_account_entries WHERE customer_id = $1")
+        .bind(customer)
+        .fetch_one(pool)
+        .await
+        .expect("entry count")
+}
+
+#[sqlx::test]
+async fn a_charge_beyond_the_credit_limit_is_rejected(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    set_credit_limit(&pool, customer, Some(dec!(100.00))).await;
+    let sale = seed_completed_sale(&pool, customer, dec!(60.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(60.00), Uuid::now_v7())
+        .await
+        .expect("opening charge");
+    tx.commit().await.expect("commit");
+
+    // The customer owes 60 of a 100 limit, so 50 more does not fit: the
+    // exposure after the sale would be 110, and the message names the 40
+    // the customer still has available.
+    let mut tx = pool.begin().await.expect("transaction");
+    let result = repository::authorize_credit(&mut tx, customer, dec!(50.00)).await;
+    assert!(matches!(
+        result,
+        Err(repository::RepoError::CreditLimitExceeded { requested, available })
+            if requested == dec!(110.00) && available == dec!(40.00)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    // A gate authorizes; it never writes. The ledger still says one charge.
+    assert_eq!(entry_count(&pool, customer).await, 1);
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, dec!(60.00));
+    assert!(position.is_consistent());
+}
+
+#[sqlx::test]
+async fn a_customer_without_a_limit_can_owe_any_amount(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(5000.00)).await;
+
+    // NULL is the default and means no limit: the gate is the activity check
+    // alone, and the account takes whatever the completion asks for.
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::authorize_credit(&mut tx, customer, dec!(5000.00))
+        .await
+        .expect("no limit to exceed");
+    repository::record_charge(&mut tx, customer, sale, dec!(5000.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    tx.commit().await.expect("commit");
+
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, dec!(5000.00));
+    assert!(position.is_consistent());
+}
+
+#[sqlx::test]
+async fn a_zero_limit_is_cash_only(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    set_credit_limit(&pool, customer, Some(Decimal::ZERO)).await;
+
+    // Zero is a limit, not the absence of one: the customer may buy, but
+    // nothing on account.
+    let mut tx = pool.begin().await.expect("transaction");
+    let result = repository::authorize_credit(&mut tx, customer, dec!(1.00)).await;
+    assert!(matches!(
+        result,
+        Err(repository::RepoError::CreditLimitExceeded { available, .. })
+            if available == Decimal::ZERO
+    ));
+    tx.rollback().await.expect("rollback");
+    assert_eq!(entry_count(&pool, customer).await, 0);
+
+    // A customer holding money in the shop's favour is different: the charge
+    // first spends that money, and only what it leaves over is credit. A
+    // 30 charge against 50 held never asks for credit at all.
+    let movement = seed_movement(&pool, dec!(50.00)).await;
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: customer,
+            wallet_movement_id: movement,
+            amount: dec!(50.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await
+    .expect("receipt");
+    repository::authorize_credit(&mut tx, customer, dec!(30.00))
+        .await
+        .expect("money already in the customer's favour is not credit");
+    tx.commit().await.expect("commit");
+
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, dec!(-50.00));
+    assert!(position.is_consistent());
+}
+
+#[sqlx::test]
+async fn the_limit_counts_what_the_customer_already_owes(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    set_credit_limit(&pool, customer, Some(dec!(100.00))).await;
+    let sale = seed_completed_sale(&pool, customer, dec!(60.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(60.00), Uuid::now_v7())
+        .await
+        .expect("opening charge");
+    tx.commit().await.expect("commit");
+
+    // The ceiling is on the exposure, not on the single sale: 40 still fits,
+    // 41 does not, and the difference is exactly the debt already carried.
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::authorize_credit(&mut tx, customer, dec!(40.00))
+        .await
+        .expect("40 fits the remaining limit");
+    let result = repository::authorize_credit(&mut tx, customer, dec!(41.00)).await;
+    assert!(matches!(
+        result,
+        Err(repository::RepoError::CreditLimitExceeded { requested, available })
+            if requested == dec!(101.00) && available == dec!(40.00)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    assert_eq!(entry_count(&pool, customer).await, 1);
+}
+
+#[sqlx::test]
+async fn an_inactive_customer_cannot_be_charged(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    sqlx::query("UPDATE customers SET is_active = false WHERE id = $1")
+        .bind(customer)
+        .execute(&pool)
+        .await
+        .expect("deactivate");
+
+    let mut tx = pool.begin().await.expect("transaction");
+    let result = repository::authorize_credit(&mut tx, customer, dec!(50.00)).await;
+    assert!(matches!(
+        result,
+        Err(repository::RepoError::CustomerInactive)
+    ));
+    tx.rollback().await.expect("rollback");
+
+    assert_eq!(entry_count(&pool, customer).await, 0);
+}
+
+#[sqlx::test]
+async fn lowering_the_limit_below_the_balance_blocks_only_new_credit(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    set_credit_limit(&pool, customer, Some(dec!(100.00))).await;
+
+    // The debt is loaded the way the books load it: an opening balance, not
+    // a sale, because a charge this size would itself be refused by the gate
+    // the test is about to exercise.
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_adjustment(
+        &mut tx,
+        customer,
+        CustomerAccountEntryKind::AdjustmentIn,
+        dec!(120.00),
+        "opening balance from the previous books",
+        Uuid::now_v7(),
+    )
+    .await
+    .expect("opening balance");
+    tx.commit().await.expect("commit");
+
+    // The limit is now below the balance, and that is allowed: the operator
+    // decided no NEW credit leaves the shop. The existing 120 is untouched —
+    // lowering a number on the registry rewrites nothing on the ledger.
+    let mut tx = pool.begin().await.expect("transaction");
+    let result = repository::authorize_credit(&mut tx, customer, dec!(1.00)).await;
+    assert!(
+        matches!(
+            result,
+            Err(repository::RepoError::CreditLimitExceeded { available, .. })
+                if available == Decimal::ZERO
+        ),
+        "a new charge is blocked"
+    );
+    tx.rollback().await.expect("rollback");
+
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, dec!(120.00), "the existing debt stays");
+    assert_eq!(entry_count(&pool, customer).await, 1);
+    assert!(position.is_consistent());
+}

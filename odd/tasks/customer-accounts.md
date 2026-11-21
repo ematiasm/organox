@@ -124,7 +124,11 @@ limit is not null and exposure would exceed it, the completion is rejected whole
 remaining amount named in the message, using the same status the stock rejection uses.
 
 Lowering a limit below the current balance is allowed and blocks only new credit. The check runs
-under the S5 lock.
+under the S5 lock, together with the activity gate: the completion locks the customer advisory
+lock first and then reads the customer row `FOR UPDATE`, so a deactivation cannot slip between the
+gate and the charge. Deactivation takes only that row lock and never the advisory one, so the two
+orders cannot invert. A customer holding credit (`balance` negative) absorbs the new charge before
+the limit applies, because using money already in their favour is not credit.
 
 ### S8 — Available credit is applied at completion
 
@@ -208,7 +212,7 @@ and the new `on_account = 0` sibling.
 |---|---|---|---|
 | T1 | S1, S2 | **done**: `0015` in one migration (type, tables, append-only triggers, sign and link CHECKs, unique charge/note/movement/idempotency indexes, deferred allocation ceiling), `src/customer_accounts/{model,repository}` with the six writers taking the customer advisory lock first, `tests/customer_accounts.rs` (35 tests: table contract, read model, every writer, two concurrent receipts) | `e230572`, `5f5f4f7`, `2cc7768` |
 | T2 | S4 | **done**: `complete` takes `on_account`; the invariant is `payments + on_account == total`; the charge is written by `customer_accounts::record_charge` after the status flip inside the same transaction; `on_account = 0` keeps the old path through a four-argument wrapper; 8 HTTP-level tests plus the renamed empty-payment test | `1dc5a6b` |
-| T3 | S5, S7 | advisory lock on every balance write, credit limit column and exposure check | feat/customer-accounts-limit |
+| T3 | S5, S7 + L12 | **next**: `0017` adds `customers.credit_limit`; the customers module exposes it (NULL = unlimited, `0` = cash only, clearable through PATCH); `customer_accounts::authorize_credit` takes the customer lock, reads the row `FOR UPDATE`, checks activity and exposure (`balance + amount` against the limit, floored at zero for the message) and returns the available amount; sales calls it before writing and answers 409 naming the remaining credit. Closes `R1-on-account-credit-unbounded`, `R3-active-check-race` and `R4-on-account-active-gate-race` | feat/customer-accounts-limit |
 | T4 | S3, S5, S6 | receipts endpoint, allocations, idempotency, `account_payment` kind in every sign `CASE` | feat/customer-accounts-receipts |
 | T5 | S8 | credit application at completion | feat/customer-accounts-apply-credit |
 | T6 | S9 | debt-first note split, `allocate_refund` rewrite, `account_payment_refund` kind | feat/customer-accounts-note-split |
@@ -343,3 +347,7 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   revision, both accepted shapes, `mutation_performed: false` — same class of facade defect as
   `review-9bdabf97b891d543`. Two independent occurrences make it reproducible, not a transcription
   error. The lineage is left for the operator's disposition rather than looped.
+- L18 — the trapped lineage `review-147b91d960fa0a81` was abandoned at the operator's decision, after
+  the finding was fixed and before any further edit: quarantine
+  `review-transactions/quarantine/review-147b91d960fa0a81-2968810132`. Its fix (`08485a6`) enters
+  the next review's range together with T3, so nothing it found is lost.
