@@ -352,7 +352,7 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   `review-transactions/quarantine/review-147b91d960fa0a81-2968810132`. Its fix (`08485a6`) enters
   the next review's range together with T3, so nothing it found is lost.
 - L19 — T3 reviewed: lineage `review-4c1e09c2daa1a08f`, **approved**, authority burned. Three of its
-  five advisories were closed immediately in `d2f5f1a`; the other two are cosmetic or theoretical
+  five advisories were closed immediately in `ba262f0`; the other two are cosmetic or theoretical
   and stay recorded. Closed: `R1/R3/R4-credit-limit-magnitude-gap` — the trio all flagged that a
   well-formed limit above `numeric(14,2)` reached Postgres and answered an internal error instead of
   a 422, so the boundary now owns the column's magnitude; and
