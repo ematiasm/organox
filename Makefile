@@ -85,7 +85,9 @@ dev-user: ## Create or reset the dev user from .env: DEV_PASSWORD, DEV_EMAIL, DE
 		--password-stdin --upsert
 
 prepare: ## Regenerate the sqlx query cache (commit .sqlx/)
-	cargo sqlx prepare --workspace
+	# --all-targets matters: CI compiles with SQLX_OFFLINE=true and builds the
+	# test targets too, so a query macro that lives only in tests/ must be cached.
+	cargo sqlx prepare --workspace -- --all-targets
 
 test: ## Run all tests (needs the DB up)
 	cargo test

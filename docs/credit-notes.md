@@ -107,6 +107,16 @@ explicitly future work.
 
 ## What is missing
 
+- **Cent-exact split over three or more tenders**: the cash surplus of a note is
+  split by largest remainder across the tenders that collected the sale. With
+  three or more tenders that allocation is not componentwise monotone in the
+  cumulative cash (the Alabama paradox), so a later note whose surplus lands
+  exactly on one of those steps is refused by the split's own safety check and
+  answers `500` even though every tender still has room. The refusal is
+  fail-safe: no wallet movement is written and no tender is ever refunded more
+  than it collected. Sales with one or two tenders are unaffected. Allocating
+  each note against the remaining capacity instead of subtracting two
+  cumulative splits is the future fix.
 - **Fiscal numbering**: a note has an internal id, not a numbered fiscal
   document.
 - **Customer on the note**: the sale may name a customer (`docs/customers.md`),
