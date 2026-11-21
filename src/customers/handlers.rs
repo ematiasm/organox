@@ -43,6 +43,14 @@ pub struct CustomerResponse {
     /// `null` means no limit (the default), `"0.00"` means cash only. Money as
     /// a string with its cents, like every other amount in the tree.
     pub credit_limit: Option<String>,
+    /// Current account balance derived from the customer's debt ledger.
+    /// Positive means the customer owes money; negative means credit in their
+    /// favour.
+    #[schema(value_type = String, example = "120.00")]
+    pub balance: String,
+    /// Collected money not yet allocated to a sale or refunded (`U`).
+    #[schema(value_type = String, example = "0.00")]
+    pub available_credit: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -220,6 +228,8 @@ fn to_response(customer: Customer) -> CustomerResponse {
         phone: customer.phone,
         is_active: customer.is_active,
         credit_limit: customer.credit_limit.map(format_money),
+        balance: format_money(customer.balance),
+        available_credit: format_money(customer.available_credit),
         created_at: customer.created_at,
         updated_at: customer.updated_at,
     }

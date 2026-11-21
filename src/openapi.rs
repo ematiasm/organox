@@ -80,9 +80,13 @@ pub struct Problem {
         crate::customers::handlers::get_customer_doc,
         crate::customers::handlers::update_customer_doc,
         crate::customers::handlers::deactivate_customer_doc,
+        crate::customer_accounts::handlers::get_account_statement_doc,
+        crate::customer_accounts::handlers::list_receipts_doc,
         crate::customer_accounts::handlers::collect_receipt_doc,
         crate::customer_accounts::handlers::refund_credit_doc,
+        crate::customer_accounts::handlers::list_adjustments_doc,
         crate::customer_accounts::handlers::record_adjustment_doc,
+        crate::customer_accounts::handlers::list_receivables_doc,
         crate::sales::handlers::open_draft_doc,
         crate::sales::handlers::get_sale_doc,
         crate::sales::handlers::add_item_doc,
@@ -137,6 +141,15 @@ pub struct Problem {
         crate::customer_accounts::handlers::AdjustmentDirection,
         crate::customer_accounts::handlers::RecordAdjustmentRequest,
         crate::customer_accounts::handlers::AdjustmentResponse,
+        crate::customer_accounts::handlers::AccountStatementEntryResponse,
+        crate::customer_accounts::handlers::OutstandingSaleResponse,
+        crate::customer_accounts::handlers::CustomerAccountResponse,
+        crate::customer_accounts::handlers::ReceiptLogAllocationResponse,
+        crate::customer_accounts::handlers::ReceiptLogResponse,
+        crate::customer_accounts::handlers::AdjustmentLogResponse,
+        crate::customer_accounts::handlers::AgingBucketsResponse,
+        crate::customer_accounts::handlers::ReceivableCustomerResponse,
+        crate::customer_accounts::handlers::ReceivablesResponse,
         crate::customer_accounts::model::CustomerAccountEntryKind,
         crate::sales::handlers::SaleResponse,
         crate::sales::handlers::SaleItemResponse,
@@ -248,6 +261,13 @@ mod tests {
             "/api/v1/products/{id}",
             "/api/v1/products/{id}/deactivate",
             "/api/v1/products/{id}/movements",
+            "/api/v1/customers",
+            "/api/v1/customers/{id}",
+            "/api/v1/customers/{id}/account",
+            "/api/v1/customers/{id}/receipts",
+            "/api/v1/customers/{id}/credit-refunds",
+            "/api/v1/customers/{id}/adjustments",
+            "/api/v1/accounts/receivables",
         ] {
             assert!(
                 paths.contains_key(expected),
@@ -270,6 +290,47 @@ mod tests {
             ("CreateProductRequest", &["price", "min_stock"]),
             ("UpdateProductRequest", &["price", "min_stock"]),
             ("RecordMovementRequest", &["quantity", "unit_cost"]),
+            (
+                "CustomerResponse",
+                &["balance", "available_credit", "credit_limit"],
+            ),
+            (
+                "CustomerAccountResponse",
+                &["balance", "unapplied_credit", "outstanding_total"],
+            ),
+            (
+                "AccountStatementEntryResponse",
+                &["amount", "running_balance"],
+            ),
+            (
+                "OutstandingSaleResponse",
+                &["charged", "cancelled", "allocated", "outstanding"],
+            ),
+            ("ReceiptLogResponse", &["amount", "allocated_total"]),
+            ("ReceiptLogAllocationResponse", &["amount"]),
+            ("AdjustmentLogResponse", &["amount"]),
+            (
+                "AgingBucketsResponse",
+                &["days_0_30", "days_31_60", "days_61_90", "days_90_plus"],
+            ),
+            (
+                "ReceivableCustomerResponse",
+                &[
+                    "balance",
+                    "unapplied_credit",
+                    "outstanding_total",
+                    "adjustments",
+                ],
+            ),
+            (
+                "ReceivablesResponse",
+                &[
+                    "total_balance",
+                    "total_unapplied_credit",
+                    "total_outstanding",
+                    "total_adjustments",
+                ],
+            ),
         ];
 
         let doc = json();

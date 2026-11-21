@@ -4,6 +4,28 @@
  */
 
 export interface paths {
+    "/api/v1/accounts/receivables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Accounts receivable report across every customer with an open position.
+         * @description Lists every customer whose `balance != 0` or `unapplied_credit != 0`,
+         *     ordered by highest balance first, with open-sale aging buckets computed
+         *     from each sale's completion date (`0-30`, `31-60`, `61-90`, `90+`).
+         */
+        get: operations["list_receivables_doc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -130,6 +152,28 @@ export interface paths {
         patch: operations["update_customer_doc"];
         trace?: never;
     };
+    "/api/v1/customers/{id}/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Customer account statement.
+         * @description Returns every ledger entry oldest first with its running balance, the
+         *     customer's current balance and unapplied credit (`U`), and every sale that
+         *     still owes money — all read from one consistent snapshot.
+         */
+        get: operations["get_account_statement_doc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/customers/{id}/adjustments": {
         parameters: {
             query?: never;
@@ -137,7 +181,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Manual debt adjustment write log for one customer, newest first. */
+        get: operations["list_adjustments_doc"];
         put?: never;
         /**
          * Record a manual debt adjustment on a customer's account.
@@ -205,7 +250,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Collection write log for one customer, newest first. */
+        get: operations["list_receipts_doc"];
         put?: never;
         /**
          * Collect money against a customer's account.
@@ -647,6 +693,36 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description One ledger line in a customer's account statement, with the balance right
+         *     after it.
+         */
+        AccountStatementEntryResponse: {
+            /**
+             * @description Signed effect on the balance: positive grows debt, negative shrinks it.
+             * @example 150.00
+             */
+            amount: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            created_by: string;
+            /** Format: uuid */
+            credit_note_id?: string | null;
+            /** Format: uuid */
+            id: string;
+            kind: components["schemas"]["CustomerAccountEntryKind"];
+            note?: string | null;
+            /**
+             * @description Customer's running balance immediately after this entry.
+             * @example 150.00
+             */
+            running_balance: string;
+            /** Format: uuid */
+            sale_id?: string | null;
+            /** Format: uuid */
+            wallet_movement_id?: string | null;
+        };
         AddItemRequest: {
             /** Format: uuid */
             product_id: string;
@@ -658,6 +734,23 @@ export interface components {
          * @enum {string}
          */
         AdjustmentDirection: "in" | "out";
+        /** @description One manual adjustment returned by `GET /customers/{id}/adjustments`. */
+        AdjustmentLogResponse: {
+            /** Format: uuid */
+            adjustment_id: string;
+            /**
+             * @description Signed effect on the balance: positive for `adjustment_in`, negative
+             *     for `adjustment_out`.
+             * @example 250.00
+             */
+            amount: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            created_by: string;
+            kind: components["schemas"]["CustomerAccountEntryKind"];
+            note: string;
+        };
         AdjustmentResponse: {
             /**
              * Format: uuid
@@ -672,6 +765,20 @@ export interface components {
             kind: components["schemas"]["CustomerAccountEntryKind"];
             /** @example 0.00 */
             unapplied_credit: string;
+        };
+        /**
+         * @description Open sale debt split into aging buckets from each sale's `completed_at`
+         *     date (`0-30`, `31-60`, `61-90`, `90+`). No due date in this delivery.
+         */
+        AgingBucketsResponse: {
+            /** @example 100.00 */
+            days_0_30: string;
+            /** @example 50.00 */
+            days_31_60: string;
+            /** @example 0.00 */
+            days_61_90: string;
+            /** @example 25.00 */
+            days_90_plus: string;
         };
         ChangePasswordRequest: {
             current_password: string;
@@ -874,6 +981,33 @@ export interface components {
          * @enum {string}
          */
         CustomerAccountEntryKind: "sale_charge" | "receipt" | "credit_note" | "credit_refund" | "adjustment_in" | "adjustment_out";
+        /**
+         * @description Complete account statement for one customer: entries oldest first with a
+         *     running balance, current position, and every sale with debt.
+         */
+        CustomerAccountResponse: {
+            /**
+             * @description Current signed balance. Positive: the customer owes. Negative: credit.
+             * @example 100.00
+             */
+            balance: string;
+            /** Format: uuid */
+            customer_id: string;
+            /** @description Ledger entries oldest first, each carrying the running balance after it. */
+            entries: components["schemas"]["AccountStatementEntryResponse"][];
+            /** @description Sales with `outstanding > 0`, oldest first. */
+            outstanding_sales: components["schemas"]["OutstandingSaleResponse"][];
+            /**
+             * @description Sum of what every open sale still owes.
+             * @example 100.00
+             */
+            outstanding_total: string;
+            /**
+             * @description Collected money not yet allocated to a sale or refunded (`U`).
+             * @example 0.00
+             */
+            unapplied_credit: string;
+        };
         CustomerIdResponse: {
             /** Format: uuid */
             id: string;
@@ -898,6 +1032,18 @@ export interface components {
             total: number;
         };
         CustomerResponse: {
+            /**
+             * @description Collected money not yet allocated to a sale or refunded (`U`).
+             * @example 0.00
+             */
+            available_credit: string;
+            /**
+             * @description Current account balance derived from the customer's debt ledger.
+             *     Positive means the customer owes money; negative means credit in their
+             *     favour.
+             * @example 120.00
+             */
+            balance: string;
             /** Format: date-time */
             created_at: string;
             /**
@@ -971,6 +1117,21 @@ export interface components {
              */
             signed_quantity: string;
             unit_cost?: string | null;
+        };
+        /** @description One sale that still owes money on the customer's account. */
+        OutstandingSaleResponse: {
+            /** @example 80.00 */
+            allocated: string;
+            /** @example 20.00 */
+            cancelled: string;
+            /** @example 200.00 */
+            charged: string;
+            /** Format: date-time */
+            completed_at: string;
+            /** @example 100.00 */
+            outstanding: string;
+            /** Format: uuid */
+            sale_id: string;
         };
         PaymentMethodResponse: {
             /** Format: date-time */
@@ -1077,6 +1238,42 @@ export interface components {
             /** Format: uuid */
             sale_id: string;
         };
+        /** @description One allocation inside the receipt write log. */
+        ReceiptLogAllocationResponse: {
+            /** @example 50.00 */
+            amount: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            sale_id: string;
+        };
+        /** @description One collection entry returned by `GET /customers/{id}/receipts`. */
+        ReceiptLogResponse: {
+            /**
+             * @description Sum of allocations pointing at this receipt.
+             * @example 100.00
+             */
+            allocated_total: string;
+            allocations: components["schemas"]["ReceiptLogAllocationResponse"][];
+            /**
+             * @description Positive amount collected.
+             * @example 150.00
+             */
+            amount: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            created_by: string;
+            note?: string | null;
+            /** Format: uuid */
+            payment_method_id?: string | null;
+            /** Format: uuid */
+            receipt_id: string;
+            /** Format: uuid */
+            wallet_id: string;
+            /** Format: uuid */
+            wallet_movement_id: string;
+        };
         ReceiptResponse: {
             allocations: components["schemas"]["ReceiptAllocationResponse"][];
             /**
@@ -1101,6 +1298,42 @@ export interface components {
              * @description The `account_payment` movement that carried the money into the wallet.
              */
             wallet_movement_id: string;
+        };
+        /**
+         * @description One customer with an open account position (`balance != 0` or
+         *     `unapplied_credit != 0`).
+         */
+        ReceivableCustomerResponse: {
+            /** @example 0.00 */
+            adjustments: string;
+            aging: components["schemas"]["AgingBucketsResponse"];
+            /** @example 175.00 */
+            balance: string;
+            /** Format: uuid */
+            customer_id: string;
+            customer_name: string;
+            is_active: boolean;
+            /** @example 175.00 */
+            outstanding_total: string;
+            tax_id?: string | null;
+            /** @example 0.00 */
+            unapplied_credit: string;
+        };
+        /**
+         * @description Portfolio-wide receivables report across every customer with an open
+         *     account position.
+         */
+        ReceivablesResponse: {
+            aging: components["schemas"]["AgingBucketsResponse"];
+            items: components["schemas"]["ReceivableCustomerResponse"][];
+            /** @example 0.00 */
+            total_adjustments: string;
+            /** @example 175.00 */
+            total_balance: string;
+            /** @example 175.00 */
+            total_outstanding: string;
+            /** @example 0.00 */
+            total_unapplied_credit: string;
         };
         /** @description A manual adjustment against a customer's debt ledger. Touches no wallet. */
         RecordAdjustmentRequest: {
@@ -1329,6 +1562,35 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_receivables_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Open customer positions and aging buckets */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceivablesResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     login_doc: {
         parameters: {
             query?: never;
@@ -1660,6 +1922,90 @@ export interface operations {
             };
         };
     };
+    get_account_statement_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Customer ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account statement */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomerAccountResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unknown customer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_adjustments_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Customer ID */
+                id: string;
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Manual adjustments recorded for this customer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdjustmentLogResponse"][];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unknown customer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     record_adjustment_doc: {
         parameters: {
             query?: never;
@@ -1834,6 +2180,49 @@ export interface operations {
             };
             /** @description Customer carries an open balance or unapplied credit, or the account is busy */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_receipts_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Customer ID */
+                id: string;
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Receipts recorded for this customer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptLogResponse"][];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unknown customer */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

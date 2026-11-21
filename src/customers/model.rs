@@ -25,6 +25,14 @@ pub struct Customer {
     /// no limit, `0` means cash only; the balance itself lives in the account
     /// ledger and is never stored here.
     pub credit_limit: Option<Decimal>,
+    /// Derived at read time from `customer_account_entries`, never stored on
+    /// `customers`. Positive: the customer owes; negative: credit in their
+    /// favour.
+    pub balance: Decimal,
+    /// Derived at read time from `customer_account_entries` and
+    /// `customer_account_allocations`, never stored on `customers`. Money
+    /// collected that no sale has consumed and no refund has returned (`U`).
+    pub available_credit: Decimal,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

@@ -11,7 +11,10 @@ use rust_decimal::Decimal;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
-use crate::customer_accounts::model::CustomerAccountEntryKind;
+use crate::customer_accounts::model::{
+    AccountStatement, AccountStatementEntry, AdjustmentLogItem, AgingBuckets,
+    CustomerAccountEntryKind, ReceiptLogItem, ReceivablesSummary,
+};
 use crate::customer_accounts::repository::{self, RepoError};
 use crate::payments::model::WalletMovementKind;
 use crate::payments::repository as wallets;
@@ -440,5 +443,123 @@ pub async fn adjust(
         kind: input.kind,
         balance: position.balance,
         unapplied_credit: position.unapplied_credit,
+    })
+}
+
+// --- Read use cases (S13) -----------------------------------------------
+
+/// Open a read-only repeatable-read transaction so multi-query read surfaces
+/// observe one consistent ledger snapshot without blocking concurrent writers.
+async fn begin_read_snapshot(
+    pool: &PgPool,
+) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, ReceiptsError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query!("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
+/// Complete statement for one customer: ledger entries oldest first with a
+/// running balance, current position, and every sale with open debt.
+pub async fn account_statement(
+    pool: &PgPool,
+    customer_id: Uuid,
+) -> Result<AccountStatement, ReceiptsError> {
+    let mut tx = begin_read_snapshot(pool).await?;
+
+    if !repository::customer_exists_in(&mut tx, customer_id).await? {
+        return Err(ReceiptsError::CustomerNotFound);
+    }
+
+    let position = repository::account_position_in(&mut tx, customer_id).await?;
+    let raw_entries = repository::list_entries_in(&mut tx, customer_id).await?;
+    let outstanding_sales = repository::outstanding_by_sale_in(&mut tx, customer_id).await?;
+    tx.commit().await?;
+
+    let mut running = Decimal::ZERO;
+    let entries = raw_entries
+        .into_iter()
+        .map(|entry| {
+            running += entry.amount;
+            AccountStatementEntry {
+                entry,
+                running_balance: running,
+            }
+        })
+        .collect();
+
+    Ok(AccountStatement {
+        customer_id,
+        position,
+        entries,
+        outstanding_sales,
+    })
+}
+
+/// Collection write log (`POST /customers/{id}/receipts`), newest first.
+pub async fn list_receipts(
+    pool: &PgPool,
+    customer_id: Uuid,
+    limit: i64,
+) -> Result<Vec<ReceiptLogItem>, ReceiptsError> {
+    let limit = limit.clamp(1, 200);
+    let mut tx = begin_read_snapshot(pool).await?;
+
+    if !repository::customer_exists_in(&mut tx, customer_id).await? {
+        return Err(ReceiptsError::CustomerNotFound);
+    }
+
+    let receipts = repository::list_receipts_in(&mut tx, customer_id, limit).await?;
+    tx.commit().await?;
+    Ok(receipts)
+}
+
+/// Manual adjustment write log (`POST /customers/{id}/adjustments`), newest
+/// first.
+pub async fn list_adjustments(
+    pool: &PgPool,
+    customer_id: Uuid,
+    limit: i64,
+) -> Result<Vec<AdjustmentLogItem>, ReceiptsError> {
+    let limit = limit.clamp(1, 200);
+    let mut tx = begin_read_snapshot(pool).await?;
+
+    if !repository::customer_exists_in(&mut tx, customer_id).await? {
+        return Err(ReceiptsError::CustomerNotFound);
+    }
+
+    let adjustments = repository::list_adjustments_in(&mut tx, customer_id, limit).await?;
+    tx.commit().await?;
+    Ok(adjustments)
+}
+
+/// Portfolio receivables report: customers with `balance != 0` or
+/// `unapplied_credit != 0`, aging buckets from open sales, and totals summed
+/// across all listed customers.
+pub async fn receivables(pool: &PgPool) -> Result<ReceivablesSummary, ReceiptsError> {
+    let items = repository::list_receivables(pool).await?;
+
+    let mut total_balance = Decimal::ZERO;
+    let mut total_unapplied_credit = Decimal::ZERO;
+    let mut total_outstanding = Decimal::ZERO;
+    let mut total_adjustments = Decimal::ZERO;
+    let mut aging = AgingBuckets::default();
+
+    for item in &items {
+        total_balance += item.balance;
+        total_unapplied_credit += item.unapplied_credit;
+        total_outstanding += item.outstanding_total;
+        total_adjustments += item.adjustments;
+        aging.add(&item.aging);
+    }
+
+    Ok(ReceivablesSummary {
+        total_balance,
+        total_unapplied_credit,
+        total_outstanding,
+        total_adjustments,
+        aging,
+        items,
     })
 }
