@@ -2239,8 +2239,10 @@ async fn authorizing_nothing_is_allowed_even_over_the_limit(pool: PgPool) {
 /// The refusal sentence is part of what a reviewer and an operator read. It
 /// names the exposure the charge would produce, never the charge itself: the
 /// value it carries includes the balance the customer already had.
-#[sqlx::test]
-async fn the_refusal_sentence_names_the_exposure_not_the_charge(_pool: PgPool) {
+/// Plain `#[test]`: formatting a sentence needs no database, and paying for one
+/// would hide that this assertion is about wording alone.
+#[test]
+fn the_refusal_sentence_names_the_exposure_not_the_charge() {
     let sentence = repository::RepoError::CreditLimitExceeded {
         requested: dec!(121.00),
         available: Decimal::ZERO,
@@ -2273,12 +2275,17 @@ async fn a_negative_amount_is_not_authorized_as_nothing(pool: PgPool) {
 
     let mut tx = pool.begin().await.expect("transaction");
     let refused = repository::authorize_credit(&mut tx, customer, dec!(-1.00)).await;
-    assert!(
-        matches!(
-            refused,
-            Err(repository::RepoError::CreditLimitExceeded { .. })
-        ),
-        "a negative amount slipped through the ceiling as if it were zero"
-    );
+    match refused {
+        Err(repository::RepoError::CreditLimitExceeded {
+            requested,
+            available,
+        }) => {
+            // 120 already owed, minus the 1 the negative amount subtracts.
+            assert_eq!(requested, dec!(119.00));
+            // A 100 limit against 120 of exposure leaves nothing available.
+            assert_eq!(available, Decimal::ZERO);
+        }
+        other => panic!("a negative amount slipped through the ceiling: {other:?}"),
+    }
     tx.rollback().await.expect("rollback");
 }
