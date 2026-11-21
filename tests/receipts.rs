@@ -686,8 +686,14 @@ async fn a_non_positive_or_sub_cent_amount_is_rejected(pool: PgPool) {
     let (_owner, owner_password) = seed_owner(&pool).await;
     let cookie = login(&router, "owner@pyme.com", &owner_password).await;
 
-    for amount in ["0.00", "-5.00", "10.005"] {
-        let (status, _) = send(
+    // The precedence is part of what the boundary says: sign first, then
+    // precision, then magnitude. Each sentence is pinned, not just the status.
+    for (amount, detail) in [
+        ("0.00", "the amount must be positive"),
+        ("-5.00", "the amount must be positive"),
+        ("10.005", "the amount 10.005 carries more than two decimals"),
+    ] {
+        let (status, problem) = send(
             &router,
             "POST",
             &format!("/api/v1/customers/{customer}/receipts"),
@@ -704,7 +710,91 @@ async fn a_non_positive_or_sub_cent_amount_is_rejected(pool: PgPool) {
             StatusCode::UNPROCESSABLE_ENTITY,
             "{amount} was accepted as a collection"
         );
+        assert_eq!(problem["detail"], detail, "wrong sentence for {amount}");
     }
 
     assert_eq!(account_payment_count(&pool, customer).await, 0);
+}
+
+/// Only blank keys are discarded. A non-blank key keeps its exact bytes, so a
+/// padded key is its own identity: trimming it would make two distinct
+/// collections collapse onto one receipt, and a receipt recorded under a padded
+/// key before this rule existed would stop matching its own retry.
+#[sqlx::test]
+async fn a_padded_key_keeps_its_own_identity(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    charge_sale(&pool, customer, sale, dec!(100.00)).await;
+    let (method, _wallet) = seed_method(&pool, "Cash").await;
+
+    let router = app(pool.clone());
+    let (_owner, owner_password) = seed_owner(&pool).await;
+    let cookie = login(&router, "owner@pyme.com", &owner_password).await;
+
+    let collect = |key: &'static str| {
+        let body = json!({
+            "idempotency_key": key,
+            "payment_method_id": method,
+            "amount": "10.00",
+            "allocations": [],
+        });
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move {
+            send(
+                &router,
+                "POST",
+                &format!("/api/v1/customers/{customer}/receipts"),
+                Some(&cookie),
+                Some(body),
+            )
+            .await
+        }
+    };
+
+    let (first, _) = collect("  padded  ").await;
+    assert_eq!(first, StatusCode::CREATED);
+
+    // The same bytes is a replay; the trimmed form is a different key and a
+    // different collection.
+    let (same, _) = collect("  padded  ").await;
+    assert_eq!(same, StatusCode::OK, "a padded key stopped matching itself");
+
+    let (trimmed, _) = collect("padded").await;
+    assert_eq!(
+        trimmed,
+        StatusCode::CREATED,
+        "a key that differs only in padding was collapsed onto the first"
+    );
+
+    assert_eq!(account_payment_count(&pool, customer).await, 2);
+}
+
+/// The cap measures the bytes the client sent, so a key of exactly the limit
+/// is accepted. Nothing pinned the accept side before.
+#[sqlx::test]
+async fn a_key_of_exactly_the_cap_is_accepted(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let (method, _wallet) = seed_method(&pool, "Cash").await;
+
+    let router = app(pool.clone());
+    let (_owner, owner_password) = seed_owner(&pool).await;
+    let cookie = login(&router, "owner@pyme.com", &owner_password).await;
+
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/receipts"),
+        Some(&cookie),
+        Some(json!({
+            "idempotency_key": "k".repeat(100),
+            "payment_method_id": method,
+            "amount": "10.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(account_payment_count(&pool, customer).await, 1);
 }

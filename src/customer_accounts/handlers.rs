@@ -110,13 +110,14 @@ async fn collect_receipt(
 
     // A blank key is "no key", never a key of spaces: a key a client cannot
     // tell apart from another would make every later blank-key collection
-    // answer with the first receipt — money collected and nothing booked. The
-    // bound mirrors the `maxLength` the contract publishes; utoipa attributes
-    // are documentation only, so the boundary is where it becomes true.
-    let idempotency_key = body
-        .idempotency_key
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty());
+    // answer with the first receipt — money collected and nothing booked.
+    //
+    // Only *blank* keys are discarded. A non-blank key keeps its exact bytes:
+    // trimming it would rewrite the key namespace, so a receipt recorded before
+    // this change under a padded key would stop matching its own retry (booking
+    // a duplicate) and two padded variants would collapse onto one receipt. The
+    // cap below measures what the client sent, never what we would have sent.
+    let idempotency_key = body.idempotency_key.filter(|key| !key.trim().is_empty());
     if idempotency_key
         .as_ref()
         .is_some_and(|key| key.chars().count() > MAX_IDEMPOTENCY_KEY_LEN)
