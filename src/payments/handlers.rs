@@ -134,9 +134,10 @@ pub struct UpdatePaymentMethodRequest {
 
 #[derive(Deserialize, ToSchema)]
 pub struct ManualMovementRequest {
-    /// `expense`, `adjustment_in` or `adjustment_out`. `sale_payment` and
-    /// `account_payment` are rejected: that money is recorded by charging a
-    /// sale or collecting against a customer's account, not by hand.
+    /// `expense`, `adjustment_in` or `adjustment_out`. `sale_payment`,
+    /// `sale_refund`, `account_payment` and `account_payment_refund` are
+    /// rejected: that money is recorded by charging or returning a sale, or
+    /// by collecting or refunding a customer's account, not by hand.
     pub kind: WalletMovementKind,
     #[schema(value_type = String, example = "1200.00")]
     pub amount: Decimal,
@@ -421,9 +422,10 @@ fn list_wallet_movements_doc() {}
 
 /// Record money leaving or entering a wallet by hand.
 ///
-/// `sale_payment` and `account_payment` are rejected with 422: money that
-/// belongs to a sale or a customer's account enters the ledger only through
-/// the flow that also writes its counterpart, never by hand.
+/// `sale_payment`, `sale_refund`, `account_payment` and
+/// `account_payment_refund` are rejected with 422: money that belongs to a
+/// sale or a customer's account enters or leaves the ledger only through the
+/// flow that also writes its counterpart, never by hand.
 #[utoipa::path(
     post,
     path = "/api/v1/wallets/{id}/movements",

@@ -220,6 +220,20 @@ pub async fn update_customer(
     id: Uuid,
     update: CustomerUpdate<'_>,
 ) -> Result<(), RepoError> {
+    update_customer_in(pool, id, update).await
+}
+
+/// [`update_customer`] over an open connection or transaction, used when a
+/// deactivation through `PATCH` must hold the customer account lock alongside
+/// the balance check.
+pub async fn update_customer_in<'e, E>(
+    executor: E,
+    id: Uuid,
+    update: CustomerUpdate<'_>,
+) -> Result<(), RepoError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     let result = sqlx::query!(
         r#"
         UPDATE customers
@@ -242,7 +256,7 @@ pub async fn update_customer(
         update.credit_limit.is_some(),
         update.credit_limit.flatten(),
     )
-    .execute(pool)
+    .execute(executor)
     .await
     .map_err(|err| {
         if is_tax_id_violation(&err) {
@@ -263,8 +277,17 @@ pub async fn update_customer(
 /// Returns 404 if nonexistent, and succeeds without touching anything if it is
 /// already inactive.
 pub async fn deactivate_customer(pool: &PgPool, id: Uuid) -> Result<(), RepoError> {
+    deactivate_customer_in(pool, id).await
+}
+
+/// [`deactivate_customer`] inside an open transaction so the service can hold
+/// the customer advisory lock while checking for an open account position.
+pub async fn deactivate_customer_in<'e, E>(executor: E, id: Uuid) -> Result<(), RepoError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     let result = sqlx::query!("UPDATE customers SET is_active = false WHERE id = $1", id)
-        .execute(pool)
+        .execute(executor)
         .await?;
 
     if result.rows_affected() == 0 {

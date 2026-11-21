@@ -188,9 +188,10 @@ pub async fn list_movements(
 ///
 /// A `sale_payment` is rejected here on purpose. That money enters the ledger
 /// only by charging a sale, which is the only path that also deducts stock and
-/// freezes a total. An `account_payment` is rejected for the same reason: it
-/// is written only by the collection endpoint, which also records the debt it
-/// pays and never lets the wallet and the ledger disagree.
+/// freezes a total. `account_payment` and `account_payment_refund` are rejected
+/// for the same reason: each is written only by the account endpoint that also
+/// records its ledger counterpart, never letting the wallet and the debt ledger
+/// disagree.
 pub async fn record_manual_movement(
     pool: &sqlx::PgPool,
     wallet_id: Uuid,
@@ -240,8 +241,9 @@ pub async fn record_manual_movement(
             payment_method_id: None,
             credit_note_id: None,
             // Manual movements never belong to a customer's account: the
-            // database constraint refuses a `customer_id` on any kind but
-            // `account_payment`, which this route must keep rejecting.
+            // database constraint refuses a `customer_id` on any kind except
+            // `account_payment` and `account_payment_refund`, which this route
+            // must keep rejecting.
             customer_id: None,
             note: note.as_deref(),
             created_by: Some(input.actor_id),

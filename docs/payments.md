@@ -64,30 +64,33 @@ matching the drawer.
 | `sale_payment` | inflow | charging a sale, never by hand |
 | `sale_refund` | outflow | issuing a credit note, never by hand |
 | `account_payment` | inflow | collecting against a customer's account (`POST /customers/{id}/receipts`), never by hand |
+| `account_payment_refund` | outflow | handing back a customer's credit balance (`POST /customers/{id}/credit-refunds`), never by hand |
 | `expense` | outflow | the operator, from the wallet |
 | `adjustment_in` | inflow | the operator, correcting a mistake |
 | `adjustment_out` | outflow | the operator, correcting a mistake |
 
 `-500` meaning "money entered" is a sign bug waiting to happen.
 
-## An account payment carries its customer
+## Account movements carry their customer
 
 An `account_payment` is the wallet side of a collection: money a customer
 handed over against what their account owes (`POST /customers/{id}/receipts`,
-the customers module's route — see `docs/customers.md`). Its movement carries
-the `customer_id` it was collected for and the `payment_method_id` used, and
-never a `sale_id` or a `credit_note_id`: which sales the money pays is the
-receipt's allocations, not the movement's link. The same transaction writes
-the movement and the ledger's `receipt` entry, so the wallet never takes money
-the ledger refused to book.
+see `docs/customers.md`). Its counterpart `account_payment_refund` is the
+outflow written when collected credit is handed back
+(`POST /customers/{id}/credit-refunds`). Both movements carry the
+`customer_id` and `payment_method_id` used, and never a `sale_id` or a
+`credit_note_id`. The same transaction writes the movement and its ledger
+entry (`receipt` or `credit_refund`), so the wallet and the debt ledger never
+disagree.
 
-The database keeps the attribution honest: only `account_payment` may carry a
-customer (`wallet_movements_customer_link_only_for_account_kinds`), and an
-`account_payment` without its customer or its method is refused
-(`wallet_movements_account_payment_is_complete`). And it is not a manual kind:
-`POST /wallets/{id}/movements` refuses it with `422`, because an account
-payment written by hand would put money in a wallet with no receipt saying
-whose debt it paid.
+The database keeps the attribution honest: only `account_payment` and
+`account_payment_refund` may carry a customer
+(`wallet_movements_customer_link_only_for_account_kinds`), and either kind
+without its customer or its method is refused
+(`wallet_movements_account_payment_is_complete`). Neither is a manual kind:
+`POST /wallets/{id}/movements` refuses both with `422`, because an account
+movement written by hand would move wallet money with no customer-ledger
+counterpart.
 
 ## The ledger is append-only
 

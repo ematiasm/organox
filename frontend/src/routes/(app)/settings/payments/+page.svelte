@@ -38,6 +38,7 @@
 		sale_payment: 'Sale payment',
 		sale_refund: 'Sale refund',
 		account_payment: 'Account payment',
+		account_payment_refund: 'Credit refund',
 		expense: 'Expense',
 		adjustment_in: 'Adjustment in',
 		adjustment_out: 'Adjustment out'

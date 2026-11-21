@@ -130,6 +130,53 @@ export interface paths {
         patch: operations["update_customer_doc"];
         trace?: never;
     };
+    "/api/v1/customers/{id}/adjustments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a manual debt adjustment on a customer's account.
+         * @description Writes `adjustment_in` or `adjustment_out` without touching any wallet.
+         *     Both directions require the balance to stay `>= 0`: an adjustment may
+         *     load an opening balance or correct a debt, never create or consume
+         *     available credit.
+         */
+        post: operations["record_adjustment_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/customers/{id}/credit-refunds": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hand collected credit back to a customer through a wallet movement.
+         * @description One request, one transaction: an `account_payment_refund` outflow leaves
+         *     the method's wallet and a `credit_refund` entry moves the customer's
+         *     balance toward zero. Refused unless `amount <= unapplied_credit` and
+         *     `balance + amount <= 0`. An optional idempotency key returns the first
+         *     refund with `200` instead of handing money back twice.
+         */
+        post: operations["refund_credit_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/customers/{id}/deactivate": {
         parameters: {
             query?: never;
@@ -139,7 +186,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Soft deletion. Idempotent. Never deletes: history points at the customer. */
+        /**
+         * Soft deletion. Idempotent. Never deletes: history points at the customer.
+         *     Refused with `409` while the customer carries a non-zero balance or
+         *     unapplied credit.
+         */
         post: operations["deactivate_customer_doc"];
         delete?: never;
         options?: never;
@@ -580,9 +631,10 @@ export interface paths {
         put?: never;
         /**
          * Record money leaving or entering a wallet by hand.
-         * @description `sale_payment` and `account_payment` are rejected with 422: money that
-         *     belongs to a sale or a customer's account enters the ledger only through
-         *     the flow that also writes its counterpart, never by hand.
+         * @description `sale_payment`, `sale_refund`, `account_payment` and
+         *     `account_payment_refund` are rejected with 422: money that belongs to a
+         *     sale or a customer's account enters or leaves the ledger only through the
+         *     flow that also writes its counterpart, never by hand.
          */
         post: operations["record_manual_movement_doc"];
         delete?: never;
@@ -600,6 +652,26 @@ export interface components {
             product_id: string;
             /** @example 2 */
             quantity: string;
+        };
+        /**
+         * @description Direction of a manual debt adjustment.
+         * @enum {string}
+         */
+        AdjustmentDirection: "in" | "out";
+        AdjustmentResponse: {
+            /**
+             * Format: uuid
+             * @description The ledger entry that recorded the adjustment.
+             */
+            adjustment_id: string;
+            /**
+             * @description The customer's balance after the adjustment. Always `>= 0.00`.
+             * @example 250.00
+             */
+            balance: string;
+            kind: components["schemas"]["CustomerAccountEntryKind"];
+            /** @example 0.00 */
+            unapplied_credit: string;
         };
         ChangePasswordRequest: {
             current_password: string;
@@ -758,6 +830,29 @@ export interface components {
             /** @description Calculated by the server from the returned quantities. */
             total: string;
         };
+        CreditRefundResponse: {
+            /**
+             * @description The customer's balance after the refund. Never positive after a refund.
+             * @example -20.00
+             */
+            balance: string;
+            /**
+             * Format: uuid
+             * @description The ledger entry that recorded the refund.
+             */
+            refund_id: string;
+            /**
+             * @description Usable credit remaining after the refund.
+             * @example 20.00
+             */
+            unapplied_credit: string;
+            /**
+             * Format: uuid
+             * @description The `account_payment_refund` movement that carried the money out of the
+             *     wallet.
+             */
+            wallet_movement_id: string;
+        };
         /**
          * @description A charged line, with the quantity already credited and what can still come
          *     back.
@@ -771,6 +866,14 @@ export interface components {
             returnable_quantity: string;
             unit_price: string;
         };
+        /**
+         * @description Why the customer's account moved.
+         *
+         *     An enum, like `WalletMovementKind`, for the same reason: a new kind always
+         *     arrives with a writer, a validation and a screen — that is, with code.
+         * @enum {string}
+         */
+        CustomerAccountEntryKind: "sale_charge" | "receipt" | "credit_note" | "credit_refund" | "adjustment_in" | "adjustment_out";
         CustomerIdResponse: {
             /** Format: uuid */
             id: string;
@@ -839,9 +942,10 @@ export interface components {
             /** @example 1200.00 */
             amount: string;
             /**
-             * @description `expense`, `adjustment_in` or `adjustment_out`. `sale_payment` and
-             *     `account_payment` are rejected: that money is recorded by charging a
-             *     sale or collecting against a customer's account, not by hand.
+             * @description `expense`, `adjustment_in` or `adjustment_out`. `sale_payment`,
+             *     `sale_refund`, `account_payment` and `account_payment_refund` are
+             *     rejected: that money is recorded by charging or returning a sale, or
+             *     by collecting or refunding a customer's account, not by hand.
              */
             kind: components["schemas"]["WalletMovementKind"];
             note?: string | null;
@@ -998,6 +1102,14 @@ export interface components {
              */
             wallet_movement_id: string;
         };
+        /** @description A manual adjustment against a customer's debt ledger. Touches no wallet. */
+        RecordAdjustmentRequest: {
+            /** @example 250.00 */
+            amount: string;
+            direction: components["schemas"]["AdjustmentDirection"];
+            /** @description Why the balance was adjusted. Required and non-blank. */
+            note: string;
+        };
         RecordMovementRequest: {
             note?: string | null;
             /** @example 12.5 */
@@ -1005,6 +1117,20 @@ export interface components {
             reason: components["schemas"]["MovementReason"];
             /** @example 1200.00 */
             unit_cost?: string | null;
+        };
+        /** @description A credit refund: money handed back to a customer who holds usable credit. */
+        RefundCreditRequest: {
+            /** @example 50.00 */
+            amount: string;
+            /**
+             * @description Optional retry key. A repeated refund with the same key returns the
+             *     first refund with `200` instead of handing the money back twice.
+             */
+            idempotency_key?: string | null;
+            /** @description Why the money is being handed back. Required and non-blank. */
+            note: string;
+            /** Format: uuid */
+            payment_method_id: string;
         };
         ResetPasswordRequest: {
             new_password: string;
@@ -1150,7 +1276,7 @@ export interface components {
          *     always arrives with a writer, a validation and a screen — that is, with code.
          * @enum {string}
          */
-        WalletMovementKind: "sale_payment" | "sale_refund" | "account_payment" | "expense" | "adjustment_in" | "adjustment_out";
+        WalletMovementKind: "sale_payment" | "sale_refund" | "account_payment" | "account_payment_refund" | "expense" | "adjustment_in" | "adjustment_out";
         WalletMovementResponse: {
             /** @description Always positive; the kind carries the sign. */
             amount: string;
@@ -1514,7 +1640,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Document is already in use */
+            /** @description Document is already in use, account is busy, or deactivating a customer with an open balance or unapplied credit */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1524,6 +1650,141 @@ export interface operations {
                 };
             };
             /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    record_adjustment_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Customer ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordAdjustmentRequest"];
+            };
+        };
+        responses: {
+            /** @description Adjustment recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdjustmentResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unknown customer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The customer account is busy, retry */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Blank note, invalid amount, or adjustment crossing zero */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    refund_credit_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Customer ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefundCreditRequest"];
+            };
+        };
+        responses: {
+            /** @description Existing credit refund returned for a repeated idempotency key; nothing was written */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreditRefundResponse"];
+                };
+            };
+            /** @description Credit refunded: the wallet movement and ledger entry are written together */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreditRefundResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unknown customer */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Busy customer account, or idempotency key already used by another entry kind */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unknown or inactive payment method, blank note, invalid amount, or amount exceeding available credit */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -1564,6 +1825,15 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Customer carries an open balance or unapplied credit, or the account is busy */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

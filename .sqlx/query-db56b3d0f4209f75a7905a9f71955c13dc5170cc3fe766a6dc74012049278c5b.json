@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT w.id,\n               w.name,\n               w.is_active,\n               w.created_at,\n               w.updated_at,\n               COALESCE(SUM(\n                   CASE m.kind\n                       WHEN 'sale_payment' THEN m.amount\n                       WHEN 'sale_refund'  THEN -m.amount\n                       WHEN 'account_payment' THEN m.amount\n                       WHEN 'adjustment_in' THEN m.amount\n                       WHEN 'expense' THEN -m.amount\n                       WHEN 'adjustment_out' THEN -m.amount\n                       ELSE 0\n                   END\n               ), 0)::numeric(14, 2) AS \"balance!: Decimal\"\n        FROM wallets w\n        LEFT JOIN wallet_movements m ON m.wallet_id = w.id\n        WHERE w.id = $1\n        GROUP BY w.id, w.name, w.is_active, w.created_at, w.updated_at\n        ",
+  "query": "\n        SELECT w.id,\n               w.name,\n               w.is_active,\n               w.created_at,\n               w.updated_at,\n               COALESCE(SUM(\n                   CASE m.kind\n                       WHEN 'sale_payment' THEN m.amount\n                       WHEN 'sale_refund'  THEN -m.amount\n                       WHEN 'account_payment' THEN m.amount\n                       WHEN 'account_payment_refund' THEN -m.amount\n                       WHEN 'adjustment_in' THEN m.amount\n                       WHEN 'expense' THEN -m.amount\n                       WHEN 'adjustment_out' THEN -m.amount\n                       ELSE 0\n                   END\n               ), 0)::numeric(14, 2) AS \"balance!: Decimal\"\n        FROM wallets w\n        LEFT JOIN wallet_movements m ON m.wallet_id = w.id\n        WHERE w.id = $1\n        GROUP BY w.id, w.name, w.is_active, w.created_at, w.updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -79,5 +79,5 @@
       null
     ]
   },
-  "hash": "9cf4d61657ba391a2b5b8b6a706290fb1ae0d8ebf4c66c1f0934412315848e59"
+  "hash": "db56b3d0f4209f75a7905a9f71955c13dc5170cc3fe766a6dc74012049278c5b"
 }

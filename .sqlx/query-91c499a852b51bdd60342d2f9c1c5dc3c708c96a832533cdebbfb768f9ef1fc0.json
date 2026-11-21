@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id FROM customer_account_entries\n            WHERE customer_id = $1 AND idempotency_key = $2\n            ",
+  "query": "\n            SELECT id FROM customer_account_entries\n            WHERE customer_id = $1 AND idempotency_key = $2 AND kind = 'receipt'\n            ",
   "describe": {
     "columns": [
       {
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "b71677ccca314a905e4a8b1c5fa2faec933194913e3dd588170ad279afcbd2d7"
+  "hash": "91c499a852b51bdd60342d2f9c1c5dc3c708c96a832533cdebbfb768f9ef1fc0"
 }

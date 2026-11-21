@@ -552,11 +552,12 @@ async fn an_amount_with_more_than_two_decimals_is_rejected(pool: PgPool) {
 /// time, which is the only way to notice that the SQL `CASE` needs it too.
 #[sqlx::test]
 async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
-    fn all_kinds() -> [WalletMovementKind; 6] {
+    fn all_kinds() -> [WalletMovementKind; 7] {
         let kinds = [
             WalletMovementKind::SalePayment,
             WalletMovementKind::SaleRefund,
             WalletMovementKind::AccountPayment,
+            WalletMovementKind::AccountPaymentRefund,
             WalletMovementKind::Expense,
             WalletMovementKind::AdjustmentIn,
             WalletMovementKind::AdjustmentOut,
@@ -566,6 +567,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 WalletMovementKind::SalePayment
                 | WalletMovementKind::SaleRefund
                 | WalletMovementKind::AccountPayment
+                | WalletMovementKind::AccountPaymentRefund
                 | WalletMovementKind::Expense
                 | WalletMovementKind::AdjustmentIn
                 | WalletMovementKind::AdjustmentOut => {}
@@ -633,7 +635,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 Some(note),
                 None,
             ),
-            WalletMovementKind::AccountPayment => (
+            WalletMovementKind::AccountPayment | WalletMovementKind::AccountPaymentRefund => (
                 ledger::create_wallet(&pool, &format!("Wallet {index}"))
                     .await
                     .unwrap(),
@@ -679,4 +681,22 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
             "{kind} must move the balance by its own sign"
         );
     }
+}
+
+#[sqlx::test]
+async fn an_account_payment_refund_cannot_be_typed_by_hand(pool: PgPool) {
+    let cookie = login(&pool).await;
+    let wallet = create_wallet(&pool, &cookie, "Cash").await;
+
+    let (status, _) = call(
+        &pool,
+        &cookie,
+        "POST",
+        &format!("/api/v1/wallets/{wallet}/movements"),
+        Some(json!({ "kind": "account_payment_refund", "amount": "25.00" })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(movement_count(&pool, wallet).await, 0);
 }
