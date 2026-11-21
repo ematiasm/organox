@@ -387,3 +387,12 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   One frontend line was unavoidable: `KIND_LABELS` is an exhaustive `Record<WalletMovementKind,
   string>`, so a new kind does not compile until it has a label — that is delivering this slice,
   not T9. `make check` green at 333 tests, receipts 8/8, svelte-check 0/0.
+- L24 — T4 reviewed: lineage `review-809980264f73e5a2`, tier **high**, **approved**, authority burned.
+  Five advisories, two of them money-shaped and both closed in `a11ccde`: a blank idempotency key was
+  accepted as a key, so the first collection recorded with one would answer every later blank-key
+  collection with that first receipt (cash taken, nothing booked, success reported twice), and the
+  100-character bound the contract publishes was documentation only. The amount's positivity and
+  precision also moved beside its ceiling — the ledger rejects both, but only after the movement
+  exists, and a boundary that publishes a 422 owns the sentence. The replay comment stopped claiming
+  a snapshot it never took. Lenses were `risk`+`resilience` only: three lenses no longer fit the
+  provider's per-lens budget at 2.4k lines.
