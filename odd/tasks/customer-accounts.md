@@ -213,7 +213,7 @@ and the new `on_account = 0` sibling.
 | T1 | S1, S2 | **done**: `0015` in one migration (type, tables, append-only triggers, sign and link CHECKs, unique charge/note/movement/idempotency indexes, deferred allocation ceiling), `src/customer_accounts/{model,repository}` with the six writers taking the customer advisory lock first, `tests/customer_accounts.rs` (35 tests: table contract, read model, every writer, two concurrent receipts) | `e230572`, `5f5f4f7`, `2cc7768` |
 | T2 | S4 | **done**: `complete` takes `on_account`; the invariant is `payments + on_account == total`; the charge is written by `customer_accounts::record_charge` after the status flip inside the same transaction; `on_account = 0` keeps the old path through a four-argument wrapper; 8 HTTP-level tests plus the renamed empty-payment test | `1dc5a6b` |
 | T3 | S5, S7 + L12 | **next**: `0017` adds `customers.credit_limit`; the customers module exposes it (NULL = unlimited, `0` = cash only, clearable through PATCH); `customer_accounts::authorize_credit` takes the customer lock, reads the row `FOR UPDATE`, checks activity and exposure (`balance + amount` against the limit, floored at zero for the message) and returns the available amount; sales calls it before writing and answers 409 naming the remaining credit. Closes `R1-on-account-credit-unbounded`, `R3-active-check-race` and `R4-on-account-active-gate-race` | feat/customer-accounts-limit |
-| T4 | S3, S5, S6 | receipts endpoint, allocations, idempotency, `account_payment` kind in every sign `CASE` | feat/customer-accounts-receipts |
+| T4 | S3, S5, S6 | **done**: `0018` adds the `account_payment` label alone, `0019` the `wallet_movements.customer_id` column and its two CHECKs; the kind joins both balance `CASE`s and the sign test; `POST /customers/{id}/receipts` answers 201/200 with the replay read under the lock; `ensure_movement_backing` now binds the movement's customer, closing `R1-receipt-backing-not-customer-bound`; 8 HTTP tests plus the ledger one | `4807009` |
 | T5 | S8 | credit application at completion | feat/customer-accounts-apply-credit |
 | T6 | S9 | debt-first note split, `allocate_refund` rewrite, `account_payment_refund` kind | feat/customer-accounts-note-split |
 | T7 | S10, S11, S12 | credit refunds, adjustments, deactivation guard | feat/customer-accounts-adjustments |
@@ -378,3 +378,12 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   matched the variant without pinning the payload the sentence reads. A test that pays for a
   database it never touches, and a wildcard match over the values an operator reads, are exactly how
   a wording regression survives.
+- L23 — T4 delivered in `4807009`: collections are real. Two migrations because the label cannot be
+  used in the transaction that adds it (`0018` label alone, `0019` column plus CHECKs), one
+  `account_payment` movement carrying the customer, and the ledger receipt written in the same
+  transaction with the customer lock taken first and the replay answered under it before any write.
+  The residual from L12 is closed: a receipt can no longer be backed by another customer's money,
+  while a customer-less manual adjustment still passes so the ledger's fixtures stay honest.
+  One frontend line was unavoidable: `KIND_LABELS` is an exhaustive `Record<WalletMovementKind,
+  string>`, so a new kind does not compile until it has a label — that is delivering this slice,
+  not T9. `make check` green at 333 tests, receipts 8/8, svelte-check 0/0.
