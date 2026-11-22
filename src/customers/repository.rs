@@ -89,28 +89,60 @@ pub async fn list_customers(
 ) -> Result<(Vec<Customer>, i64), RepoError> {
     let rows = sqlx::query!(
         r#"
+        WITH page AS (
+            SELECT
+                c.id,
+                c.name,
+                c.tax_id,
+                c.email,
+                c.phone,
+                c.is_active,
+                c.credit_limit,
+                c.created_at,
+                c.updated_at,
+                COUNT(*) OVER () AS total
+            FROM customers c
+            WHERE ($1::bool OR c.is_active)
+              -- One box at the counter: the operator types either a name or a
+              -- document fragment and must not have to say which.
+              AND (
+                    $2::text IS NULL
+                    OR c.name ILIKE $2::text ESCAPE E'\\'
+                    OR c.tax_id ILIKE $2::text ESCAPE E'\\'
+              )
+            ORDER BY c.name, c.id
+            LIMIT $3 OFFSET $4
+        )
         SELECT
-            c.id,
-            c.name,
-            c.tax_id,
-            c.email,
-            c.phone,
-            c.is_active,
-            c.credit_limit AS "credit_limit?: Decimal",
-            c.created_at,
-            c.updated_at,
-            COUNT(*) OVER () AS "total!"
-        FROM customers c
-        WHERE ($1::bool OR c.is_active)
-          -- One box at the counter: the operator types either a name or a
-          -- document fragment and must not have to say which.
-          AND (
-                $2::text IS NULL
-                OR c.name ILIKE $2::text ESCAPE E'\\'
-                OR c.tax_id ILIKE $2::text ESCAPE E'\\'
-          )
-        ORDER BY c.name, c.id
-        LIMIT $3 OFFSET $4
+            p.id,
+            p.name,
+            p.tax_id,
+            p.email,
+            p.phone,
+            p.is_active,
+            p.credit_limit AS "credit_limit?: Decimal",
+            COALESCE(e.balance, 0)::numeric(14, 2) AS "balance!: Decimal",
+            (COALESCE(e.received, 0) - COALESCE(e.refunded, 0) - COALESCE(a.allocated, 0))
+                ::numeric(14, 2) AS "available_credit!: Decimal",
+            p.created_at,
+            p.updated_at,
+            p.total AS "total!"
+        FROM page p
+        LEFT JOIN LATERAL (
+            SELECT
+                SUM(amount) AS balance,
+                SUM(CASE WHEN kind = 'receipt' THEN -amount ELSE 0 END) AS received,
+                SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END) AS refunded
+            FROM customer_account_entries
+            WHERE customer_id = p.id
+        ) e ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT SUM(al.amount) AS allocated
+            FROM customer_account_allocations al
+            JOIN customer_account_entries en ON en.id = al.entry_id
+            WHERE en.customer_id = p.id
+        ) a ON TRUE
+        ORDER BY p.name, p.id
         "#,
         include_inactive,
         pattern,
@@ -131,6 +163,8 @@ pub async fn list_customers(
             phone: row.phone,
             is_active: row.is_active,
             credit_limit: row.credit_limit,
+            balance: row.balance,
+            available_credit: row.available_credit,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -172,10 +206,35 @@ pub async fn count_customers(
 pub async fn find_customer(pool: &PgPool, id: Uuid) -> Result<Option<Customer>, RepoError> {
     let row = sqlx::query!(
         r#"
-        SELECT id, name, tax_id, email, phone, is_active,
-               credit_limit AS "credit_limit?: Decimal", created_at, updated_at
-        FROM customers
-        WHERE id = $1
+        SELECT
+            c.id,
+            c.name,
+            c.tax_id,
+            c.email,
+            c.phone,
+            c.is_active,
+            c.credit_limit AS "credit_limit?: Decimal",
+            COALESCE(e.balance, 0)::numeric(14, 2) AS "balance!: Decimal",
+            (COALESCE(e.received, 0) - COALESCE(e.refunded, 0) - COALESCE(a.allocated, 0))
+                ::numeric(14, 2) AS "available_credit!: Decimal",
+            c.created_at,
+            c.updated_at
+        FROM customers c
+        LEFT JOIN LATERAL (
+            SELECT
+                SUM(amount) AS balance,
+                SUM(CASE WHEN kind = 'receipt' THEN -amount ELSE 0 END) AS received,
+                SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END) AS refunded
+            FROM customer_account_entries
+            WHERE customer_id = c.id
+        ) e ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT SUM(al.amount) AS allocated
+            FROM customer_account_allocations al
+            JOIN customer_account_entries en ON en.id = al.entry_id
+            WHERE en.customer_id = c.id
+        ) a ON TRUE
+        WHERE c.id = $1
         "#,
         id
     )
@@ -190,6 +249,8 @@ pub async fn find_customer(pool: &PgPool, id: Uuid) -> Result<Option<Customer>, 
         phone: row.phone,
         is_active: row.is_active,
         credit_limit: row.credit_limit,
+        balance: row.balance,
+        available_credit: row.available_credit,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }))

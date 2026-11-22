@@ -1,19 +1,20 @@
 //! Customer account HTTP handlers.
 //!
 //! Authorization: the account routes require a session and nothing else, the
-//! same rule the registry and the money ledger follow — collecting a debt is
-//! operational work a cashier or a manager does at the counter, not user
-//! administration.
+//! same rule the registry and the money ledger follow — collecting a debt and
+//! reading statements or receivables are operational work a cashier or manager
+//! does at the counter, not user administration.
 //!
-//! One route so far: the collection. It is deliberately not part of the
-//! customers module: the route is served by whoever owns the rule it
-//! enforces, and the rule here is the account's, not the registry's.
+//! These routes live outside the customers module on purpose: each route is
+//! served by whoever owns the rule it enforces, and the rules here belong to
+//! the debt ledger rather than the customer registry.
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -21,7 +22,11 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::AuthUser;
-use crate::customer_accounts::model::CustomerAccountEntryKind;
+use crate::customer_accounts::model::{
+    AccountStatement, AccountStatementEntry, AdjustmentLogItem, AgingBuckets,
+    CustomerAccountEntryKind, ReceiptLogItem, ReceivableCustomer, ReceivablesSummary,
+    SaleOutstanding,
+};
 use crate::customer_accounts::service::{
     self, CollectedReceipt, ReceiptsError, RecordedAdjustment, RefundedCredit,
 };
@@ -34,9 +39,17 @@ const MAX_IDEMPOTENCY_KEY_LEN: usize = 100;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/customers/{id}/receipts", post(collect_receipt))
+        .route("/customers/{id}/account", get(get_account_statement))
+        .route(
+            "/customers/{id}/receipts",
+            get(list_receipts).post(collect_receipt),
+        )
         .route("/customers/{id}/credit-refunds", post(refund_credit))
-        .route("/customers/{id}/adjustments", post(record_adjustment))
+        .route(
+            "/customers/{id}/adjustments",
+            get(list_adjustments).post(record_adjustment),
+        )
+        .route("/accounts/receivables", get(list_receivables))
 }
 
 // --- DTOs ---------------------------------------------------------------
@@ -163,6 +176,158 @@ pub struct AdjustmentResponse {
     pub unapplied_credit: String,
 }
 
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ListAccountLogQuery {
+    /// Maximum number of entries to return (default 50, clamped to 1..=200).
+    pub limit: Option<i64>,
+}
+
+/// One ledger line in a customer's account statement, with the balance right
+/// after it.
+#[derive(Serialize, ToSchema)]
+pub struct AccountStatementEntryResponse {
+    pub id: Uuid,
+    pub kind: CustomerAccountEntryKind,
+    /// Signed effect on the balance: positive grows debt, negative shrinks it.
+    #[schema(value_type = String, example = "150.00")]
+    pub amount: String,
+    /// Customer's running balance immediately after this entry.
+    #[schema(value_type = String, example = "150.00")]
+    pub running_balance: String,
+    pub sale_id: Option<Uuid>,
+    pub credit_note_id: Option<Uuid>,
+    pub wallet_movement_id: Option<Uuid>,
+    pub note: Option<String>,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One sale that still owes money on the customer's account.
+#[derive(Serialize, ToSchema)]
+pub struct OutstandingSaleResponse {
+    pub sale_id: Uuid,
+    pub completed_at: DateTime<Utc>,
+    #[schema(value_type = String, example = "200.00")]
+    pub charged: String,
+    #[schema(value_type = String, example = "20.00")]
+    pub cancelled: String,
+    #[schema(value_type = String, example = "80.00")]
+    pub allocated: String,
+    #[schema(value_type = String, example = "100.00")]
+    pub outstanding: String,
+}
+
+/// Complete account statement for one customer: entries oldest first with a
+/// running balance, current position, and every sale with debt.
+#[derive(Serialize, ToSchema)]
+pub struct CustomerAccountResponse {
+    pub customer_id: Uuid,
+    /// Current signed balance. Positive: the customer owes. Negative: credit.
+    #[schema(value_type = String, example = "100.00")]
+    pub balance: String,
+    /// Collected money not yet allocated to a sale or refunded (`U`).
+    #[schema(value_type = String, example = "0.00")]
+    pub unapplied_credit: String,
+    /// Sum of what every open sale still owes.
+    #[schema(value_type = String, example = "100.00")]
+    pub outstanding_total: String,
+    /// Ledger entries oldest first, each carrying the running balance after it.
+    pub entries: Vec<AccountStatementEntryResponse>,
+    /// Sales with `outstanding > 0`, oldest first.
+    pub outstanding_sales: Vec<OutstandingSaleResponse>,
+}
+
+/// One allocation inside the receipt write log.
+#[derive(Serialize, ToSchema)]
+pub struct ReceiptLogAllocationResponse {
+    pub sale_id: Uuid,
+    #[schema(value_type = String, example = "50.00")]
+    pub amount: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One collection entry returned by `GET /customers/{id}/receipts`.
+#[derive(Serialize, ToSchema)]
+pub struct ReceiptLogResponse {
+    pub receipt_id: Uuid,
+    pub wallet_movement_id: Uuid,
+    pub wallet_id: Uuid,
+    pub payment_method_id: Option<Uuid>,
+    /// Positive amount collected.
+    #[schema(value_type = String, example = "150.00")]
+    pub amount: String,
+    /// Sum of allocations pointing at this receipt.
+    #[schema(value_type = String, example = "100.00")]
+    pub allocated_total: String,
+    pub allocations: Vec<ReceiptLogAllocationResponse>,
+    pub note: Option<String>,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One manual adjustment returned by `GET /customers/{id}/adjustments`.
+#[derive(Serialize, ToSchema)]
+pub struct AdjustmentLogResponse {
+    pub adjustment_id: Uuid,
+    pub kind: CustomerAccountEntryKind,
+    /// Signed effect on the balance: positive for `adjustment_in`, negative
+    /// for `adjustment_out`.
+    #[schema(value_type = String, example = "250.00")]
+    pub amount: String,
+    pub note: String,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Open sale debt split into aging buckets from each sale's `completed_at`
+/// date (`0-30`, `31-60`, `61-90`, `90+`). No due date in this delivery.
+#[derive(Serialize, ToSchema)]
+pub struct AgingBucketsResponse {
+    #[schema(value_type = String, example = "100.00")]
+    pub days_0_30: String,
+    #[schema(value_type = String, example = "50.00")]
+    pub days_31_60: String,
+    #[schema(value_type = String, example = "0.00")]
+    pub days_61_90: String,
+    #[schema(value_type = String, example = "25.00")]
+    pub days_90_plus: String,
+}
+
+/// One customer with an open account position (`balance != 0` or
+/// `unapplied_credit != 0`).
+#[derive(Serialize, ToSchema)]
+pub struct ReceivableCustomerResponse {
+    pub customer_id: Uuid,
+    pub customer_name: String,
+    pub tax_id: Option<String>,
+    pub is_active: bool,
+    #[schema(value_type = String, example = "175.00")]
+    pub balance: String,
+    #[schema(value_type = String, example = "0.00")]
+    pub unapplied_credit: String,
+    #[schema(value_type = String, example = "175.00")]
+    pub outstanding_total: String,
+    #[schema(value_type = String, example = "0.00")]
+    pub adjustments: String,
+    pub aging: AgingBucketsResponse,
+}
+
+/// Portfolio-wide receivables report across every customer with an open
+/// account position.
+#[derive(Serialize, ToSchema)]
+pub struct ReceivablesResponse {
+    #[schema(value_type = String, example = "175.00")]
+    pub total_balance: String,
+    #[schema(value_type = String, example = "0.00")]
+    pub total_unapplied_credit: String,
+    #[schema(value_type = String, example = "175.00")]
+    pub total_outstanding: String,
+    #[schema(value_type = String, example = "0.00")]
+    pub total_adjustments: String,
+    pub aging: AgingBucketsResponse,
+    pub items: Vec<ReceivableCustomerResponse>,
+}
+
 // --- Handlers -----------------------------------------------------------
 
 /// Normalize an optional idempotency key at the HTTP boundary.
@@ -279,6 +444,47 @@ async fn record_adjustment(
     Ok((StatusCode::CREATED, Json(to_adjustment_response(recorded))))
 }
 
+async fn get_account_statement(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<CustomerAccountResponse>, AppError> {
+    let statement = service::account_statement(&state.pool, id).await?;
+    Ok(Json(to_account_response(statement)))
+}
+
+async fn list_receipts(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ListAccountLogQuery>,
+) -> Result<Json<Vec<ReceiptLogResponse>>, AppError> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let receipts = service::list_receipts(&state.pool, id, limit).await?;
+    Ok(Json(receipts.into_iter().map(to_receipt_log).collect()))
+}
+
+async fn list_adjustments(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ListAccountLogQuery>,
+) -> Result<Json<Vec<AdjustmentLogResponse>>, AppError> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let adjustments = service::list_adjustments(&state.pool, id, limit).await?;
+    Ok(Json(
+        adjustments.into_iter().map(to_adjustment_log).collect(),
+    ))
+}
+
+async fn list_receivables(
+    State(state): State<AppState>,
+    _user: AuthUser,
+) -> Result<Json<ReceivablesResponse>, AppError> {
+    let summary = service::receivables(&state.pool).await?;
+    Ok(Json(to_receivables_response(summary)))
+}
+
 // --- Conversions --------------------------------------------------------
 
 /// Money with exactly 2 decimals, negative included: `"-50.00"`.
@@ -318,6 +524,123 @@ fn to_adjustment_response(recorded: RecordedAdjustment) -> AdjustmentResponse {
         kind: recorded.kind,
         balance: format_money(recorded.balance),
         unapplied_credit: format_money(recorded.unapplied_credit),
+    }
+}
+
+fn to_statement_entry(item: AccountStatementEntry) -> AccountStatementEntryResponse {
+    AccountStatementEntryResponse {
+        id: item.entry.id,
+        kind: item.entry.kind,
+        amount: format_money(item.entry.amount),
+        running_balance: format_money(item.running_balance),
+        sale_id: item.entry.sale_id,
+        credit_note_id: item.entry.credit_note_id,
+        wallet_movement_id: item.entry.wallet_movement_id,
+        note: item.entry.note,
+        created_by: item.entry.created_by,
+        created_at: item.entry.created_at,
+    }
+}
+
+fn to_outstanding_sale(sale: SaleOutstanding) -> OutstandingSaleResponse {
+    OutstandingSaleResponse {
+        sale_id: sale.sale_id,
+        completed_at: sale.completed_at,
+        charged: format_money(sale.charged),
+        cancelled: format_money(sale.cancelled),
+        allocated: format_money(sale.allocated),
+        outstanding: format_money(sale.outstanding),
+    }
+}
+
+fn to_account_response(statement: AccountStatement) -> CustomerAccountResponse {
+    CustomerAccountResponse {
+        customer_id: statement.customer_id,
+        balance: format_money(statement.position.balance),
+        unapplied_credit: format_money(statement.position.unapplied_credit),
+        outstanding_total: format_money(statement.position.outstanding_total),
+        entries: statement
+            .entries
+            .into_iter()
+            .map(to_statement_entry)
+            .collect(),
+        outstanding_sales: statement
+            .outstanding_sales
+            .into_iter()
+            .map(to_outstanding_sale)
+            .collect(),
+    }
+}
+
+fn to_receipt_log(item: ReceiptLogItem) -> ReceiptLogResponse {
+    ReceiptLogResponse {
+        receipt_id: item.entry_id,
+        wallet_movement_id: item.wallet_movement_id,
+        wallet_id: item.wallet_id,
+        payment_method_id: item.payment_method_id,
+        amount: format_money(item.amount),
+        allocated_total: format_money(item.allocated_total),
+        allocations: item
+            .allocations
+            .into_iter()
+            .map(|alloc| ReceiptLogAllocationResponse {
+                sale_id: alloc.sale_id,
+                amount: format_money(alloc.amount),
+                created_at: alloc.created_at,
+            })
+            .collect(),
+        note: item.note,
+        created_by: item.created_by,
+        created_at: item.created_at,
+    }
+}
+
+fn to_adjustment_log(item: AdjustmentLogItem) -> AdjustmentLogResponse {
+    AdjustmentLogResponse {
+        adjustment_id: item.entry_id,
+        kind: item.kind,
+        amount: format_money(item.amount),
+        note: item.note,
+        created_by: item.created_by,
+        created_at: item.created_at,
+    }
+}
+
+fn to_aging_response(aging: AgingBuckets) -> AgingBucketsResponse {
+    AgingBucketsResponse {
+        days_0_30: format_money(aging.days_0_30),
+        days_31_60: format_money(aging.days_31_60),
+        days_61_90: format_money(aging.days_61_90),
+        days_90_plus: format_money(aging.days_90_plus),
+    }
+}
+
+fn to_receivable_customer(item: ReceivableCustomer) -> ReceivableCustomerResponse {
+    ReceivableCustomerResponse {
+        customer_id: item.customer_id,
+        customer_name: item.customer_name,
+        tax_id: item.tax_id,
+        is_active: item.is_active,
+        balance: format_money(item.balance),
+        unapplied_credit: format_money(item.unapplied_credit),
+        outstanding_total: format_money(item.outstanding_total),
+        adjustments: format_money(item.adjustments),
+        aging: to_aging_response(item.aging),
+    }
+}
+
+fn to_receivables_response(summary: ReceivablesSummary) -> ReceivablesResponse {
+    ReceivablesResponse {
+        total_balance: format_money(summary.total_balance),
+        total_unapplied_credit: format_money(summary.total_unapplied_credit),
+        total_outstanding: format_money(summary.total_outstanding),
+        total_adjustments: format_money(summary.total_adjustments),
+        aging: to_aging_response(summary.aging),
+        items: summary
+            .items
+            .into_iter()
+            .map(to_receivable_customer)
+            .collect(),
     }
 }
 
@@ -432,3 +755,82 @@ fn refund_credit_doc() {}
 )]
 #[allow(dead_code)]
 fn record_adjustment_doc() {}
+
+/// Customer account statement.
+///
+/// Returns every ledger entry oldest first with its running balance, the
+/// customer's current balance and unapplied credit (`U`), and every sale that
+/// still owes money — all read from one consistent snapshot.
+#[utoipa::path(
+    get,
+    path = "/api/v1/customers/{id}/account",
+    tag = "customer_accounts",
+    params(("id" = Uuid, Path, description = "Customer ID")),
+    responses(
+        (status = 200, description = "Account statement", body = CustomerAccountResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn get_account_statement_doc() {}
+
+/// Collection write log for one customer, newest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/customers/{id}/receipts",
+    tag = "customer_accounts",
+    params(
+        ("id" = Uuid, Path, description = "Customer ID"),
+        ListAccountLogQuery,
+    ),
+    responses(
+        (status = 200, description = "Receipts recorded for this customer", body = [ReceiptLogResponse]),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn list_receipts_doc() {}
+
+/// Manual debt adjustment write log for one customer, newest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/customers/{id}/adjustments",
+    tag = "customer_accounts",
+    params(
+        ("id" = Uuid, Path, description = "Customer ID"),
+        ListAccountLogQuery,
+    ),
+    responses(
+        (status = 200, description = "Manual adjustments recorded for this customer", body = [AdjustmentLogResponse]),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn list_adjustments_doc() {}
+
+/// Accounts receivable report across every customer with an open position.
+///
+/// Lists every customer whose `balance != 0` or `unapplied_credit != 0`,
+/// ordered by highest balance first, with open-sale aging buckets computed
+/// from each sale's completion date (`0-30`, `31-60`, `61-90`, `90+`).
+#[utoipa::path(
+    get,
+    path = "/api/v1/accounts/receivables",
+    tag = "customer_accounts",
+    responses(
+        (status = 200, description = "Open customer positions and aging buckets", body = ReceivablesResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn list_receivables_doc() {}

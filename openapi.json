@@ -9,6 +9,38 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/accounts/receivables": {
+      "get": {
+        "tags": [
+          "customer_accounts"
+        ],
+        "summary": "Accounts receivable report across every customer with an open position.",
+        "description": "Lists every customer whose `balance != 0` or `unapplied_credit != 0`,\nordered by highest balance first, with open-sale aging buckets computed\nfrom each sale's completion date (`0-30`, `31-60`, `61-90`, `90+`).",
+        "operationId": "list_receivables_doc",
+        "responses": {
+          "200": {
+            "description": "Open customer positions and aging buckets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReceivablesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -443,7 +475,128 @@
         }
       }
     },
+    "/api/v1/customers/{id}/account": {
+      "get": {
+        "tags": [
+          "customer_accounts"
+        ],
+        "summary": "Customer account statement.",
+        "description": "Returns every ledger entry oldest first with its running balance, the\ncustomer's current balance and unapplied credit (`U`), and every sale that\nstill owes money — all read from one consistent snapshot.",
+        "operationId": "get_account_statement_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account statement",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerAccountResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown customer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/customers/{id}/adjustments": {
+      "get": {
+        "tags": [
+          "customer_accounts"
+        ],
+        "summary": "Manual debt adjustment write log for one customer, newest first.",
+        "operationId": "list_adjustments_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Manual adjustments recorded for this customer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdjustmentLogResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown customer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "customer_accounts"
@@ -678,6 +831,73 @@
       }
     },
     "/api/v1/customers/{id}/receipts": {
+      "get": {
+        "tags": [
+          "customer_accounts"
+        ],
+        "summary": "Collection write log for one customer, newest first.",
+        "operationId": "list_receipts_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Receipts recorded for this customer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReceiptLogResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown customer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "customer_accounts"
@@ -2701,6 +2921,72 @@
   },
   "components": {
     "schemas": {
+      "AccountStatementEntryResponse": {
+        "type": "object",
+        "description": "One ledger line in a customer's account statement, with the balance right\nafter it.",
+        "required": [
+          "id",
+          "kind",
+          "amount",
+          "running_balance",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "description": "Signed effect on the balance: positive grows debt, negative shrinks it.",
+            "example": "150.00"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "credit_note_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CustomerAccountEntryKind"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "running_balance": {
+            "type": "string",
+            "description": "Customer's running balance immediately after this entry.",
+            "example": "150.00"
+          },
+          "sale_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "wallet_movement_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
       "AddItemRequest": {
         "type": "object",
         "required": [
@@ -2725,6 +3011,43 @@
           "in",
           "out"
         ]
+      },
+      "AdjustmentLogResponse": {
+        "type": "object",
+        "description": "One manual adjustment returned by `GET /customers/{id}/adjustments`.",
+        "required": [
+          "adjustment_id",
+          "kind",
+          "amount",
+          "note",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "adjustment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Signed effect on the balance: positive for `adjustment_in`, negative\nfor `adjustment_out`.",
+            "example": "250.00"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CustomerAccountEntryKind"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
       },
       "AdjustmentResponse": {
         "type": "object",
@@ -2751,6 +3074,34 @@
           "unapplied_credit": {
             "type": "string",
             "example": "0.00"
+          }
+        }
+      },
+      "AgingBucketsResponse": {
+        "type": "object",
+        "description": "Open sale debt split into aging buckets from each sale's `completed_at`\ndate (`0-30`, `31-60`, `61-90`, `90+`). No due date in this delivery.",
+        "required": [
+          "days_0_30",
+          "days_31_60",
+          "days_61_90",
+          "days_90_plus"
+        ],
+        "properties": {
+          "days_0_30": {
+            "type": "string",
+            "example": "100.00"
+          },
+          "days_31_60": {
+            "type": "string",
+            "example": "50.00"
+          },
+          "days_61_90": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "days_90_plus": {
+            "type": "string",
+            "example": "25.00"
           }
         }
       },
@@ -3235,6 +3586,53 @@
           "adjustment_out"
         ]
       },
+      "CustomerAccountResponse": {
+        "type": "object",
+        "description": "Complete account statement for one customer: entries oldest first with a\nrunning balance, current position, and every sale with debt.",
+        "required": [
+          "customer_id",
+          "balance",
+          "unapplied_credit",
+          "outstanding_total",
+          "entries",
+          "outstanding_sales"
+        ],
+        "properties": {
+          "balance": {
+            "type": "string",
+            "description": "Current signed balance. Positive: the customer owes. Negative: credit.",
+            "example": "100.00"
+          },
+          "customer_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountStatementEntryResponse"
+            },
+            "description": "Ledger entries oldest first, each carrying the running balance after it."
+          },
+          "outstanding_sales": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutstandingSaleResponse"
+            },
+            "description": "Sales with `outstanding > 0`, oldest first."
+          },
+          "outstanding_total": {
+            "type": "string",
+            "description": "Sum of what every open sale still owes.",
+            "example": "100.00"
+          },
+          "unapplied_credit": {
+            "type": "string",
+            "description": "Collected money not yet allocated to a sale or refunded (`U`).",
+            "example": "0.00"
+          }
+        }
+      },
       "CustomerIdResponse": {
         "type": "object",
         "required": [
@@ -3285,10 +3683,22 @@
           "id",
           "name",
           "is_active",
+          "balance",
+          "available_credit",
           "created_at",
           "updated_at"
         ],
         "properties": {
+          "available_credit": {
+            "type": "string",
+            "description": "Collected money not yet allocated to a sale or refunded (`U`).",
+            "example": "0.00"
+          },
+          "balance": {
+            "type": "string",
+            "description": "Current account balance derived from the customer's debt ledger.\nPositive means the customer owes money; negative means credit in their\nfavour.",
+            "example": "120.00"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -3475,6 +3885,44 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "OutstandingSaleResponse": {
+        "type": "object",
+        "description": "One sale that still owes money on the customer's account.",
+        "required": [
+          "sale_id",
+          "completed_at",
+          "charged",
+          "cancelled",
+          "allocated",
+          "outstanding"
+        ],
+        "properties": {
+          "allocated": {
+            "type": "string",
+            "example": "80.00"
+          },
+          "cancelled": {
+            "type": "string",
+            "example": "20.00"
+          },
+          "charged": {
+            "type": "string",
+            "example": "200.00"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "outstanding": {
+            "type": "string",
+            "example": "100.00"
+          },
+          "sale_id": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },
@@ -3702,6 +4150,94 @@
           }
         }
       },
+      "ReceiptLogAllocationResponse": {
+        "type": "object",
+        "description": "One allocation inside the receipt write log.",
+        "required": [
+          "sale_id",
+          "amount",
+          "created_at"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "50.00"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sale_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "ReceiptLogResponse": {
+        "type": "object",
+        "description": "One collection entry returned by `GET /customers/{id}/receipts`.",
+        "required": [
+          "receipt_id",
+          "wallet_movement_id",
+          "wallet_id",
+          "amount",
+          "allocated_total",
+          "allocations",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "allocated_total": {
+            "type": "string",
+            "description": "Sum of allocations pointing at this receipt.",
+            "example": "100.00"
+          },
+          "allocations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReceiptLogAllocationResponse"
+            }
+          },
+          "amount": {
+            "type": "string",
+            "description": "Positive amount collected.",
+            "example": "150.00"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payment_method_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "receipt_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "wallet_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "wallet_movement_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "ReceiptResponse": {
         "type": "object",
         "required": [
@@ -3737,6 +4273,96 @@
             "type": "string",
             "format": "uuid",
             "description": "The `account_payment` movement that carried the money into the wallet."
+          }
+        }
+      },
+      "ReceivableCustomerResponse": {
+        "type": "object",
+        "description": "One customer with an open account position (`balance != 0` or\n`unapplied_credit != 0`).",
+        "required": [
+          "customer_id",
+          "customer_name",
+          "is_active",
+          "balance",
+          "unapplied_credit",
+          "outstanding_total",
+          "adjustments",
+          "aging"
+        ],
+        "properties": {
+          "adjustments": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "aging": {
+            "$ref": "#/components/schemas/AgingBucketsResponse"
+          },
+          "balance": {
+            "type": "string",
+            "example": "175.00"
+          },
+          "customer_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "customer_name": {
+            "type": "string"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "outstanding_total": {
+            "type": "string",
+            "example": "175.00"
+          },
+          "tax_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unapplied_credit": {
+            "type": "string",
+            "example": "0.00"
+          }
+        }
+      },
+      "ReceivablesResponse": {
+        "type": "object",
+        "description": "Portfolio-wide receivables report across every customer with an open\naccount position.",
+        "required": [
+          "total_balance",
+          "total_unapplied_credit",
+          "total_outstanding",
+          "total_adjustments",
+          "aging",
+          "items"
+        ],
+        "properties": {
+          "aging": {
+            "$ref": "#/components/schemas/AgingBucketsResponse"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReceivableCustomerResponse"
+            }
+          },
+          "total_adjustments": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "total_balance": {
+            "type": "string",
+            "example": "175.00"
+          },
+          "total_outstanding": {
+            "type": "string",
+            "example": "175.00"
+          },
+          "total_unapplied_credit": {
+            "type": "string",
+            "example": "0.00"
           }
         }
       },

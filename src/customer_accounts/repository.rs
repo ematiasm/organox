@@ -12,10 +12,14 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use sqlx::{PgConnection, PgPool};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-use super::model::{AccountPosition, CustomerAccountEntryKind, SaleOutstanding};
+use super::model::{
+    AccountPosition, AdjustmentLogItem, AgingBuckets, CustomerAccountEntry,
+    CustomerAccountEntryKind, ReceiptLogAllocation, ReceiptLogItem, ReceivableCustomer,
+    SaleOutstanding,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
@@ -297,6 +301,310 @@ pub async fn outstanding_by_sale_in(
             cancelled: row.cancelled,
             allocated: row.allocated,
             outstanding: row.outstanding,
+        })
+        .collect())
+}
+
+/// Whether the customer row exists. Read endpoints answer `404` when it does
+/// not, without taking any write lock.
+pub async fn customer_exists_in(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+) -> Result<bool, RepoError> {
+    let found = sqlx::query!(
+        r#"SELECT 1 AS found FROM customers WHERE id = $1"#,
+        customer_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+
+    Ok(found.is_some())
+}
+
+/// Every ledger entry for a customer, oldest first (`created_at ASC, id ASC`).
+///
+/// The `id` tie-breaker (UUIDv7) keeps the order deterministic when two entries
+/// share the same database timestamp.
+pub async fn list_entries_in(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+) -> Result<Vec<CustomerAccountEntry>, RepoError> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT id,
+               customer_id,
+               kind AS "kind: CustomerAccountEntryKind",
+               amount,
+               sale_id,
+               credit_note_id,
+               wallet_movement_id,
+               note,
+               created_by,
+               created_at
+        FROM customer_account_entries
+        WHERE customer_id = $1
+        ORDER BY created_at ASC, id ASC
+        "#,
+        customer_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CustomerAccountEntry {
+            id: row.id,
+            customer_id: row.customer_id,
+            kind: row.kind,
+            amount: row.amount,
+            sale_id: row.sale_id,
+            credit_note_id: row.credit_note_id,
+            wallet_movement_id: row.wallet_movement_id,
+            note: row.note,
+            created_by: row.created_by,
+            created_at: row.created_at,
+        })
+        .collect())
+}
+
+/// Collection write log (`kind = 'receipt'`), newest first, with each
+/// receipt's linked wallet movement and allocations.
+pub async fn list_receipts_in(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    limit: i64,
+) -> Result<Vec<ReceiptLogItem>, RepoError> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT e.id AS entry_id,
+               e.wallet_movement_id AS "wallet_movement_id!: Uuid",
+               wm.wallet_id,
+               wm.payment_method_id,
+               (-e.amount)::numeric(14, 2) AS "amount!: Decimal",
+               wm.note,
+               e.created_by,
+               e.created_at
+        FROM customer_account_entries e
+        JOIN wallet_movements wm ON wm.id = e.wallet_movement_id
+        WHERE e.customer_id = $1
+          AND e.kind = 'receipt'
+        ORDER BY e.created_at DESC, e.id DESC
+        LIMIT $2
+        "#,
+        customer_id,
+        limit
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let entry_ids: Vec<Uuid> = rows.iter().map(|row| row.entry_id).collect();
+    let alloc_rows = sqlx::query!(
+        r#"
+        SELECT entry_id, sale_id, amount, created_at
+        FROM customer_account_allocations
+        WHERE entry_id = ANY($1)
+        ORDER BY created_at ASC, id ASC
+        "#,
+        &entry_ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut by_entry: HashMap<Uuid, Vec<ReceiptLogAllocation>> = HashMap::new();
+    for alloc in alloc_rows {
+        by_entry
+            .entry(alloc.entry_id)
+            .or_default()
+            .push(ReceiptLogAllocation {
+                sale_id: alloc.sale_id,
+                amount: alloc.amount,
+                created_at: alloc.created_at,
+            });
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let allocations = by_entry.remove(&row.entry_id).unwrap_or_default();
+            let allocated_total = allocations.iter().map(|a| a.amount).sum();
+            ReceiptLogItem {
+                entry_id: row.entry_id,
+                wallet_movement_id: row.wallet_movement_id,
+                wallet_id: row.wallet_id,
+                payment_method_id: row.payment_method_id,
+                amount: row.amount,
+                allocated_total,
+                allocations,
+                note: row.note,
+                created_by: row.created_by,
+                created_at: row.created_at,
+            }
+        })
+        .collect())
+}
+
+/// Manual adjustment write log (`adjustment_in` / `adjustment_out`), newest
+/// first.
+pub async fn list_adjustments_in(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    limit: i64,
+) -> Result<Vec<AdjustmentLogItem>, RepoError> {
+    let rows = sqlx::query!(
+        r#"
+        SELECT id AS entry_id,
+               kind AS "kind: CustomerAccountEntryKind",
+               amount,
+               note AS "note!: String",
+               created_by,
+               created_at
+        FROM customer_account_entries
+        WHERE customer_id = $1
+          AND kind IN ('adjustment_in', 'adjustment_out')
+        ORDER BY created_at DESC, id DESC
+        LIMIT $2
+        "#,
+        customer_id,
+        limit
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| AdjustmentLogItem {
+            entry_id: row.entry_id,
+            kind: row.kind,
+            amount: row.amount,
+            note: row.note,
+            created_by: row.created_by,
+            created_at: row.created_at,
+        })
+        .collect())
+}
+
+/// Every customer with an open account position (`balance != 0` or
+/// `unapplied_credit != 0`), with open-sale aging buckets computed from each
+/// sale's `completed_at` timestamp in one consistent snapshot.
+///
+/// Elapsed whole days `floor((now - completed_at) / 86400)` partition every
+/// open sale into exactly one bucket (`<= 30`, `31..=60`, `61..=90`, `> 90`),
+/// so the four buckets always sum to `outstanding_total`.
+pub async fn list_receivables(pool: &PgPool) -> Result<Vec<ReceivableCustomer>, RepoError> {
+    let rows = sqlx::query!(
+        r#"
+        WITH entry_totals AS (
+            SELECT
+                customer_id,
+                COALESCE(SUM(amount), 0) AS balance,
+                COALESCE(SUM(CASE WHEN kind = 'receipt' THEN -amount ELSE 0 END), 0) AS received,
+                COALESCE(SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END), 0)
+                    AS refunded,
+                COALESCE(SUM(CASE WHEN kind IN ('adjustment_in', 'adjustment_out')
+                                  THEN amount ELSE 0 END), 0) AS adjustments
+            FROM customer_account_entries
+            GROUP BY customer_id
+        ),
+        customer_allocated AS (
+            SELECT e.customer_id, COALESCE(SUM(a.amount), 0) AS total
+            FROM customer_account_allocations a
+            JOIN customer_account_entries e ON e.id = a.entry_id
+            GROUP BY e.customer_id
+        ),
+        charges AS (
+            SELECT customer_id, sale_id, SUM(amount) AS charged
+            FROM customer_account_entries
+            WHERE kind = 'sale_charge'
+            GROUP BY customer_id, sale_id
+        ),
+        cancelled AS (
+            SELECT customer_id, sale_id, -SUM(amount) AS cancelled
+            FROM customer_account_entries
+            WHERE kind = 'credit_note'
+            GROUP BY customer_id, sale_id
+        ),
+        sale_allocated AS (
+            SELECT e.customer_id, a.sale_id, SUM(a.amount) AS allocated
+            FROM customer_account_allocations a
+            JOIN customer_account_entries e ON e.id = a.entry_id
+            GROUP BY e.customer_id, a.sale_id
+        ),
+        open_sales AS (
+            SELECT
+                ch.customer_id,
+                (ch.charged - COALESCE(cx.cancelled, 0) - COALESCE(sa.allocated, 0))
+                    AS outstanding,
+                FLOOR(EXTRACT(EPOCH FROM (NOW() - s.completed_at)) / 86400)::bigint AS age_days
+            FROM charges ch
+            JOIN sales s ON s.id = ch.sale_id
+            LEFT JOIN cancelled cx
+                   ON cx.customer_id = ch.customer_id AND cx.sale_id = ch.sale_id
+            LEFT JOIN sale_allocated sa
+                   ON sa.customer_id = ch.customer_id AND sa.sale_id = ch.sale_id
+            WHERE ch.charged - COALESCE(cx.cancelled, 0) - COALESCE(sa.allocated, 0) > 0
+        ),
+        aging_by_customer AS (
+            SELECT
+                customer_id,
+                COALESCE(SUM(outstanding), 0) AS outstanding_total,
+                COALESCE(SUM(CASE WHEN age_days <= 30 THEN outstanding ELSE 0 END), 0)
+                    AS days_0_30,
+                COALESCE(SUM(CASE WHEN age_days BETWEEN 31 AND 60 THEN outstanding ELSE 0 END), 0)
+                    AS days_31_60,
+                COALESCE(SUM(CASE WHEN age_days BETWEEN 61 AND 90 THEN outstanding ELSE 0 END), 0)
+                    AS days_61_90,
+                COALESCE(SUM(CASE WHEN age_days > 90 THEN outstanding ELSE 0 END), 0)
+                    AS days_90_plus
+            FROM open_sales
+            GROUP BY customer_id
+        )
+        SELECT
+            c.id AS "customer_id!",
+            c.name AS "customer_name!",
+            c.tax_id,
+            c.is_active AS "is_active!",
+            et.balance::numeric(14, 2) AS "balance!: Decimal",
+            (et.received - et.refunded - COALESCE(ca.total, 0))::numeric(14, 2)
+                AS "unapplied_credit!: Decimal",
+            COALESCE(ag.outstanding_total, 0)::numeric(14, 2) AS "outstanding_total!: Decimal",
+            et.adjustments::numeric(14, 2) AS "adjustments!: Decimal",
+            COALESCE(ag.days_0_30, 0)::numeric(14, 2) AS "days_0_30!: Decimal",
+            COALESCE(ag.days_31_60, 0)::numeric(14, 2) AS "days_31_60!: Decimal",
+            COALESCE(ag.days_61_90, 0)::numeric(14, 2) AS "days_61_90!: Decimal",
+            COALESCE(ag.days_90_plus, 0)::numeric(14, 2) AS "days_90_plus!: Decimal"
+        FROM entry_totals et
+        JOIN customers c ON c.id = et.customer_id
+        LEFT JOIN customer_allocated ca ON ca.customer_id = et.customer_id
+        LEFT JOIN aging_by_customer ag ON ag.customer_id = et.customer_id
+        WHERE et.balance <> 0
+           OR (et.received - et.refunded - COALESCE(ca.total, 0)) <> 0
+        ORDER BY et.balance DESC, c.name ASC, c.id ASC
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| ReceivableCustomer {
+            customer_id: row.customer_id,
+            customer_name: row.customer_name,
+            tax_id: row.tax_id,
+            is_active: row.is_active,
+            balance: row.balance,
+            unapplied_credit: row.unapplied_credit,
+            outstanding_total: row.outstanding_total,
+            adjustments: row.adjustments,
+            aging: AgingBuckets {
+                days_0_30: row.days_0_30,
+                days_31_60: row.days_31_60,
+                days_61_90: row.days_61_90,
+                days_90_plus: row.days_90_plus,
+            },
         })
         .collect())
 }

@@ -1,0 +1,148 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH page AS (\n            SELECT\n                c.id,\n                c.name,\n                c.tax_id,\n                c.email,\n                c.phone,\n                c.is_active,\n                c.credit_limit,\n                c.created_at,\n                c.updated_at,\n                COUNT(*) OVER () AS total\n            FROM customers c\n            WHERE ($1::bool OR c.is_active)\n              -- One box at the counter: the operator types either a name or a\n              -- document fragment and must not have to say which.\n              AND (\n                    $2::text IS NULL\n                    OR c.name ILIKE $2::text ESCAPE E'\\\\'\n                    OR c.tax_id ILIKE $2::text ESCAPE E'\\\\'\n              )\n            ORDER BY c.name, c.id\n            LIMIT $3 OFFSET $4\n        )\n        SELECT\n            p.id,\n            p.name,\n            p.tax_id,\n            p.email,\n            p.phone,\n            p.is_active,\n            p.credit_limit AS \"credit_limit?: Decimal\",\n            COALESCE(e.balance, 0)::numeric(14, 2) AS \"balance!: Decimal\",\n            (COALESCE(e.received, 0) - COALESCE(e.refunded, 0) - COALESCE(a.allocated, 0))\n                ::numeric(14, 2) AS \"available_credit!: Decimal\",\n            p.created_at,\n            p.updated_at,\n            p.total AS \"total!\"\n        FROM page p\n        LEFT JOIN LATERAL (\n            SELECT\n                SUM(amount) AS balance,\n                SUM(CASE WHEN kind = 'receipt' THEN -amount ELSE 0 END) AS received,\n                SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END) AS refunded\n            FROM customer_account_entries\n            WHERE customer_id = p.id\n        ) e ON TRUE\n        LEFT JOIN LATERAL (\n            SELECT SUM(al.amount) AS allocated\n            FROM customer_account_allocations al\n            JOIN customer_account_entries en ON en.id = al.entry_id\n            WHERE en.customer_id = p.id\n        ) a ON TRUE\n        ORDER BY p.name, p.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "tax_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "tax_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "phone",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "phone"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "is_active",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "is_active"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "credit_limit?: Decimal",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "credit_limit"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "balance!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "available_credit!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "customers",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "total!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      null,
+      null,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "7eedb7c40f3f154b1e0d932c8b00429daa923055862078bc868935a96ddb4212"
+}

@@ -184,3 +184,107 @@ impl AccountPosition {
             && self.unapplied_credit >= Decimal::ZERO
     }
 }
+
+/// One ledger line paired with the customer's running balance right after it.
+#[derive(Debug, Clone)]
+pub struct AccountStatementEntry {
+    pub entry: CustomerAccountEntry,
+    pub running_balance: Decimal,
+}
+
+/// Complete account statement for one customer: entries oldest first, current
+/// position, and every sale with open debt.
+#[derive(Debug, Clone)]
+pub struct AccountStatement {
+    pub customer_id: Uuid,
+    pub position: AccountPosition,
+    pub entries: Vec<AccountStatementEntry>,
+    pub outstanding_sales: Vec<SaleOutstanding>,
+}
+
+/// One sale allocation attached to a receipt in the write log.
+#[derive(Debug, Clone)]
+pub struct ReceiptLogAllocation {
+    pub sale_id: Uuid,
+    pub amount: Decimal,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One collection recorded via `POST /customers/{id}/receipts`, with its
+/// linked wallet movement and allocations.
+#[derive(Debug, Clone)]
+pub struct ReceiptLogItem {
+    pub entry_id: Uuid,
+    pub wallet_movement_id: Uuid,
+    pub wallet_id: Uuid,
+    pub payment_method_id: Option<Uuid>,
+    /// Positive amount collected (the ledger stores `-amount`).
+    pub amount: Decimal,
+    /// Sum of allocations pointing at this receipt.
+    pub allocated_total: Decimal,
+    pub allocations: Vec<ReceiptLogAllocation>,
+    /// Stored on the linked `wallet_movements` row (`customer_account_entries`
+    /// forbids a note on `receipt` rows).
+    pub note: Option<String>,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+/// One manual debt adjustment recorded via `POST /customers/{id}/adjustments`.
+#[derive(Debug, Clone)]
+pub struct AdjustmentLogItem {
+    pub entry_id: Uuid,
+    pub kind: CustomerAccountEntryKind,
+    /// Signed effect on the balance (`+` for `adjustment_in`, `-` for
+    /// `adjustment_out`).
+    pub amount: Decimal,
+    pub note: String,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Open sale debt split into four age buckets computed from each sale's
+/// `completed_at` timestamp (no due date in this delivery).
+#[derive(Debug, Clone, Default)]
+pub struct AgingBuckets {
+    pub days_0_30: Decimal,
+    pub days_31_60: Decimal,
+    pub days_61_90: Decimal,
+    pub days_90_plus: Decimal,
+}
+
+impl AgingBuckets {
+    pub fn add(&mut self, other: &AgingBuckets) {
+        self.days_0_30 += other.days_0_30;
+        self.days_31_60 += other.days_31_60;
+        self.days_61_90 += other.days_61_90;
+        self.days_90_plus += other.days_90_plus;
+    }
+}
+
+/// One customer with an open account position (`balance != 0` or
+/// `unapplied_credit != 0`) and their open-sale aging buckets.
+#[derive(Debug, Clone)]
+pub struct ReceivableCustomer {
+    pub customer_id: Uuid,
+    pub customer_name: String,
+    pub tax_id: Option<String>,
+    pub is_active: bool,
+    pub balance: Decimal,
+    pub unapplied_credit: Decimal,
+    pub outstanding_total: Decimal,
+    pub adjustments: Decimal,
+    pub aging: AgingBuckets,
+}
+
+/// Portfolio-wide receivables report across every customer with an open
+/// account position.
+#[derive(Debug, Clone)]
+pub struct ReceivablesSummary {
+    pub total_balance: Decimal,
+    pub total_unapplied_credit: Decimal,
+    pub total_outstanding: Decimal,
+    pub total_adjustments: Decimal,
+    pub aging: AgingBuckets,
+    pub items: Vec<ReceivableCustomer>,
+}

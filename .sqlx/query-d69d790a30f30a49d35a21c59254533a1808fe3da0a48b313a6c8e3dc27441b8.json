@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, name, tax_id, email, phone, is_active,\n               credit_limit AS \"credit_limit?: Decimal\", created_at, updated_at\n        FROM customers\n        WHERE id = $1\n        ",
+  "query": "\n        SELECT\n            c.id,\n            c.name,\n            c.tax_id,\n            c.email,\n            c.phone,\n            c.is_active,\n            c.credit_limit AS \"credit_limit?: Decimal\",\n            COALESCE(e.balance, 0)::numeric(14, 2) AS \"balance!: Decimal\",\n            (COALESCE(e.received, 0) - COALESCE(e.refunded, 0) - COALESCE(a.allocated, 0))\n                ::numeric(14, 2) AS \"available_credit!: Decimal\",\n            c.created_at,\n            c.updated_at\n        FROM customers c\n        LEFT JOIN LATERAL (\n            SELECT\n                SUM(amount) AS balance,\n                SUM(CASE WHEN kind = 'receipt' THEN -amount ELSE 0 END) AS received,\n                SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END) AS refunded\n            FROM customer_account_entries\n            WHERE customer_id = c.id\n        ) e ON TRUE\n        LEFT JOIN LATERAL (\n            SELECT SUM(al.amount) AS allocated\n            FROM customer_account_allocations al\n            JOIN customer_account_entries en ON en.id = al.entry_id\n            WHERE en.customer_id = c.id\n        ) a ON TRUE\n        WHERE c.id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -82,6 +82,18 @@
       },
       {
         "ordinal": 7,
+        "name": "balance!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "available_credit!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,7 +104,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -116,9 +128,11 @@
       true,
       false,
       true,
+      null,
+      null,
       false,
       false
     ]
   },
-  "hash": "e15d45a2a279ede8278928a88b7568c4fce72fbad4e09ed25ad5764054b229c0"
+  "hash": "d69d790a30f30a49d35a21c59254533a1808fe3da0a48b313a6c8e3dc27441b8"
 }
