@@ -520,6 +520,13 @@ async fn completed_sales_are_listed_newest_first(pool: PgPool) {
 // --- Customer -----------------------------------------------------------
 
 async fn seed_customer(pool: &PgPool, name: &str) -> Uuid {
+    seed_customer_with_limit(pool, name, None).await
+}
+
+/// A customer whose credit limit is already on the registry: the state the
+/// limit tests start from, written the way the route that owns the field
+/// writes it.
+async fn seed_customer_with_limit(pool: &PgPool, name: &str, limit: Option<Decimal>) -> Uuid {
     customers::create_customer(
         pool,
         CreateCustomerInput {
@@ -527,6 +534,7 @@ async fn seed_customer(pool: &PgPool, name: &str) -> Uuid {
             tax_id: None,
             email: None,
             phone: None,
+            credit_limit: limit,
         },
     )
     .await
@@ -543,6 +551,7 @@ async fn rename_customer(pool: &PgPool, id: Uuid, name: &str) {
             email: None,
             phone: None,
             is_active: None,
+            credit_limit: None,
         },
     )
     .await
@@ -864,9 +873,14 @@ async fn a_payment_that_does_not_add_up_leaves_no_trace(pool: PgPool) {
     .expect_err("150 is not the 200 total");
 
     match err {
-        SalesError::PaymentMismatch { total, paid } => {
+        SalesError::PaymentMismatch {
+            total,
+            paid,
+            on_account,
+        } => {
             assert_eq!(total, dec!(200));
             assert_eq!(paid, dec!(150));
+            assert_eq!(on_account, Decimal::ZERO);
         }
         other => panic!("unexpected error: {other:?}"),
     }
@@ -885,8 +899,11 @@ async fn a_payment_that_does_not_add_up_leaves_no_trace(pool: PgPool) {
     assert_eq!(sale_movements, 0);
 }
 
+/// An empty payment list cannot cover a positive total on its own: nothing is
+/// collected and nothing is owed, so there is nothing to complete the sale
+/// with. (The account can cover it — that is the on-account section's rule.)
 #[sqlx::test]
-async fn an_empty_payment_list_cannot_cover_a_positive_total(pool: PgPool) {
+async fn an_empty_payment_list_cannot_cover_a_positive_total_on_its_own(pool: PgPool) {
     let actor = seed_user(&pool).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
@@ -901,8 +918,8 @@ async fn an_empty_payment_list_cannot_cover_a_positive_total(pool: PgPool) {
         .expect_err("a sale cannot close without saying how it was paid");
     assert!(matches!(
         err,
-        SalesError::PaymentMismatch { total, paid }
-            if total == dec!(100) && paid == Decimal::ZERO
+        SalesError::PaymentMismatch { total, paid, on_account }
+            if total == dec!(100) && paid == Decimal::ZERO && on_account == Decimal::ZERO
     ));
     assert_eq!(current_stock(&pool, product).await, dec!(10));
     assert_eq!(payment_movement_count(&pool).await, 0);
@@ -1433,4 +1450,663 @@ async fn an_omitted_customer_id_is_rejected_and_keeps_the_customer(pool: PgPool)
 
     // The rejected request left the stored row untouched.
     assert_eq!(stored_customer_id(&pool, draft).await, Some(customer));
+}
+
+// --- On account --------------------------------------------------------
+
+/// The customer's account balance, read through the ledger's own derived
+/// view: the tests assert what the API would report, not a re-implementation
+/// of the sum.
+async fn account_balance(pool: &PgPool, customer: Uuid) -> Decimal {
+    organox::customer_accounts::repository::account_position(pool, customer)
+        .await
+        .expect("account position")
+        .balance
+}
+
+/// How many `sale_charge` entries one sale produced. The ledger's unique
+/// partial index keeps this at one; the tests prove the completion wrote it.
+async fn sale_charge_count(pool: &PgPool, sale: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM customer_account_entries
+         WHERE sale_id = $1 AND kind = 'sale_charge'",
+    )
+    .bind(sale)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn ledger_entry_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM customer_account_entries")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn stock_outflow_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM stock_movements WHERE reason = 'sale'")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// POST the completion body the clients send. The on-account rules go
+/// through HTTP on purpose: the `on_account` field, its default and the 422
+/// mappings are part of what this change pins, not just the rule behind them.
+async fn http_complete(
+    pool: &PgPool,
+    cookie: &str,
+    sale: Uuid,
+    body: serde_json::Value,
+) -> axum::http::Response<axum::body::Body> {
+    use tower::ServiceExt;
+    app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{sale}/complete"), cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// The `detail` of a rejected completion, as the client reads it.
+async fn problem_detail(response: axum::http::Response<axum::body::Body>) -> String {
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    body["detail"].as_str().unwrap().to_string()
+}
+
+/// The common setup of the on-account tests: a cashier with a session, a
+/// product at `price`, stock for ten units, and a draft holding one unit.
+async fn draft_at_price(pool: &PgPool, price: Decimal) -> (Uuid, Uuid, Uuid, String) {
+    let (actor, password) = seed_user_with_password(pool).await;
+    let product = seed_product(pool, "Flour", price).await;
+    stock(pool, actor, product, dec!(10)).await;
+    let draft = sales::open_draft(pool, actor).await.unwrap();
+    sales::add_item(pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+    let cookie = login_cookie(pool, &password).await;
+    (actor, draft, product, cookie)
+}
+
+/// Part in a wallet, part on account: one wallet movement for the 40, one
+/// ledger charge for the 60, one stock deduction — all from one completion.
+#[sqlx::test]
+async fn a_sale_can_be_completed_with_part_on_account(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "40.00" } ],
+            "on_account": "60.00"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["sale_id"], serde_json::json!(draft));
+    assert_eq!(body["total"], "100.00");
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Completed);
+
+    // The wallet took 40, the account took 60, the stock left once.
+    assert_eq!(wallet_balance(&pool, wallet).await, dec!(40.00));
+    assert_eq!(account_balance(&pool, customer).await, dec!(60.00));
+    assert_eq!(sale_charge_count(&pool, draft).await, 1);
+    assert_eq!(current_stock(&pool, product).await, dec!(9));
+    assert_eq!(stock_outflow_count(&pool).await, 1);
+}
+
+/// The whole total on account: no wallet is touched at all, because no money
+/// entered one; the account is the only record that the sale is owed.
+#[sqlx::test]
+async fn a_sale_can_be_completed_entirely_on_account(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [], "on_account": "100.00" }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Completed);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, dec!(100.00));
+    assert_eq!(sale_charge_count(&pool, draft).await, 1);
+    assert_eq!(current_stock(&pool, product).await, dec!(9));
+}
+
+/// Debt needs a debtor: an on-account part on an anonymous draft is rejected
+/// with nothing written.
+#[sqlx::test]
+async fn a_sale_on_account_needs_a_customer(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [], "on_account": "100.00" }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "an on-account amount needs a customer on the sale"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+}
+
+/// Credit is extended only to customers the registry still vouches for: a
+/// customer deactivated before the checkout blocks the on-account part — and
+/// only that part, the cash-only case is pinned by
+/// `a_customer_deactivated_mid_draft_does_not_block_checkout`.
+#[sqlx::test]
+async fn a_sale_on_account_needs_an_active_customer(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    customers::deactivate_customer(&pool, customer)
+        .await
+        .unwrap();
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [], "on_account": "100.00" }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "an on-account amount needs an active customer"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// 40 in a wallet and 30 on account do not cover a total of 100: the
+/// invariant is exact, and its rejection leaves nothing behind.
+#[sqlx::test]
+async fn on_account_and_payments_must_add_up_to_the_total(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "40.00" } ],
+            "on_account": "30.00"
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "the payments and the on-account amount add up to 70.00, but the sale total is 100.00"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(wallet_balance(&pool, wallet).await, Decimal::ZERO);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+}
+
+/// More on account than the sale costs is a mismatch, not credit: the
+/// invariant has no room for a part larger than the whole.
+#[sqlx::test]
+async fn on_account_cannot_exceed_the_total(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [], "on_account": "120.00" }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "the payments and the on-account amount add up to 120.00, but the sale total is 100.00"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// Three decimals are rejected instead of silently rounded — the same rule a
+/// payment with three decimals follows. Charging 10.005 as 10.00 would change
+/// what the client asked for.
+#[sqlx::test]
+async fn an_on_account_with_three_decimals_is_rejected(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [], "on_account": "10.005" }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "the on-account amount has more than 2 decimal places"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// A zero total keeps completing with no payments and no on-account part;
+/// a positive on-account amount can never satisfy the invariant against a
+/// total of zero.
+#[sqlx::test]
+async fn a_zero_total_sale_needs_no_on_account(pool: PgPool) {
+    let (actor, draft, product, cookie) = draft_at_price(&pool, Decimal::ZERO).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [], "on_account": "0" }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(current_stock(&pool, product).await, dec!(9));
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+
+    // The same cashier's next draft: owing anything against a zero total is a
+    // mismatch by construction.
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [], "on_account": "1.00" }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "the payments and the on-account amount add up to 1.00, but the sale total is 0.00"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(9));
+    // Only the first, accepted sale deducted stock.
+    assert_eq!(stock_outflow_count(&pool).await, 1);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+}
+
+/// A negative on-account amount is the only way 105 collected at the till can
+/// balance a total of 100. It would leave the sale over-collected with nothing
+/// in the ledger explaining the surplus, so the guard has to refuse it before
+/// any write.
+#[sqlx::test]
+async fn a_negative_on_account_is_rejected(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "105.00" } ],
+            "on_account": "-5.00"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "the on-account amount cannot be negative"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(wallet_balance(&pool, wallet).await, Decimal::ZERO);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// The on-account charge waits for the customer's advisory lock, and that wait
+/// is bounded. A collection in flight must not turn a checkout into a request
+/// that hangs forever: the register gets a retryable 409 instead.
+#[sqlx::test]
+async fn a_busy_customer_account_answers_409(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    // Another connection holds the account the way a collection in flight does.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(customer.to_string())
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        http_complete(
+            &pool,
+            &cookie,
+            draft,
+            serde_json::json!({ "payments": [], "on_account": "100.00" }),
+        ),
+    )
+    .await
+    .expect("the completion never answered: the lock wait is not bounded");
+
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        problem_detail(response).await,
+        "the customer account is busy, retry"
+    );
+
+    holder.rollback().await.unwrap();
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// The mismatch detail is part of the contract. A completion that never used
+/// the account has to keep the sentence it always answered with: a change that
+/// claims `on_account = 0` behaves as before must not quietly rewrite it.
+#[sqlx::test]
+async fn a_cash_only_mismatch_keeps_its_original_message(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [ { "payment_method_id": method, "amount": "90.00" } ] }),
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        problem_detail(response).await,
+        "the payments do not add up to the sale total"
+    );
+
+    assert_eq!(
+        sales::get(&pool, draft).await.unwrap().status,
+        SaleStatus::Draft
+    );
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(wallet_balance(&pool, wallet).await, Decimal::ZERO);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+}
+
+// --- The credit limit ---------------------------------------------------
+
+/// The limit is a hard ceiling, not a warning: an on-account part that does
+/// not fit is refused whole, with `409` naming the credit that remains — the
+/// same status the stock rejection uses, because both are "retry with less".
+#[sqlx::test]
+async fn an_on_account_amount_beyond_the_limit_answers_409(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer_with_limit(&pool, "Ana Pérez", Some(dec!(40.00))).await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let method = cash(&pool).await;
+    let wallet = wallet_for(&pool, method).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "40.00" } ],
+            "on_account": "60.00"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        problem_detail(response).await,
+        "the on-account amount exceeds the 40.00 the customer still has available"
+    );
+
+    // Rejected whole: the sale never closed, the stock never left, no wallet
+    // saw money and the ledger holds no charge.
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(wallet_balance(&pool, wallet).await, Decimal::ZERO);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// `0` is a limit, not the absence of one: the customer may still buy, but
+/// everything the sale costs has to be collected at the till.
+#[sqlx::test]
+async fn a_customer_with_a_zero_limit_cannot_buy_on_account(pool: PgPool) {
+    let (_actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer_with_limit(&pool, "Ana Pérez", Some(Decimal::ZERO)).await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [], "on_account": "100.00" }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        problem_detail(response).await,
+        "the on-account amount exceeds the 0.00 the customer still has available"
+    );
+
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(stock_outflow_count(&pool).await, 0);
+    assert_eq!(payment_movement_count(&pool).await, 0);
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+
+    // Cash only, not "no sales": the same draft completes the moment the
+    // till collects it in full.
+    let method = cash(&pool).await;
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({ "payments": [ { "payment_method_id": method, "amount": "100.00" } ] }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(current_stock(&pool, product).await, dec!(9));
+    assert_eq!(ledger_entry_count(&pool).await, 0);
+    assert_eq!(account_balance(&pool, customer).await, Decimal::ZERO);
+}
+
+/// The ceiling counts the balance the customer already carries, so it is on
+/// total exposure, never on the single sale: owing 60 of a 100 limit leaves
+/// 40, and a second sale that asks for 50 on account is refused.
+#[sqlx::test]
+async fn the_credit_limit_counts_the_debt_the_customer_already_has(pool: PgPool) {
+    let (actor, draft, product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer_with_limit(&pool, "Ana Pérez", Some(dec!(100.00))).await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let method = cash(&pool).await;
+
+    // The first sale leaves 60 owed: it fits, and the account says so.
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "40.00" } ],
+            "on_account": "60.00"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(account_balance(&pool, customer).await, dec!(60.00));
+
+    // A second sale on the same account: 50 more would put the exposure at
+    // 110 against the 100 limit.
+    let second = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, second, product, dec!(1))
+        .await
+        .unwrap();
+    sales::set_customer(&pool, second, Some(customer))
+        .await
+        .unwrap();
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        second,
+        serde_json::json!({ "payments": [], "on_account": "100.00" }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        problem_detail(response).await,
+        "the on-account amount exceeds the 40.00 the customer still has available"
+    );
+
+    // Only the first sale's trace is in the books.
+    let sale = sales::get(&pool, second).await.unwrap();
+    assert_eq!(sale.status, SaleStatus::Draft);
+    assert_eq!(current_stock(&pool, product).await, dec!(9));
+    assert_eq!(stock_outflow_count(&pool).await, 1);
+    assert_eq!(ledger_entry_count(&pool).await, 1);
+    assert_eq!(account_balance(&pool, customer).await, dec!(60.00));
 }

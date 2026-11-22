@@ -45,15 +45,20 @@ The index name is part of the contract: the repository maps a violation of
 `customers_tax_id_unique` to the `409` "the document is already in use", so
 renaming it breaks the error, not just the schema.
 
-## Four fields, and only four
+## The fields, and why the registry stops there
 
-`name`, `tax_id`, `email`, `phone`. The set was chosen explicitly
-("Nombre + documento + email + teléfono"), and the reason it stops there is
+`name`, `tax_id`, `email`, `phone` — the original four, chosen explicitly
+("Nombre + documento + email + teléfono"), and the reason they stop there is
 that nothing else is read. An address, a birth date or a free-text note is a
 form the operator fills for the database's sake; each one is justified the day
-a feature reads it, not before. A customer also carries no derived state: what
-it bought, returned or owes is read from `sales`, `credit_notes` and the
-wallets when such a view exists, never stored twice here.
+a feature reads it, not before. The registry has since gained exactly one
+more field, `credit_limit`, and for the same reason: the checkout reads it.
+
+A customer still carries no derived state: what it bought, returned or owes
+is read from `sales`, `credit_notes` and the account ledger when such a view
+exists, never stored twice here. The credit limit is not derived state either
+— it is the operator's decision about how much may be owed, a policy rather
+than a balance.
 
 The optional fields are deliberately loose where the cost of being wrong is a
 blocked sale:
@@ -64,6 +69,38 @@ blocked sale:
   claims it is.
 - **`phone`** has no format at all, only a length bound. Phone formats differ
   per country and per habit, and a rejected valid number blocks a sale.
+
+## The credit limit: NULL unlimited, 0 cash only
+
+`credit_limit` is the ceiling the shop is willing to be owed by one customer:
+`numeric(14, 2)`, optional, never negative, at most two decimals and never
+above `999999999999.99` — the column's own magnitude, refused at the boundary so
+an out-of-range limit answers a sentence instead of a database error. `NULL` —
+the
+column default, and what every customer created before the field exists has —
+means **no limit**: the customer can owe any amount. `0` means **cash only**:
+the customer may still buy, but nothing on account. `0` is a limit, not the
+absence of one, which is exactly why `NULL` had to be the unlimited sentinel.
+
+It is enforced at checkout, not on the customer row:
+`POST /sales/{id}/complete` rejects a completion whose on-account part would
+push the customer's balance past the limit — the balance already carried plus
+the new amount — with `409` naming the credit that remains (`docs/sales.md`).
+Because the check counts the balance, the limit is a ceiling on **total
+exposure**, never on the single sale, and a customer who holds money in their
+favour can buy on account against it: spending money already in the shop's
+hands is not credit.
+
+Lowering a limit below the balance a customer already has is allowed and
+blocks only new credit: the existing debt is untouched — it is collected or
+cancelled like any other — and the next on-account sale is refused until it
+fits.
+
+Unlike the text fields, the limit is **clearable through `PATCH`**: an omitted
+`credit_limit` leaves it untouched, an explicit `null` returns the customer to
+unlimited. A limit is the one field a real case has asked to clear — an
+operator who raised a limit for a good month must be able to undo it without
+re-creating the row.
 
 ## `include_inactive`, not an `active` filter
 
@@ -76,17 +113,24 @@ list already uses, so the screens learn one word. Deactivation hides a
 customer from the default listing, never from `GET /customers/{id}`, which
 returns it either way — detail and history keep working.
 
-## `PATCH` replaces, it cannot clear
+## `PATCH` replaces; the text fields cannot be cleared
 
 `PATCH /customers/{id}` updates only the fields it receives: the `UPDATE` is
-`COALESCE($n, column)`, so an absent field — which deserializes to SQL `NULL` —
-means "leave it as it is". The consequence is that an optional field can be
-**replaced but not removed**: there is no body that clears an email, a phone or
-a document, and an empty string is normalized to "nothing was sent", so it is
+`COALESCE($n, column)`, so an absent text field — which deserializes to SQL
+`NULL` — means "leave it as it is". The consequence is that `tax_id`, `email`
+and `phone` can be **replaced but not removed**: there is no body that clears
+them, and an empty string is normalized to "nothing was sent", so it is
 ignored too. A client must therefore send only the fields it wants to change
-and never offer a "clear this field" affordance; the screen doesn't. The
-alternative — reading `null` as "clear" — makes every partial update from a
-form erase the fields the form did not send.
+and never offer a "clear this field" affordance for them; the screen doesn't.
+The alternative — reading `null` as "clear" — makes every partial update from
+a form erase the fields the form did not send.
+
+`credit_limit` is the one deliberate exception, because it is the one field a
+real case has asked to clear: its `UPDATE` carries a separate clear flag, so
+an explicit `null` sets the limit back to unlimited while every other field
+keeps the `COALESCE` rule above. The distinction lives in serde — an omitted
+field and an explicit `null` arrive as different values — and is pinned by
+`a_credit_limit_is_optional_and_can_be_cleared`.
 
 ## The sale link: optional, and only while it is a draft
 
@@ -168,7 +212,8 @@ rather than as a wildcard: `src/search.rs` holds that escape and both searches i
 the tree use it, which is the only way the two cannot drift.
 
 `CustomerResponse` fields: `id`, `name`, `tax_id`, `email`, `phone`,
-`is_active`, `created_at`, `updated_at`.
+`is_active`, `credit_limit` (`null` = unlimited, `"0.00"` = cash only, money
+as a string), `created_at`, `updated_at`.
 
 ## Validation rules
 
@@ -179,6 +224,7 @@ the tree use it, which is the only way the two cannot drift.
 | `email` | optional, trimmed, ≤ 254 chars, one `@` with text on both sides | service |
 | `phone` | optional, trimmed, ≤ 40 chars, any format | service |
 | `email`, `phone`, `tax_id` blank | stored as `NULL`, never `""` | service + `CHECK`s (`*_not_blank`) |
+| `credit_limit` | optional, `>= 0`, at most two decimals; `NULL` = unlimited, `0` = cash only; clearable through `PATCH` with an explicit `null` | service + `customers_credit_limit_not_negative` |
 
 Validation exists to hand the operator a sentence they can act on; the rules
 that cannot be broken without corrupting data (blank name, blank document,

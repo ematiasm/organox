@@ -99,6 +99,14 @@ pub struct SalePaymentRequest {
 #[derive(Deserialize, ToSchema)]
 pub struct CompleteSaleRequest {
     pub payments: Vec<SalePaymentRequest>,
+    /// Part of the total charged to the customer's account instead of
+    /// collected at the till. Optional and defaults to 0; never negative and
+    /// at most two decimals. The payments plus this amount must equal the
+    /// total the server calculated, and a positive amount needs an active
+    /// customer on the draft whose credit limit still fits it.
+    #[serde(default)]
+    #[schema(value_type = String, example = "60.00")]
+    pub on_account: Decimal,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -213,7 +221,9 @@ async fn complete_sale(
         })
         .collect();
 
-    let done = service::complete(&state.pool, id, user.id(), &payments).await?;
+    let done =
+        service::complete_with_on_account(&state.pool, id, user.id(), &payments, body.on_account)
+            .await?;
     Ok(Json(CompletedSaleResponse {
         sale_id: done.sale_id,
         total: format_money(done.total),
@@ -315,13 +325,42 @@ impl From<SalesError> for AppError {
             SalesError::EmptySale => AppError::Validation(err.to_string()),
             SalesError::PaymentAmountNotPositive
             | SalesError::PaymentAmountPrecision
-            | SalesError::PaymentMethodUnavailable => AppError::Validation(err.to_string()),
-            SalesError::PaymentMismatch { total, paid } => AppError::Validation(format!(
-                "the payments add up to {}, but the sale total is {}",
-                format_money(paid),
-                format_money(total)
-            )),
+            | SalesError::PaymentMethodUnavailable
+            | SalesError::OnAccountNegative
+            | SalesError::OnAccountPrecision
+            | SalesError::OnAccountNeedsCustomer
+            | SalesError::OnAccountNeedsActiveCustomer => AppError::Validation(err.to_string()),
+            SalesError::OnAccountExceedsCreditLimit { available } => {
+                // The same family as the stock conflict: the request can be
+                // retried with a smaller on-account part, and the message
+                // names by how much. Money always carries its cents, even
+                // when what remains is zero.
+                AppError::Conflict(format!(
+                    "the on-account amount exceeds the {} the customer still has available",
+                    format_money(available)
+                ))
+            }
+            SalesError::PaymentMismatch {
+                total,
+                paid,
+                on_account,
+            } => {
+                // The wording is part of the contract. A completion that never
+                // mentions the account keeps the sentence it has always had;
+                // only a request that actually used it may say so.
+                let detail = if on_account > Decimal::ZERO {
+                    format!(
+                        "the payments and the on-account amount add up to {}, but the sale total is {}",
+                        format_money(paid),
+                        format_money(total)
+                    )
+                } else {
+                    "the payments do not add up to the sale total".to_string()
+                };
+                AppError::Validation(detail)
+            }
             SalesError::CustomerInactive => AppError::Conflict(err.to_string()),
+            SalesError::CustomerAccountBusy => AppError::Conflict(err.to_string()),
             SalesError::CustomerLookup(err) => AppError::Internal(err.to_string()),
             SalesError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
@@ -437,9 +476,12 @@ fn remove_item_doc() {}
 /// Complete the sale.
 ///
 /// In one transaction: validate stock with the product row locked, check that
-/// the payments add up to the total, write an outflow movement per item and a
-/// money movement per payment, then close the sale. Any rejection leaves **no**
-/// movements and no status change.
+/// the payments plus the optional `on_account` amount add up to the total,
+/// authorize the on-account part against the customer's activity and credit
+/// limit, write an outflow movement per item, a money movement per payment
+/// and, when part of the total is on account, the charge in the customer's
+/// ledger, then close the sale. Any rejection leaves **no** movements, no
+/// ledger entry and no status change.
 #[utoipa::path(
     post,
     path = "/api/v1/sales/{id}/complete",
@@ -452,9 +494,9 @@ fn remove_item_doc() {}
          content_type = "application/problem+json"),
         (status = 404, description = "Not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "Insufficient stock or sale already closed", body = crate::openapi::Problem,
+        (status = 409, description = "Insufficient stock, sale already closed, busy customer account, or an on-account amount beyond the customer's credit limit (the remaining credit is named in the message)", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 422, description = "Sale empty, payments missing, wrong sum or unusable method", body = crate::openapi::Problem,
+        (status = 422, description = "Sale empty, wrong sum, unusable method, or an on-account amount without an active customer", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]

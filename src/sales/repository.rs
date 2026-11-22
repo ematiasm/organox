@@ -41,7 +41,29 @@ pub enum RepoError {
     PaymentAmountPrecision,
 
     #[error("the payments do not add up to the sale total")]
-    PaymentMismatch { total: Decimal, paid: Decimal },
+    PaymentMismatch {
+        total: Decimal,
+        paid: Decimal,
+        on_account: Decimal,
+    },
+
+    #[error("the on-account amount cannot be negative")]
+    OnAccountNegative,
+
+    #[error("the on-account amount has more than 2 decimal places")]
+    OnAccountPrecision,
+
+    #[error("an on-account amount needs a customer on the sale")]
+    OnAccountNeedsCustomer,
+
+    #[error("an on-account amount needs an active customer")]
+    OnAccountNeedsActiveCustomer,
+
+    #[error("the on-account amount exceeds the {available} the customer still has available")]
+    OnAccountExceedsCreditLimit { available: Decimal },
+
+    #[error("the customer account is busy, retry")]
+    CustomerAccountBusy,
 
     #[error("the payment method is unknown or inactive")]
     PaymentMethodUnavailable,
@@ -382,11 +404,13 @@ struct ResolvedCharge {
 async fn resolve_payments(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     payments_input: &[SalePaymentInput],
+    on_account: Decimal,
     total: Decimal,
 ) -> Result<Vec<ResolvedCharge>, RepoError> {
     // No empty-list rejection here on purpose: a zero-total sale (a sample, a
     // warranty replacement) has no money to route, and the sum check below
-    // already rejects an empty list whenever there IS something to collect.
+    // already rejects an empty list whenever there IS something to collect
+    // (at the till or on account).
     let mut paid = Decimal::ZERO;
     let mut resolved = Vec::with_capacity(payments_input.len());
 
@@ -420,8 +444,18 @@ async fn resolve_payments(
         });
     }
 
-    if paid != total {
-        return Err(RepoError::PaymentMismatch { total, paid });
+    // The completion invariant: what the wallets collect plus what the
+    // account takes must equal the total the server computed, exactly.
+    // `paid` carries both parts together, so the rejection names the amount
+    // the request actually covered; `on_account` travels separately because
+    // only a request that used the account may mention it in the message.
+    let covered = paid + on_account;
+    if covered != total {
+        return Err(RepoError::PaymentMismatch {
+            total,
+            paid: covered,
+            on_account,
+        });
     }
 
     Ok(resolved)
@@ -434,28 +468,85 @@ fn map_payment_error(err: payments::RepoError) -> RepoError {
     }
 }
 
-/// Complete the sale: validate stock, write movements and close it.
+/// `authorize_credit` re-runs, under the customer's lock, what this
+/// transaction is about to act on. Its typed refusals keep the answers the
+/// completion already gives: an inactive customer stays the 422 it has
+/// always been, and a limit rejection joins the stock conflict as a 409 that
+/// names what is left. The busy lock and database errors pass through.
+fn map_authorize_error(err: crate::customer_accounts::repository::RepoError) -> RepoError {
+    use crate::customer_accounts::repository::RepoError as AuthorizeError;
+    match err {
+        AuthorizeError::Database(sql) => RepoError::Database(sql),
+        AuthorizeError::CustomerBusy => RepoError::CustomerAccountBusy,
+        AuthorizeError::CustomerInactive => RepoError::OnAccountNeedsActiveCustomer,
+        AuthorizeError::CreditLimitExceeded { available, .. } => {
+            RepoError::OnAccountExceedsCreditLimit { available }
+        }
+        other => RepoError::Database(sqlx::Error::Protocol(format!(
+            "authorize_credit refused a charge the completion had validated: {other}"
+        ))),
+    }
+}
+
+/// `record_charge` re-validates what this transaction already proved — the
+/// sale is completed and belongs to the customer, the amount is cents, and
+/// the ceiling it re-derives is the uncollected remainder — so its typed
+/// refusals name conditions that cannot hold here and surface as internal
+/// errors rather than a misleading typed rejection. The busy lock is the one
+/// reachable refusal: a collection holding the customer's account.
+fn map_charge_error(err: crate::customer_accounts::repository::RepoError) -> RepoError {
+    use crate::customer_accounts::repository::RepoError as ChargeError;
+    match err {
+        ChargeError::Database(sql) => RepoError::Database(sql),
+        ChargeError::CustomerBusy => RepoError::CustomerAccountBusy,
+        other => RepoError::Database(sqlx::Error::Protocol(format!(
+            "record_charge refused a charge the completion had validated: {other}"
+        ))),
+    }
+}
+
+/// Complete the sale: validate stock, write movements, charge the account
+/// part and close it.
 ///
 /// All in ONE transaction with `SELECT ... FOR UPDATE` per product. This is the
 /// same discipline as `record_movement`: otherwise two registers can sell the
 /// last unit at the same time.
+///
+/// `on_account` is the part of the total charged to the customer's account
+/// instead of the wallets: zero for an ordinary cash sale, at most the total,
+/// and written as one `sale_charge` in the customer's ledger inside this same
+/// transaction.
 pub async fn complete(
     pool: &PgPool,
     sale_id: Uuid,
     actor: Uuid,
     payments_input: &[SalePaymentInput],
+    on_account: Decimal,
 ) -> Result<CompletedSale, RepoError> {
+    // The account takes debt, it does not give change: a negative amount is a
+    // request to mint credit, not a payment. And a third decimal is something
+    // `numeric(14,2)` cannot hold — rejected, never rounded, the same rule the
+    // payments follow. Checked before anything is read: neither depends on
+    // the sale, and rejecting here leaves nothing to roll back.
+    if on_account < Decimal::ZERO {
+        return Err(RepoError::OnAccountNegative);
+    }
+    if on_account.round_dp(2) != on_account {
+        return Err(RepoError::OnAccountPrecision);
+    }
+
     let mut tx = pool.begin().await?;
 
-    let status = sqlx::query_scalar!(
-        r#"SELECT status AS "status: SaleStatus" FROM sales WHERE id = $1 FOR UPDATE"#,
+    let sale_row = sqlx::query!(
+        r#"SELECT status AS "status: SaleStatus", customer_id
+           FROM sales WHERE id = $1 FOR UPDATE"#,
         sale_id
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(RepoError::NotFound)?;
 
-    if !status.is_editable() {
+    if !sale_row.status.is_editable() {
         return Err(RepoError::NotEditable);
     }
 
@@ -525,9 +616,33 @@ pub async fn complete(
     // `numeric(14,2)`: rounded on save, not truncated.
     let total = total.round_dp(2);
 
-    // The money must add up to the total the server computed, and every method
-    // must still be usable. Checked before any write.
-    let charges = resolve_payments(&mut tx, payments_input, total).await?;
+    // The money must add up to the total the server computed — the wallets'
+    // part plus the account's part — and every method must still be usable.
+    // Checked before any write.
+    let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
+
+    // An on-account part is debt, and debt is extended only within what the
+    // registry still vouches for: the draft must carry a customer, that
+    // customer must be active, and the exposure the sale would leave must fit
+    // the customer's credit limit. One gate, `authorize_credit`, decides all
+    // three under the customer's lock, before any write, so a rejection
+    // leaves no trace and a deactivation racing the checkout cannot slip
+    // between the gate and the charge. The gate runs ONLY when something is
+    // on account: a customer deactivated mid-draft must not block a sale the
+    // till collects in full.
+    let charge_customer = if on_account > Decimal::ZERO {
+        let customer_id = sale_row
+            .customer_id
+            .ok_or(RepoError::OnAccountNeedsCustomer)?;
+
+        crate::customer_accounts::repository::authorize_credit(&mut tx, customer_id, on_account)
+            .await
+            .map_err(map_authorize_error)?;
+
+        Some(customer_id)
+    } else {
+        None
+    };
 
     let note = format!("Sale {}", &sale_id.to_string()[..8]);
 
@@ -599,6 +714,25 @@ pub async fn complete(
     )
     .fetch_one(&mut *tx)
     .await?;
+
+    // The account's charge belongs to the same commit as the stock, the
+    // wallets and the status flip: a sale and the debt it creates are written
+    // together or not at all. `record_charge` re-derives its own ceiling — the
+    // total minus what the wallets just collected — from the rows this
+    // transaction wrote, so the charge is by construction exactly the
+    // on-account part. Its advisory lock serializes this write against
+    // collections on the same account.
+    if let Some(customer_id) = charge_customer {
+        crate::customer_accounts::repository::record_charge(
+            &mut tx,
+            customer_id,
+            sale_id,
+            on_account,
+            actor,
+        )
+        .await
+        .map_err(map_charge_error)?;
+    }
 
     tx.commit().await?;
 

@@ -259,7 +259,7 @@
           "customers"
         ],
         "summary": "Register a customer.",
-        "description": "`tax_id` is optional and unique when present; a duplicate returns 409.",
+        "description": "`tax_id` is optional and unique when present; a duplicate returns 409.\n`credit_limit` is optional too: absent or `null` means unlimited, `0`\nmeans cash only, and a negative or three-decimal value is a 422.",
         "operationId": "create_customer_doc",
         "requestBody": {
           "content": {
@@ -372,7 +372,7 @@
           "customers"
         ],
         "summary": "Update only the fields sent.",
-        "description": "A field left out is not touched. This route cannot clear an optional field:\nthat needs an explicit marker and, today, no screen asks for it.",
+        "description": "A text field left out is not touched and cannot be cleared: there is no\nbody that removes a document, an email or a phone. `credit_limit` is the\none exception — an explicit `null` returns the customer to unlimited —\nbecause it is the only field a real case has asked to clear.",
         "operationId": "update_customer_doc",
         "parameters": [
           {
@@ -1327,7 +1327,7 @@
           "sales"
         ],
         "summary": "Complete the sale.",
-        "description": "In one transaction: validate stock with the product row locked, check that\nthe payments add up to the total, write an outflow movement per item and a\nmoney movement per payment, then close the sale. Any rejection leaves **no**\nmovements and no status change.",
+        "description": "In one transaction: validate stock with the product row locked, check that\nthe payments plus the optional `on_account` amount add up to the total,\nauthorize the on-account part against the customer's activity and credit\nlimit, write an outflow movement per item, a money movement per payment\nand, when part of the total is on account, the charge in the customer's\nledger, then close the sale. Any rejection leaves **no** movements, no\nledger entry and no status change.",
         "operationId": "complete_sale_doc",
         "parameters": [
           {
@@ -1383,7 +1383,7 @@
             }
           },
           "409": {
-            "description": "Insufficient stock or sale already closed",
+            "description": "Insufficient stock, sale already closed, busy customer account, or an on-account amount beyond the customer's credit limit (the remaining credit is named in the message)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1393,7 +1393,7 @@
             }
           },
           "422": {
-            "description": "Sale empty, payments missing, wrong sum or unusable method",
+            "description": "Sale empty, wrong sum, unusable method, or an on-account amount without an active customer",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2458,6 +2458,11 @@
           "payments"
         ],
         "properties": {
+          "on_account": {
+            "type": "string",
+            "description": "Part of the total charged to the customer's account instead of\ncollected at the till. Optional and defaults to 0; never negative and\nat most two decimals. The payments plus this amount must equal the\ntotal the server calculated, and a positive amount needs an active\ncustomer on the draft whose credit limit still fits it.",
+            "example": "60.00"
+          },
           "payments": {
             "type": "array",
             "items": {
@@ -2538,6 +2543,14 @@
           "name"
         ],
         "properties": {
+          "credit_limit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional credit limit: absent or `null` means unlimited, `0` means\ncash only. Never negative, at most two decimals.",
+            "example": "100.00"
+          },
           "email": {
             "type": [
               "string",
@@ -2874,6 +2887,13 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "credit_limit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` means no limit (the default), `\"0.00\"` means cash only. Money as\na string with its cents, like every other amount in the tree."
           },
           "email": {
             "type": [
@@ -3472,6 +3492,14 @@
       "UpdateCustomerRequest": {
         "type": "object",
         "properties": {
+          "credit_limit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The one clearable field: absent leaves the limit untouched, an explicit\n`null` returns the customer to unlimited, a value sets it. The double\n`Option` keeps the three cases apart the same way `PUT\n/sales/{id}/customer` keeps attach and clear apart.",
+            "example": "100.00"
+          },
           "email": {
             "type": [
               "string",

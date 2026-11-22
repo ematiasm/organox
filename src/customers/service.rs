@@ -5,6 +5,7 @@
 //!  * a document belongs to exactly one customer, compared without case;
 //!  * a page never claims the registry is empty when it is not.
 
+use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -32,6 +33,9 @@ pub struct CreateCustomerInput {
     pub tax_id: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
+    /// `None` is unlimited; `0` is cash only. Validated here, never left to
+    /// the column to round or reject.
+    pub credit_limit: Option<Decimal>,
 }
 
 pub async fn create_customer(
@@ -42,6 +46,10 @@ pub async fn create_customer(
     let tax_id = validation::validate_tax_id(input.tax_id.as_deref())?;
     let email = validation::validate_email(input.email.as_deref())?;
     let phone = validation::validate_phone(input.phone.as_deref())?;
+    let credit_limit = input
+        .credit_limit
+        .map(validation::validate_credit_limit)
+        .transpose()?;
 
     let id = repository::create_customer(
         pool,
@@ -50,6 +58,7 @@ pub async fn create_customer(
             tax_id: tax_id.as_deref(),
             email: email.as_deref(),
             phone: phone.as_deref(),
+            credit_limit,
         },
     )
     .await
@@ -108,6 +117,11 @@ pub struct UpdateCustomerInput {
     pub email: Option<String>,
     pub phone: Option<String>,
     pub is_active: Option<bool>,
+    /// `None` leaves the limit untouched, `Some(None)` clears it back to
+    /// unlimited, `Some(Some(x))` sets it to `x`. The double `Option` is the
+    /// same shape `PUT /sales/{id}/customer` uses for `customer_id`, for the
+    /// same reason: serde collapses a missing field and an explicit `null`.
+    pub credit_limit: Option<Option<Decimal>>,
 }
 
 pub async fn update_customer(
@@ -132,6 +146,12 @@ pub async fn update_customer(
         Some(raw) => validation::validate_phone(Some(raw))?,
         None => None,
     };
+    // Only a decision that is actually present is validated: an absent field
+    // must not turn "untouched" into a rejection.
+    let credit_limit = match input.credit_limit {
+        Some(raw) => Some(raw.map(validation::validate_credit_limit).transpose()?),
+        None => None,
+    };
 
     repository::update_customer(
         pool,
@@ -142,6 +162,7 @@ pub async fn update_customer(
             email: email.as_deref(),
             phone: phone.as_deref(),
             is_active: input.is_active,
+            credit_limit,
         },
     )
     .await

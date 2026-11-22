@@ -96,6 +96,8 @@ export interface paths {
         /**
          * Register a customer.
          * @description `tax_id` is optional and unique when present; a duplicate returns 409.
+         *     `credit_limit` is optional too: absent or `null` means unlimited, `0`
+         *     means cash only, and a negative or three-decimal value is a 422.
          */
         post: operations["create_customer_doc"];
         delete?: never;
@@ -120,8 +122,10 @@ export interface paths {
         head?: never;
         /**
          * Update only the fields sent.
-         * @description A field left out is not touched. This route cannot clear an optional field:
-         *     that needs an explicit marker and, today, no screen asks for it.
+         * @description A text field left out is not touched and cannot be cleared: there is no
+         *     body that removes a document, an email or a phone. `credit_limit` is the
+         *     one exception — an explicit `null` returns the customer to unlimited —
+         *     because it is the only field a real case has asked to clear.
          */
         patch: operations["update_customer_doc"];
         trace?: never;
@@ -354,9 +358,12 @@ export interface paths {
         /**
          * Complete the sale.
          * @description In one transaction: validate stock with the product row locked, check that
-         *     the payments add up to the total, write an outflow movement per item and a
-         *     money movement per payment, then close the sale. Any rejection leaves **no**
-         *     movements and no status change.
+         *     the payments plus the optional `on_account` amount add up to the total,
+         *     authorize the on-account part against the customer's activity and credit
+         *     limit, write an outflow movement per item, a money movement per payment
+         *     and, when part of the total is on account, the charge in the customer's
+         *     ledger, then close the sale. Any rejection leaves **no** movements, no
+         *     ledger entry and no status change.
          */
         post: operations["complete_sale_doc"];
         delete?: never;
@@ -575,6 +582,15 @@ export interface components {
          *     money went.
          */
         CompleteSaleRequest: {
+            /**
+             * @description Part of the total charged to the customer's account instead of
+             *     collected at the till. Optional and defaults to 0; never negative and
+             *     at most two decimals. The payments plus this amount must equal the
+             *     total the server calculated, and a positive amount needs an active
+             *     customer on the draft whose credit limit still fits it.
+             * @example 60.00
+             */
+            on_account?: string;
             payments: components["schemas"]["SalePaymentRequest"][];
         };
         CompletedSaleResponse: {
@@ -602,6 +618,12 @@ export interface components {
             reason: string;
         };
         CreateCustomerRequest: {
+            /**
+             * @description Optional credit limit: absent or `null` means unlimited, `0` means
+             *     cash only. Never negative, at most two decimals.
+             * @example 100.00
+             */
+            credit_limit?: string | null;
             email?: string | null;
             name: string;
             phone?: string | null;
@@ -720,6 +742,11 @@ export interface components {
         CustomerResponse: {
             /** Format: date-time */
             created_at: string;
+            /**
+             * @description `null` means no limit (the default), `"0.00"` means cash only. Money as
+             *     a string with its cents, like every other amount in the tree.
+             */
+            credit_limit?: string | null;
             email?: string | null;
             /** Format: uuid */
             id: string;
@@ -972,6 +999,14 @@ export interface components {
             customer_id?: string | null;
         };
         UpdateCustomerRequest: {
+            /**
+             * @description The one clearable field: absent leaves the limit untouched, an explicit
+             *     `null` returns the customer to unlimited, a value sets it. The double
+             *     `Option` keeps the three cases apart the same way `PUT
+             *     /sales/{id}/customer` keeps attach and clear apart.
+             * @example 100.00
+             */
+            credit_limit?: string | null;
             email?: string | null;
             is_active?: boolean | null;
             name?: string | null;
@@ -2109,7 +2144,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Insufficient stock or sale already closed */
+            /** @description Insufficient stock, sale already closed, busy customer account, or an on-account amount beyond the customer's credit limit (the remaining credit is named in the message) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2118,7 +2153,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Sale empty, payments missing, wrong sum or unusable method */
+            /** @description Sale empty, wrong sum, unusable method, or an on-account amount without an active customer */
             422: {
                 headers: {
                     [name: string]: unknown;

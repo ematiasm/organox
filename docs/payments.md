@@ -87,12 +87,15 @@ deactivation keeps the history readable and the balance explainable.
 
 A list, not a single method: half cash and half card is an ordinary way to pay.
 
-The server checks that the payments add up to the total **it** computed, and that
-every method is active and points at an active wallet. Then, in the **same
-transaction** as the stock deduction and the status update, it writes one
-`wallet_movement` per payment. A sale is never charged without its money record,
-and a rejected payment leaves the sale as a draft with no stock movement and no
-money movement.
+The server checks that the payments plus the optional `on_account` amount add
+up to the total **it** computed, and that every method is active and points at
+an active wallet. Then, in the **same transaction** as the stock deduction and
+the status update, it writes one `wallet_movement` per payment; the
+`on_account` part writes its charge in the customer's account ledger instead.
+A sale is never charged without its money record — the till's movements plus
+the charge in the customer's ledger — and a rejected completion leaves the
+sale as a draft with no stock movement, no money movement and no account
+entry.
 
 ## Refunding a sale
 

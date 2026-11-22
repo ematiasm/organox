@@ -5,6 +5,8 @@
 //!  * a product without a price or a service cannot be added;
 //!  * a completed sale is immutable;
 //!  * a deactivated customer cannot be attached;
+//!  * part of a total can go on the customer's account, but only with an
+//!    active customer on the draft and room under their credit limit;
 //!  * the server calculates the total.
 
 use rust_decimal::Decimal;
@@ -49,7 +51,29 @@ pub enum SalesError {
     PaymentAmountPrecision,
 
     #[error("the payments do not add up to the sale total")]
-    PaymentMismatch { total: Decimal, paid: Decimal },
+    PaymentMismatch {
+        total: Decimal,
+        paid: Decimal,
+        on_account: Decimal,
+    },
+
+    #[error("the on-account amount cannot be negative")]
+    OnAccountNegative,
+
+    #[error("the on-account amount has more than 2 decimal places")]
+    OnAccountPrecision,
+
+    #[error("an on-account amount needs a customer on the sale")]
+    OnAccountNeedsCustomer,
+
+    #[error("an on-account amount needs an active customer")]
+    OnAccountNeedsActiveCustomer,
+
+    #[error("the on-account amount exceeds the {available} the customer still has available")]
+    OnAccountExceedsCreditLimit { available: Decimal },
+
+    #[error("the customer account is busy, retry")]
+    CustomerAccountBusy,
 
     #[error("the payment method is unknown or inactive")]
     PaymentMethodUnavailable,
@@ -83,8 +107,24 @@ fn map_repo_error(err: RepoError) -> SalesError {
         RepoError::NotEditable => SalesError::NotEditable,
         RepoError::PaymentAmountNotPositive => SalesError::PaymentAmountNotPositive,
         RepoError::PaymentAmountPrecision => SalesError::PaymentAmountPrecision,
-        RepoError::PaymentMismatch { total, paid } => SalesError::PaymentMismatch { total, paid },
+        RepoError::PaymentMismatch {
+            total,
+            paid,
+            on_account,
+        } => SalesError::PaymentMismatch {
+            total,
+            paid,
+            on_account,
+        },
         RepoError::PaymentMethodUnavailable => SalesError::PaymentMethodUnavailable,
+        RepoError::OnAccountNegative => SalesError::OnAccountNegative,
+        RepoError::OnAccountPrecision => SalesError::OnAccountPrecision,
+        RepoError::OnAccountNeedsCustomer => SalesError::OnAccountNeedsCustomer,
+        RepoError::OnAccountNeedsActiveCustomer => SalesError::OnAccountNeedsActiveCustomer,
+        RepoError::OnAccountExceedsCreditLimit { available } => {
+            SalesError::OnAccountExceedsCreditLimit { available }
+        }
+        RepoError::CustomerAccountBusy => SalesError::CustomerAccountBusy,
         other => SalesError::Internal(other),
     }
 }
@@ -194,22 +234,39 @@ pub async fn set_customer(
         .map_err(map_repo_error)
 }
 
-/// Complete the sale.
+/// Complete the sale, collecting everything at the till.
 ///
-/// Reject an empty cart here rather than in SQL: charging zero makes no
-/// business sense and the message matters.
+/// The four-argument entry point the cash-only callers already use: its
+/// `on_account` is exactly the JSON body's default, zero.
 pub async fn complete(
     pool: &PgPool,
     sale_id: Uuid,
     actor: Uuid,
     payments: &[SalePaymentInput],
 ) -> Result<CompletedSale, SalesError> {
+    complete_with_on_account(pool, sale_id, actor, payments, Decimal::ZERO).await
+}
+
+/// Complete the sale with part (or all) of its total charged to the
+/// customer's account.
+///
+/// Reject an empty cart here rather than in SQL: charging zero makes no
+/// business sense and the message matters. The on-account rules themselves —
+/// the invariant, a customer, an active one, a credit limit that fits — live
+/// in the completion transaction, where a rejection leaves no trace.
+pub async fn complete_with_on_account(
+    pool: &PgPool,
+    sale_id: Uuid,
+    actor: Uuid,
+    payments: &[SalePaymentInput],
+    on_account: Decimal,
+) -> Result<CompletedSale, SalesError> {
     let sale = get(pool, sale_id).await?;
     if sale.items.is_empty() {
         return Err(SalesError::EmptySale);
     }
 
-    repository::complete(pool, sale_id, actor, payments)
+    repository::complete(pool, sale_id, actor, payments, on_account)
         .await
         .map_err(map_repo_error)
 }

@@ -124,7 +124,11 @@ limit is not null and exposure would exceed it, the completion is rejected whole
 remaining amount named in the message, using the same status the stock rejection uses.
 
 Lowering a limit below the current balance is allowed and blocks only new credit. The check runs
-under the S5 lock.
+under the S5 lock, together with the activity gate: the completion locks the customer advisory
+lock first and then reads the customer row `FOR UPDATE`, so a deactivation cannot slip between the
+gate and the charge. Deactivation takes only that row lock and never the advisory one, so the two
+orders cannot invert. A customer holding credit (`balance` negative) absorbs the new charge before
+the limit applies, because using money already in their favour is not credit.
 
 ### S8 — Available credit is applied at completion
 
@@ -207,8 +211,8 @@ and the new `on_account = 0` sibling.
 | id | spec | route | commit |
 |---|---|---|---|
 | T1 | S1, S2 | **done**: `0015` in one migration (type, tables, append-only triggers, sign and link CHECKs, unique charge/note/movement/idempotency indexes, deferred allocation ceiling), `src/customer_accounts/{model,repository}` with the six writers taking the customer advisory lock first, `tests/customer_accounts.rs` (35 tests: table contract, read model, every writer, two concurrent receipts) | `e230572`, `5f5f4f7`, `2cc7768` |
-| T2 | S4 | `complete` accepts `on_account`, writes the charge, renames the empty-payment test, keeps the cash path identical | feat/customer-accounts-charge |
-| T3 | S5, S7 | advisory lock on every balance write, credit limit column and exposure check | feat/customer-accounts-limit |
+| T2 | S4 | **done**: `complete` takes `on_account`; the invariant is `payments + on_account == total`; the charge is written by `customer_accounts::record_charge` after the status flip inside the same transaction; `on_account = 0` keeps the old path through a four-argument wrapper; 8 HTTP-level tests plus the renamed empty-payment test | `1dc5a6b` |
+| T3 | S5, S7 + L12 | **next**: `0017` adds `customers.credit_limit`; the customers module exposes it (NULL = unlimited, `0` = cash only, clearable through PATCH); `customer_accounts::authorize_credit` takes the customer lock, reads the row `FOR UPDATE`, checks activity and exposure (`balance + amount` against the limit, floored at zero for the message) and returns the available amount; sales calls it before writing and answers 409 naming the remaining credit. Closes `R1-on-account-credit-unbounded`, `R3-active-check-race` and `R4-on-account-active-gate-race` | feat/customer-accounts-limit |
 | T4 | S3, S5, S6 | receipts endpoint, allocations, idempotency, `account_payment` kind in every sign `CASE` | feat/customer-accounts-receipts |
 | T5 | S8 | credit application at completion | feat/customer-accounts-apply-credit |
 | T6 | S9 | debt-first note split, `allocate_refund` rewrite, `account_payment_refund` kind | feat/customer-accounts-note-split |
@@ -305,3 +309,72 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   path; proving the movement belongs to *this customer* needs `wallet_movements.customer_id`,
   which arrives with T4. That residual is T4's, not a silent gap.
   Ledger tests went from 36 to 45; `make check` green at 297 tests.
+- L15 — T2 delivered in `1dc5a6b`. The completion invariant is now equality: `payments +
+  on_account == total`; `on_account > 0` needs a customer on the draft **and** that customer active,
+  checked inside the transaction; a customer deactivated mid-draft still does not block a sale the
+  till collects in full. The charge goes through `record_charge` **after** the status flip and the
+  wallet movements, so its own ceiling (`total − sale_payment`) is exactly the on-account part:
+  the ledger re-derives what the completion already proved instead of trusting the caller. Lock
+  order stays sale → products → customer advisory; a receipt takes no sale row lock, so there is
+  no inversion.
+  Two deliberate deviations: `service::complete` keeps its four-argument signature and delegates
+  with `Decimal::ZERO`, because `tests/credit_notes.rs` (31 tests) calls it and must keep
+  compiling; and the new tests are HTTP-level, which is the only way to pin the JSON field, its
+  serde default and the problem details. `sales` still has no settlement column: the ledger is the
+  only truth. Generated contract regenerated (`openapi.json`, `schema.d.ts`). Full `make check`
+  green at 305 tests, `sales.rs` 42, svelte-check 0/0.
+- L16 — T2 reviewed: lineage `review-a7e4951a9f9a438d`, tier **high**, candidate `f06a2a6..HEAD`
+  (the advisories commit and T2 together), **approved**, authority burned. Nine advisories, all
+  non-blocking. Closed right after the receipt: the negative `on_account` guard and the bounded
+  lock wait each got the test they were missing (`a_negative_on_account_is_rejected`,
+  `a_busy_customer_account_answers_409`, the latter driving a real `55P03`), and the 409
+  description now names the busy account in the contract, the generated document and
+  `docs/sales.md`. Still open, each with its owner: **T3** `R1-on-account-credit-unbounded` (no
+  aggregate ceiling yet — the credit limit is precisely T3), `R3-active-check-race` and
+  `R4-on-account-active-gate-race` (the `is_active` read is not locked, so a deactivation inside
+  the window can still be charged; close it with the limit work, which will touch the same gate);
+  **T4** `R1-receipt-backing-not-customer-bound`; **accepted, documented** `R4-advisory-wait-holds-checkout-locks`
+  and `R4-busy-409-contract-gap` (the 409 is now documented; the checkout serialization is the
+  deliberate price of one lock order).
+- L17 — second review of the same range, this time with `readability` + `reliability`: lineage
+  `review-147b91d960fa0a81` reached `correction_required` over `R2-001` (CRITICAL, deterministic):
+  the payment-mismatch detail was rewritten for **every** completion, including a cash-only one
+  that never mentions the account, which contradicts "on_account = 0 behaves exactly as before".
+  Fixed in `08485a6`: the enriched sentence is emitted only when `on_account > 0`, the variants now
+  carry `on_account` so the boundary can decide, and a new HTTP test pins the original wording.
+  The finding is real and the previous three-lens pass missed it: no readability lens had run.
+  **The correction-plan slot rejected the provider's own binding again**, second lineage, second
+  revision, both accepted shapes, `mutation_performed: false` — same class of facade defect as
+  `review-9bdabf97b891d543`. Two independent occurrences make it reproducible, not a transcription
+  error. The lineage is left for the operator's disposition rather than looped.
+- L18 — the trapped lineage `review-147b91d960fa0a81` was abandoned at the operator's decision, after
+  the finding was fixed and before any further edit: quarantine
+  `review-transactions/quarantine/review-147b91d960fa0a81-2968810132`. Its fix (`08485a6`) enters
+  the next review's range together with T3, so nothing it found is lost.
+- L19 — T3 reviewed: lineage `review-4c1e09c2daa1a08f`, **approved**, authority burned. Three of its
+  five advisories were closed immediately in `ba262f0`; the other two are cosmetic or theoretical
+  and stay recorded. Closed: `R1/R3/R4-credit-limit-magnitude-gap` — the trio all flagged that a
+  well-formed limit above `numeric(14,2)` reached Postgres and answered an internal error instead of
+  a 422, so the boundary now owns the column's magnitude; and
+  `R4-credit-limit-display-mislabels-exposure` — `CreditLimitExceeded` said "the charge of" while
+  carrying the post-charge exposure; and `R3-authorize-credit-zero-amount` — authorizing nothing is
+  always allowed, which matters exactly for the over-limit customers the feature keeps reachable.
+  Remaining: nothing actionable beyond the T4 items already listed in L12.
+- L20 — **review budget**: the whole branch (`f06a2a6..HEAD`, ~2.9k lines) is over the provider's
+  per-lens context budget (`lens_context_budget_exceeded`, no authority created), so reviews must
+  name an explicit narrower `baseRef`. The facade also rejects some lens sets with a bare
+  `lenses-invalid` before the budget check; the accepted recipe is three lenses
+  (`risk`+`resilience`+`reliability`) with a full 40-character commit sha as `baseRef`.
+- L21 — the advisory fixes were reviewed on their own, with the small candidate (93 lines) and two
+  lenses: lineage `review-8980ab8f447a98f8`, **approved**, authority burned. It found three things
+  about the fix itself, all closed in `d28ae60`: the no-op guard used `<= 0` and therefore also
+  blessed negative amounts, out of domain for every money writer; and the reworded refusal sentence
+  had no assertion of its own, so it could have relapsed without failing a test. The lesson repeats
+  in a new shape: a guard that says "nothing to authorize" must say exactly zero, and a changed
+  sentence needs a test that reads it.
+- L22 — that review of the fixes (`review-a75b458c8f7548eb`, 67 lines, 2 lenses, **approved**) found
+  three nits, all in the new tests themselves, and all closed in `8851144`: the sentence test was a
+  `#[sqlx::test]` with an unused pool for a pure formatting assertion, and the negative-amount test
+  matched the variant without pinning the payload the sentence reads. A test that pays for a
+  database it never touches, and a wildcard match over the values an operator reads, are exactly how
+  a wording regression survives.

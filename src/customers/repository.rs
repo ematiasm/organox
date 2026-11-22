@@ -5,8 +5,11 @@
 //!
 //!  * the list is paginated with `COUNT(*) OVER ()`, the pattern that let the
 //!    product list report its real total (issue #22);
-//!  * `update` uses `COALESCE($n, column)`, so an absent field is untouched.
+//!  * `update` uses `COALESCE($n, column)`, so an absent field is untouched;
+//!    the credit limit is the one field with a clear marker, because it is
+//!    the only one a real case has asked to clear.
 
+use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -29,6 +32,8 @@ pub struct NewCustomer<'a> {
     pub tax_id: Option<&'a str>,
     pub email: Option<&'a str>,
     pub phone: Option<&'a str>,
+    /// `None` is unlimited, the column default.
+    pub credit_limit: Option<Decimal>,
 }
 
 pub async fn create_customer(pool: &PgPool, new: NewCustomer<'_>) -> Result<Uuid, RepoError> {
@@ -36,14 +41,15 @@ pub async fn create_customer(pool: &PgPool, new: NewCustomer<'_>) -> Result<Uuid
 
     sqlx::query!(
         r#"
-        INSERT INTO customers (id, name, tax_id, email, phone)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO customers (id, name, tax_id, email, phone, credit_limit)
+        VALUES ($1, $2, $3, $4, $5, $6)
         "#,
         id,
         new.name,
         new.tax_id,
         new.email,
         new.phone,
+        new.credit_limit,
     )
     .execute(pool)
     .await
@@ -90,6 +96,7 @@ pub async fn list_customers(
             c.email,
             c.phone,
             c.is_active,
+            c.credit_limit AS "credit_limit?: Decimal",
             c.created_at,
             c.updated_at,
             COUNT(*) OVER () AS "total!"
@@ -123,6 +130,7 @@ pub async fn list_customers(
             email: row.email,
             phone: row.phone,
             is_active: row.is_active,
+            credit_limit: row.credit_limit,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -164,7 +172,8 @@ pub async fn count_customers(
 pub async fn find_customer(pool: &PgPool, id: Uuid) -> Result<Option<Customer>, RepoError> {
     let row = sqlx::query!(
         r#"
-        SELECT id, name, tax_id, email, phone, is_active, created_at, updated_at
+        SELECT id, name, tax_id, email, phone, is_active,
+               credit_limit AS "credit_limit?: Decimal", created_at, updated_at
         FROM customers
         WHERE id = $1
         "#,
@@ -180,6 +189,7 @@ pub async fn find_customer(pool: &PgPool, id: Uuid) -> Result<Option<Customer>, 
         email: row.email,
         phone: row.phone,
         is_active: row.is_active,
+        credit_limit: row.credit_limit,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }))
@@ -191,14 +201,20 @@ pub struct CustomerUpdate<'a> {
     pub email: Option<&'a str>,
     pub phone: Option<&'a str>,
     pub is_active: Option<bool>,
+    /// The one clearable field. `None` leaves the limit untouched,
+    /// `Some(None)` sets it back to unlimited, `Some(Some(x))` sets it to `x`.
+    pub credit_limit: Option<Option<Decimal>>,
 }
 
 /// Update only the fields that are present.
 ///
-/// `NULL` means "do not touch". It therefore also means an optional field cannot
-/// be cleared through this route: that needs an explicit marker, to be added when
-/// a real case calls for it. The alternative — treating `NULL` as "clear" — makes
-/// every partial update from the UI erase the fields the form did not send.
+/// `NULL` means "do not touch". It therefore also means a text field cannot
+/// be cleared through this route: that would need an explicit marker, and no
+/// real case has asked for one. The credit limit is the exception, because a
+/// real case has: an operator who raises a limit to cover a good month must be
+/// able to return the customer to unlimited without re-creating the row. Its
+/// clear is a separate boolean flag, so `COALESCE` — which cannot write a NULL
+/// on purpose — keeps guarding every other field exactly as before.
 pub async fn update_customer(
     pool: &PgPool,
     id: Uuid,
@@ -211,7 +227,8 @@ pub async fn update_customer(
             tax_id    = COALESCE($3, tax_id),
             email     = COALESCE($4, email),
             phone     = COALESCE($5, phone),
-            is_active = COALESCE($6, is_active)
+            is_active = COALESCE($6, is_active),
+            credit_limit = CASE WHEN $7::bool THEN $8 ELSE credit_limit END
         WHERE id = $1
         "#,
         id,
@@ -220,6 +237,10 @@ pub async fn update_customer(
         update.email,
         update.phone,
         update.is_active,
+        // The flag says a limit decision is being made in this request; the
+        // value carries which one, `None` meaning "back to unlimited".
+        update.credit_limit.is_some(),
+        update.credit_limit.flatten(),
     )
     .execute(pool)
     .await
