@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO customer_account_entries (id, customer_id, kind, amount, note, created_by)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "customer_account_entry_kind",
+            "kind": {
+              "Enum": [
+                "sale_charge",
+                "receipt",
+                "credit_note",
+                "credit_refund",
+                "adjustment_in",
+                "adjustment_out"
+              ]
+            }
+          }
+        },
+        "Numeric",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ee7514a67c2da37f67c6fd02bd3e33388a6a07113dd02392aaccc94f71a0b4d8"
+}

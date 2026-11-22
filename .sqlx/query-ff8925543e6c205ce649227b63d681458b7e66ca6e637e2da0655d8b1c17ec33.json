@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH charge AS (\n            SELECT COALESCE(SUM(amount), 0) AS charged\n            FROM customer_account_entries\n            WHERE sale_id = $1 AND kind = 'sale_charge'\n        ),\n        cancelled AS (\n            SELECT COALESCE(-SUM(amount), 0) AS cancelled\n            FROM customer_account_entries\n            WHERE sale_id = $1 AND kind = 'credit_note'\n        ),\n        allocated AS (\n            SELECT COALESCE(SUM(amount), 0) AS allocated\n            FROM customer_account_allocations\n            WHERE sale_id = $1\n        )\n        SELECT (charge.charged - cancelled.cancelled - allocated.allocated)::numeric(14, 2)\n               AS \"outstanding!: Decimal\"\n        FROM charge, cancelled, allocated\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outstanding!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ff8925543e6c205ce649227b63d681458b7e66ca6e637e2da0655d8b1c17ec33"
+}

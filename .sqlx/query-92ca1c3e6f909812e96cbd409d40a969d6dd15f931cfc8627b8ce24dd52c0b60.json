@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH entries AS (\n            SELECT COALESCE(SUM(amount), 0) AS balance,\n                   COALESCE(SUM(CASE WHEN kind = 'receipt' THEN -amount ELSE 0 END), 0)\n                       AS received,\n                   COALESCE(SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END), 0)\n                       AS refunded,\n                   COALESCE(SUM(CASE WHEN kind IN ('adjustment_in', 'adjustment_out')\n                                     THEN amount ELSE 0 END), 0)\n                       AS adjustments\n            FROM customer_account_entries\n            WHERE customer_id = $1\n        ),\n        allocated AS (\n            SELECT COALESCE(SUM(a.amount), 0) AS total\n            FROM customer_account_allocations a\n            JOIN customer_account_entries e ON e.id = a.entry_id\n            WHERE e.customer_id = $1\n        ),\n        charges AS (\n            SELECT sale_id, SUM(amount) AS charged\n            FROM customer_account_entries\n            WHERE customer_id = $1 AND kind = 'sale_charge'\n            GROUP BY sale_id\n        ),\n        cancelled AS (\n            SELECT sale_id, -SUM(amount) AS cancelled\n            FROM customer_account_entries\n            WHERE customer_id = $1 AND kind = 'credit_note'\n            GROUP BY sale_id\n        ),\n        sale_allocated AS (\n            SELECT a.sale_id, SUM(a.amount) AS allocated\n            FROM customer_account_allocations a\n            JOIN customer_account_entries e ON e.id = a.entry_id\n            WHERE e.customer_id = $1\n            GROUP BY a.sale_id\n        ),\n        debts AS (\n            SELECT c.charged - COALESCE(x.cancelled, 0) - COALESCE(l.allocated, 0)\n                AS outstanding\n            FROM charges c\n            LEFT JOIN cancelled x ON x.sale_id = c.sale_id\n            LEFT JOIN sale_allocated l ON l.sale_id = c.sale_id\n        )\n        SELECT balance::numeric(14, 2)                       AS \"balance!: Decimal\",\n               (received - refunded - allocated.total)::numeric(14, 2)\n                                                             AS \"unapplied_credit!: Decimal\",\n               adjustments::numeric(14, 2)                   AS \"adjustments!: Decimal\",\n               COALESCE((SELECT SUM(outstanding) FROM debts WHERE outstanding > 0), 0)\n                   ::numeric(14, 2)                          AS \"outstanding_total!: Decimal\"\n        FROM entries, allocated\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "balance!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "unapplied_credit!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "adjustments!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "outstanding_total!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "92ca1c3e6f909812e96cbd409d40a969d6dd15f931cfc8627b8ce24dd52c0b60"
+}

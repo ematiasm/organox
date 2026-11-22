@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO customer_account_entries\n            (id, customer_id, kind, amount, wallet_movement_id, note, created_by)\n        VALUES ($1, $2, 'credit_refund', $3, $4, $5, $6)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Numeric",
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c4e3a175b4fc423ec26e297cb3425e945c65dfce6d22af3334b2d81de981cb26"
+}

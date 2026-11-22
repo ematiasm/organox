@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.total::numeric(14, 2) AS \"total!: Decimal\",\n               COALESCE(\n                   (SELECT SUM(amount) FROM wallet_movements\n                    WHERE sale_id = s.id AND kind = 'sale_payment'),\n                   0\n               )::numeric(14, 2) AS \"collected!: Decimal\"\n        FROM sales s\n        WHERE s.id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total!: Decimal",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "total"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "collected!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "c6122930d5912c306bb55f95582ffe868e043e2bb45bc16c8cc1a8eb8099268f"
+}
