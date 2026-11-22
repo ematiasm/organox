@@ -19,6 +19,9 @@ export type ProductKind = components['schemas']['ProductKind'];
 export type Customer = components['schemas']['CustomerResponse'];
 export type CustomerList = components['schemas']['CustomerListResponse'];
 export type CustomerId = components['schemas']['CustomerIdResponse'];
+export type Supplier = components['schemas']['SupplierResponse'];
+export type SupplierList = components['schemas']['SupplierListResponse'];
+export type SupplierId = components['schemas']['SupplierIdResponse'];
 export type CustomerAccount = components['schemas']['CustomerAccountResponse'];
 export type AccountStatementEntry = components['schemas']['AccountStatementEntryResponse'];
 export type AccountEntryKind = components['schemas']['CustomerAccountEntryKind'];
@@ -271,6 +274,50 @@ export const api = {
 
 	deactivateCustomer: (id: string) =>
 		request<void>(`/api/v1/customers/${id}/deactivate`, { method: 'POST' }),
+
+	// --- Suppliers ---
+	//
+	// Registry mirrored from customers without credit limits: `tax_id`, `email`
+	// and `phone` are optional, blank inputs travel as `undefined`, and the
+	// server is the only validator.
+
+	listSuppliers: (params: {
+		search?: string;
+		includeInactive?: boolean;
+		limit?: number;
+		offset?: number;
+	}) =>
+		request<SupplierList>('/api/v1/suppliers', {
+			query: {
+				search: params.search,
+				include_inactive: params.includeInactive,
+				limit: params.limit,
+				offset: params.offset
+			}
+		}),
+
+	getSupplier: (id: string) => request<Supplier>(`/api/v1/suppliers/${encodeURIComponent(id)}`),
+
+	createSupplier: (body: {
+		name: string;
+		tax_id?: string;
+		email?: string;
+		phone?: string;
+	}) => request<SupplierId>('/api/v1/suppliers', { method: 'POST', body }),
+
+	updateSupplier: (
+		id: string,
+		body: {
+			name?: string;
+			tax_id?: string;
+			email?: string;
+			phone?: string;
+			is_active?: boolean;
+		}
+	) => request<void>(`/api/v1/suppliers/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
+
+	deactivateSupplier: (id: string) =>
+		request<void>(`/api/v1/suppliers/${encodeURIComponent(id)}/deactivate`, { method: 'POST' }),
 
 	// --- Customer accounts ---
 	//

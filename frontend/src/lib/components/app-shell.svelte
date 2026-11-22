@@ -17,6 +17,7 @@
 	import ReceiptIcon from '@lucide/svelte/icons/receipt';
 	import ListIcon from '@lucide/svelte/icons/list';
 	import ContactIcon from '@lucide/svelte/icons/contact';
+	import TruckIcon from '@lucide/svelte/icons/truck';
 	import ScaleIcon from '@lucide/svelte/icons/scale';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import UsersIcon from '@lucide/svelte/icons/users';
@@ -76,6 +77,13 @@
 					label: 'Customers',
 					icon: ContactIcon,
 					current: (path) => path.startsWith('/customers')
+				},
+				{
+					// Suppliers is registry work: purchases point at it.
+					href: '/suppliers',
+					label: 'Suppliers',
+					icon: TruckIcon,
+					current: (path) => path.startsWith('/suppliers')
 				},
 				{
 					href: '/receivables',
