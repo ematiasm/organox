@@ -77,6 +77,11 @@ pub struct DraftResponse {
 pub struct CompletedSaleResponse {
     pub sale_id: Uuid,
     pub total: String,
+    /// How much of the on-account part the customer's available credit paid
+    /// automatically: `on_account - credit_applied` is the debt the sale
+    /// actually added. Money with two decimals, like `total`; `"0.00"` for
+    /// a sale that never used the account.
+    pub credit_applied: String,
     pub movement_ids: Vec<Uuid>,
     /// One movement per payment, so the client can follow the money into its
     /// wallets without a second request.
@@ -227,6 +232,7 @@ async fn complete_sale(
     Ok(Json(CompletedSaleResponse {
         sale_id: done.sale_id,
         total: format_money(done.total),
+        credit_applied: format_money(done.credit_applied),
         movement_ids: done.movement_ids,
         payment_movement_ids: done.payment_movement_ids,
         completed_at: done.completed_at,
@@ -480,8 +486,9 @@ fn remove_item_doc() {}
 /// authorize the on-account part against the customer's activity and credit
 /// limit, write an outflow movement per item, a money movement per payment
 /// and, when part of the total is on account, the charge in the customer's
-/// ledger, then close the sale. Any rejection leaves **no** movements, no
-/// ledger entry and no status change.
+/// ledger — which their available credit then pays, oldest receipt first, up
+/// to the charged part — then close the sale. Any rejection leaves **no**
+/// movements, no ledger entry and no status change.
 #[utoipa::path(
     post,
     path = "/api/v1/sales/{id}/complete",

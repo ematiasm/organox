@@ -27,6 +27,11 @@ pub enum WalletMovementKind {
     /// Money handed back to a customer for a returned sale. The outflow side of
     /// `sale_payment`, and like it, only ever written by a sale document.
     SaleRefund,
+    /// Money collected for a customer's account, written only by the
+    /// collection endpoint (`POST /customers/{id}/receipts`) — never by hand
+    /// and never by a sale: the allocations of the receipt, not a `sale_id`,
+    /// say which sales it paid.
+    AccountPayment,
     Expense,
     AdjustmentIn,
     AdjustmentOut,
@@ -37,6 +42,7 @@ impl WalletMovementKind {
         match self {
             WalletMovementKind::SalePayment => "sale_payment",
             WalletMovementKind::SaleRefund => "sale_refund",
+            WalletMovementKind::AccountPayment => "account_payment",
             WalletMovementKind::Expense => "expense",
             WalletMovementKind::AdjustmentIn => "adjustment_in",
             WalletMovementKind::AdjustmentOut => "adjustment_out",
@@ -49,7 +55,9 @@ impl WalletMovementKind {
     /// look for "does this kind add or subtract".
     pub fn sign(self) -> i8 {
         match self {
-            WalletMovementKind::SalePayment | WalletMovementKind::AdjustmentIn => 1,
+            WalletMovementKind::SalePayment
+            | WalletMovementKind::AccountPayment
+            | WalletMovementKind::AdjustmentIn => 1,
             WalletMovementKind::SaleRefund
             | WalletMovementKind::Expense
             | WalletMovementKind::AdjustmentOut => -1,
@@ -61,12 +69,15 @@ impl WalletMovementKind {
     }
 
     /// Kinds an operator records by hand. A sale payment is only ever produced
-    /// by charging a sale, and a sale refund only by a credit note: neither is
-    /// ever typed into a form.
+    /// by charging a sale, a sale refund only by a credit note, and an account
+    /// payment only by collecting against a customer's account: none of them
+    /// is ever typed into a form.
     pub fn is_manual(self) -> bool {
         !matches!(
             self,
-            WalletMovementKind::SalePayment | WalletMovementKind::SaleRefund
+            WalletMovementKind::SalePayment
+                | WalletMovementKind::SaleRefund
+                | WalletMovementKind::AccountPayment
         )
     }
 }
@@ -84,11 +95,12 @@ impl FromStr for WalletMovementKind {
         match s.to_ascii_lowercase().as_str() {
             "sale_payment" | "cobro" => Ok(WalletMovementKind::SalePayment),
             "sale_refund" => Ok(WalletMovementKind::SaleRefund),
+            "account_payment" => Ok(WalletMovementKind::AccountPayment),
             "expense" | "gasto" => Ok(WalletMovementKind::Expense),
             "adjustment_in" | "ajuste_entrada" => Ok(WalletMovementKind::AdjustmentIn),
             "adjustment_out" | "ajuste_salida" => Ok(WalletMovementKind::AdjustmentOut),
             other => Err(format!(
-                "unknown kind: {other:?} (valid: sale_payment, sale_refund, expense, adjustment_in, adjustment_out)"
+                "unknown kind: {other:?} (valid: sale_payment, sale_refund, account_payment, expense, adjustment_in, adjustment_out)"
             )),
         }
     }
@@ -154,13 +166,17 @@ mod tests {
     use rust_decimal_macros::dec;
 
     #[test]
-    fn sale_payments_and_adjustment_in_add_money() {
+    fn sale_payments_adjustments_and_account_payments_add_money() {
         assert_eq!(
             WalletMovementKind::SalePayment.signed_effect(dec!(100.00)),
             dec!(100.00)
         );
         assert_eq!(
             WalletMovementKind::AdjustmentIn.signed_effect(dec!(100.00)),
+            dec!(100.00)
+        );
+        assert_eq!(
+            WalletMovementKind::AccountPayment.signed_effect(dec!(100.00)),
             dec!(100.00)
         );
     }
@@ -182,9 +198,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_sale_kinds_are_not_manual() {
+    fn only_the_documented_kinds_are_not_manual() {
         assert!(!WalletMovementKind::SalePayment.is_manual());
         assert!(!WalletMovementKind::SaleRefund.is_manual());
+        assert!(!WalletMovementKind::AccountPayment.is_manual());
         assert!(WalletMovementKind::Expense.is_manual());
         assert!(WalletMovementKind::AdjustmentIn.is_manual());
         assert!(WalletMovementKind::AdjustmentOut.is_manual());
@@ -195,6 +212,7 @@ mod tests {
         for kind in [
             WalletMovementKind::SalePayment,
             WalletMovementKind::SaleRefund,
+            WalletMovementKind::AccountPayment,
             WalletMovementKind::Expense,
             WalletMovementKind::AdjustmentIn,
             WalletMovementKind::AdjustmentOut,

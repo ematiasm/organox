@@ -2110,3 +2110,231 @@ async fn the_credit_limit_counts_the_debt_the_customer_already_has(pool: PgPool)
     assert_eq!(ledger_entry_count(&pool).await, 1);
     assert_eq!(account_balance(&pool, customer).await, dec!(60.00));
 }
+
+// --- Credit application ------------------------------------------------
+
+/// Collect money into the customer's account through the collection service,
+/// with no allocation: the money lands as usable credit, the state every
+/// apply-credit test starts from, written the way the route that owns the
+/// rule writes it. Two calls are two receipts with two `created_at` moments,
+/// which is what makes one of them the older.
+async fn grant_credit(pool: &PgPool, actor: Uuid, customer: Uuid, amount: Decimal) -> Uuid {
+    let method = cash(pool).await;
+    organox::customer_accounts::service::collect(
+        pool,
+        customer,
+        organox::customer_accounts::service::CollectInput {
+            payment_method_id: method,
+            amount,
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            actor,
+        },
+    )
+    .await
+    .expect("collection")
+    .entry_id
+}
+
+/// The JSON body of a completed sale's response.
+async fn completed_body(response: axum::http::Response<axum::body::Body>) -> serde_json::Value {
+    serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// What one sale still owes, read through the ledger's own derived list: the
+/// tests assert what the API would report, not a re-implementation of the sum.
+async fn sale_outstanding(pool: &PgPool, customer: Uuid, sale: Uuid) -> Decimal {
+    organox::customer_accounts::repository::outstanding_by_sale(pool, customer)
+        .await
+        .expect("debts")
+        .into_iter()
+        .find(|debt| debt.sale_id == sale)
+        .map(|debt| debt.outstanding)
+        .unwrap_or(Decimal::ZERO)
+}
+
+/// The customer's usable credit, read through the ledger's own derived view.
+async fn usable_credit(pool: &PgPool, customer: Uuid) -> Decimal {
+    organox::customer_accounts::repository::account_position(pool, customer)
+        .await
+        .expect("account position")
+        .unapplied_credit
+}
+
+/// The allocations one sale received: which receipt paid, and how much.
+async fn allocations_for_sale(pool: &PgPool, sale: Uuid) -> Vec<(Uuid, Decimal)> {
+    sqlx::query_as("SELECT entry_id, amount FROM customer_account_allocations WHERE sale_id = $1")
+        .bind(sale)
+        .fetch_all(pool)
+        .await
+        .expect("allocations")
+}
+
+/// A customer holding credit must not be asked for cash: the completion
+/// spends it on the sale automatically, and the response says how much. What
+/// the credit did not cover is the debt the sale adds.
+#[sqlx::test]
+async fn a_sale_applies_the_customers_credit_before_asking_for_cash(pool: PgPool) {
+    let (actor, draft, _product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    grant_credit(&pool, actor, customer, dec!(50.00)).await;
+    let method = cash(&pool).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "40.00" } ],
+            "on_account": "60.00"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = completed_body(response).await;
+    assert_eq!(body["credit_applied"], "50.00");
+
+    // The credit paid 50 of the 60 on account: the sale keeps owing 10, the
+    // balance says the same 10, and one allocation row explains it.
+    assert_eq!(sale_outstanding(&pool, customer, draft).await, dec!(10.00));
+    assert_eq!(account_balance(&pool, customer).await, dec!(10.00));
+    let allocations = allocations_for_sale(&pool, draft).await;
+    assert_eq!(allocations.len(), 1);
+    assert_eq!(allocations[0].1, dec!(50.00));
+}
+
+/// The application is oldest receipt first: with two receipts holding
+/// unapplied money, a sale that consumes only part of the older one touches
+/// nothing of the newer.
+#[sqlx::test]
+async fn credit_is_applied_oldest_receipt_first(pool: PgPool) {
+    let (actor, draft, _product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let older = grant_credit(&pool, actor, customer, dec!(50.00)).await;
+    let newer = grant_credit(&pool, actor, customer, dec!(50.00)).await;
+    let method = cash(&pool).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "70.00" } ],
+            "on_account": "30.00"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = completed_body(response).await;
+    assert_eq!(body["credit_applied"], "30.00");
+
+    // The whole application came from the older receipt; the newer one keeps
+    // every cent it collected.
+    let allocations = allocations_for_sale(&pool, draft).await;
+    assert_eq!(
+        allocations.len(),
+        1,
+        "the application split across receipts nobody ordered"
+    );
+    assert_eq!(allocations[0], (older, dec!(30.00)));
+    let newer_allocations: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM customer_account_allocations WHERE entry_id = $1")
+            .bind(newer)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        newer_allocations, 0,
+        "the newer receipt paid before the older"
+    );
+
+    // 100 collected, 30 charged and paid by the credit: 70 of the collected
+    // money is still usable, and the sale owes nothing.
+    assert_eq!(usable_credit(&pool, customer).await, dec!(70.00));
+    assert_eq!(
+        sale_outstanding(&pool, customer, draft).await,
+        Decimal::ZERO
+    );
+}
+
+/// The credit stops at what the sale owes: applying more than the on-account
+/// part would eat credit the customer keeps for the next purchase, so the
+/// difference stays usable.
+#[sqlx::test]
+async fn credit_application_stops_at_what_the_sale_owes(pool: PgPool) {
+    let (actor, draft, _product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    grant_credit(&pool, actor, customer, dec!(80.00)).await;
+    let method = cash(&pool).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "40.00" } ],
+            "on_account": "60.00"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = completed_body(response).await;
+    assert_eq!(body["credit_applied"], "60.00");
+
+    // The credit covered the whole on-account part; the 20 it did not need
+    // are still the customer's, and the sale owes nothing.
+    assert_eq!(usable_credit(&pool, customer).await, dec!(20.00));
+    assert_eq!(
+        sale_outstanding(&pool, customer, draft).await,
+        Decimal::ZERO
+    );
+    assert_eq!(account_balance(&pool, customer).await, dec!(-20.00));
+}
+
+/// A customer without credit changes nothing about the flow: the on-account
+/// part is the whole debt, and no allocation row explains any of it away.
+#[sqlx::test]
+async fn a_sale_without_available_credit_applies_nothing(pool: PgPool) {
+    let (_actor, draft, _product, cookie) = draft_at_price(&pool, dec!(100)).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    sales::set_customer(&pool, draft, Some(customer))
+        .await
+        .unwrap();
+    let method = cash(&pool).await;
+
+    let response = http_complete(
+        &pool,
+        &cookie,
+        draft,
+        serde_json::json!({
+            "payments": [ { "payment_method_id": method, "amount": "40.00" } ],
+            "on_account": "60.00"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = completed_body(response).await;
+    assert_eq!(body["credit_applied"], "0.00");
+
+    assert!(
+        allocations_for_sale(&pool, draft).await.is_empty(),
+        "credit was invented for a customer who holds none"
+    );
+    assert_eq!(account_balance(&pool, customer).await, dec!(60.00));
+    assert_eq!(sale_outstanding(&pool, customer, draft).await, dec!(60.00));
+}

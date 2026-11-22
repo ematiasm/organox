@@ -121,6 +121,9 @@ pub enum RepoError {
     #[error("a receipt cannot be backed by a {kind} movement")]
     MovementNotFromAnAccount { kind: String },
 
+    #[error("the wallet movement belongs to another customer")]
+    MovementOfAnotherCustomer,
+
     #[error("the customer account is busy, retry")]
     CustomerBusy,
 
@@ -511,21 +514,28 @@ async fn ensure_chargeable_sale(
 }
 
 /// The movement a money-backed entry points at: it must exist, it must have
-/// carried exactly the money the entry claims, and it must not be the till's
-/// own accounting of a sale. The foreign key proves the movement exists; only
-/// the comparison proves the two books agree on how much moved. And a
-/// `sale_payment` or `sale_refund` movement collected for a sale at the till:
-/// it is not money that came from the customer's account, so a receipt backed
-/// by it would collect the same money twice. The kinds are compared by name
-/// because the `account_payment*` kinds that will back these entries arrive
-/// with the slices that write them and must pass here unchanged.
+/// carried exactly the money the entry claims, it must belong to this
+/// customer, and it must not be the till's own accounting of a sale. The
+/// foreign key proves the movement exists; only the comparison proves the two
+/// books agree on how much moved. The customer binding is the same lesson one
+/// step further: the amount alone cannot say whose money it was, and a
+/// movement that belongs to another customer's account would let one
+/// collection pay somebody else's debt. A movement without a customer (a
+/// manual adjustment, or any movement written before the column existed)
+/// keeps passing: the ledger's own fixtures and history have no attribution to
+/// compare. And a `sale_payment` or `sale_refund` movement collected for a
+/// sale at the till: it is not money that came from the customer's account, so
+/// a receipt backed by it would collect the same money twice. The kinds are
+/// compared by name because the `account_payment*` kinds that will back these
+/// entries must keep passing here unchanged.
 async fn ensure_movement_backing(
     conn: &mut PgConnection,
+    customer_id: Uuid,
     wallet_movement_id: Uuid,
     amount: Decimal,
 ) -> Result<(), RepoError> {
     let movement = sqlx::query!(
-        r#"SELECT amount, kind::text AS "kind!" FROM wallet_movements WHERE id = $1"#,
+        r#"SELECT amount, customer_id, kind::text AS "kind!" FROM wallet_movements WHERE id = $1"#,
         wallet_movement_id
     )
     .fetch_optional(&mut *conn)
@@ -537,6 +547,13 @@ async fn ensure_movement_backing(
             movement: movement.amount,
             receipt: amount,
         });
+    }
+
+    if movement
+        .customer_id
+        .is_some_and(|owner| owner != customer_id)
+    {
+        return Err(RepoError::MovementOfAnotherCustomer);
     }
 
     if movement.kind == "sale_payment" || movement.kind == "sale_refund" {
@@ -653,7 +670,13 @@ pub async fn record_receipt(
     ensure_cents(receipt.amount)?;
     lock_customer(conn, receipt.customer_id).await?;
 
-    ensure_movement_backing(conn, receipt.wallet_movement_id, receipt.amount).await?;
+    ensure_movement_backing(
+        conn,
+        receipt.customer_id,
+        receipt.wallet_movement_id,
+        receipt.amount,
+    )
+    .await?;
 
     // A repeated sale in one receipt is the same allocation twice. The
     // engine's `UNIQUE (entry_id, sale_id)` would refuse it, but as an
@@ -756,6 +779,53 @@ pub async fn record_receipt(
     })
 }
 
+/// The receipt a replay must answer with: the entry as it already was, the
+/// movement that carried its money, and the sales its allocations pay —
+/// everything the response needs, so a replay never re-derives anything from
+/// the request that retried it.
+pub struct ExistingReceipt {
+    pub entry_id: Uuid,
+    pub wallet_movement_id: Uuid,
+    pub sale_ids: Vec<Uuid>,
+}
+
+/// The receipt an idempotency key already collected, or none. One small read,
+/// meant to run under the customer lock and before anything is written: the
+/// lock is what makes the lookup race-free, and answering a replay without
+/// writing is the whole point of the key. The kind is pinned to `receipt`
+/// because only a receipt carries a key today, and an idempotency key found
+/// on any other kind would be a bug worth refusing rather than replaying.
+pub async fn receipt_by_key_in(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    idempotency_key: &str,
+) -> Result<Option<ExistingReceipt>, RepoError> {
+    let row = sqlx::query!(
+        r#"
+        SELECT e.id                                AS "entry_id!: Uuid",
+               e.wallet_movement_id               AS "wallet_movement_id!: Uuid",
+               COALESCE(
+                   ARRAY_REMOVE(ARRAY_AGG(a.sale_id ORDER BY a.created_at, a.sale_id), NULL),
+                   '{}'
+               )                                  AS "sale_ids!: Vec<Uuid>"
+        FROM customer_account_entries e
+        LEFT JOIN customer_account_allocations a ON a.entry_id = e.id
+        WHERE e.customer_id = $1 AND e.idempotency_key = $2 AND e.kind = 'receipt'
+        GROUP BY e.id, e.wallet_movement_id
+        "#,
+        customer_id,
+        idempotency_key,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+
+    Ok(row.map(|row| ExistingReceipt {
+        entry_id: row.entry_id,
+        wallet_movement_id: row.wallet_movement_id,
+        sale_ids: row.sale_ids,
+    }))
+}
+
 /// Point already-collected money at one more sale. This is the primitive the
 /// credit-application slice will call: it moves no balance, it only says which
 /// sale the money pays.
@@ -845,6 +915,91 @@ pub async fn allocate(
     .await?;
 
     Ok(())
+}
+
+/// Spend the customer's available credit on one sale, oldest receipt first,
+/// and return what was actually applied — `0` when nothing could be.
+///
+/// Oldest first because a customer's credit is not earmarked: money collected
+/// without an allocation belongs to the account as a whole, so picking any
+/// receipt but the oldest would be a decision nobody made. The UI prefills its
+/// allocation suggestions oldest-first for the same reason, so what the sale
+/// applies automatically and what the operator's screen suggests agree on the
+/// rule.
+///
+/// Automatic because a customer holding credit must not be asked for cash:
+/// the shop already has their money, and leaving it idle beside a new charge
+/// would bill them twice for the same goods. The completion calls this inside
+/// its own transaction, so the charge and the payment that covers it commit
+/// together.
+///
+/// The caller must already hold the customer's advisory lock (a completion
+/// holds it from its credit gate): every receipt this reads and every
+/// allocation it writes depends on sums only that lock keeps stable, so this
+/// function never takes the lock itself — a writer that claimed to serialize
+/// what its caller already serialized would be promising a guarantee it
+/// cannot deliver twice.
+pub async fn apply_available_credit(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    sale_id: Uuid,
+    up_to: Decimal,
+) -> Result<Decimal, RepoError> {
+    // Two ceilings decide before any receipt is even read: what the caller
+    // asked for, and what the account can actually pay with. Capping by
+    // `unapplied_credit` up front is what keeps a refunded receipt's paper
+    // remainder from being spent — the per-receipt remainder below cannot see
+    // a refund, but this sum can.
+    let position = account_position_in(conn, customer_id).await?;
+    let cap = up_to.min(position.unapplied_credit);
+    if cap <= Decimal::ZERO {
+        return Ok(Decimal::ZERO);
+    }
+
+    // The sale is the third ceiling: applying more than it owes would turn
+    // credit the customer keeps into a phantom overpayment.
+    let outstanding = outstanding_for_sale_in(conn, sale_id).await?;
+    let mut remaining = cap.min(outstanding);
+    if remaining <= Decimal::ZERO {
+        return Ok(Decimal::ZERO);
+    }
+
+    // The receipts that still carry unallocated money, oldest first. The `id`
+    // tiebreaker keeps the order total: two receipts created in the same
+    // instant are still one before the other, and the ids are time-ordered.
+    let receipts = sqlx::query!(
+        r#"
+        SELECT e.id                                          AS "entry_id!: Uuid",
+               (-e.amount - COALESCE(SUM(a.amount), 0))::numeric(14, 2)
+                                                          AS "available!: Decimal"
+        FROM customer_account_entries e
+        LEFT JOIN customer_account_allocations a ON a.entry_id = e.id
+        WHERE e.customer_id = $1 AND e.kind = 'receipt'
+        GROUP BY e.id
+        HAVING -e.amount - COALESCE(SUM(a.amount), 0) > 0
+        ORDER BY e.created_at, e.id
+        "#,
+        customer_id
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut applied = Decimal::ZERO;
+    for receipt in receipts {
+        if remaining.is_zero() {
+            break;
+        }
+        let take = remaining.min(receipt.available);
+        // `allocate` keeps every guard — receipt, sale, credit — and a guard
+        // firing here means the caps above lied about what could be applied.
+        // That is a bug, so the error propagates and the caller's transaction
+        // dies rather than quietly applying less than the books say.
+        allocate(conn, receipt.entry_id, sale_id, take).await?;
+        applied += take;
+        remaining -= take;
+    }
+
+    Ok(applied)
 }
 
 /// Cancel part of a sale's debt with a credit note. The note is the document,
@@ -948,8 +1103,9 @@ pub async fn record_credit_refund(
     lock_customer(conn, customer_id).await?;
 
     // The same checks the receipt makes, for the same reasons: the movement
-    // carried what the entry claims, and it is not a sale's own till money.
-    ensure_movement_backing(conn, wallet_movement_id, amount).await?;
+    // carried what the entry claims, it belongs to this customer, and it is
+    // not a sale's own till money.
+    ensure_movement_backing(conn, customer_id, wallet_movement_id, amount).await?;
 
     // A replay answers by identity, not by re-running the numbers: the first
     // refund already consumed the credit this one claims, so affordability

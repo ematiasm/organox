@@ -147,6 +147,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/customers/{id}/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Collect money against a customer's account.
+         * @description One request, one transaction: the money enters a wallet as a single
+         *     `account_payment` movement carrying the customer and the method, and the
+         *     customer's ledger records one receipt linked to it. The allocations are the
+         *     operator's — the server never invents or applies them — and the money no
+         *     allocation consumes becomes the customer's usable credit. An optional
+         *     idempotency key makes a retry return the first receipt with `200` instead
+         *     of collecting twice.
+         */
+        post: operations["collect_receipt_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/payment-methods": {
         parameters: {
             query?: never;
@@ -362,8 +388,9 @@ export interface paths {
          *     authorize the on-account part against the customer's activity and credit
          *     limit, write an outflow movement per item, a money movement per payment
          *     and, when part of the total is on account, the charge in the customer's
-         *     ledger, then close the sale. Any rejection leaves **no** movements, no
-         *     ledger entry and no status change.
+         *     ledger — which their available credit then pays, oldest receipt first, up
+         *     to the charged part — then close the sale. Any rejection leaves **no**
+         *     movements, no ledger entry and no status change.
          */
         post: operations["complete_sale_doc"];
         delete?: never;
@@ -553,8 +580,9 @@ export interface paths {
         put?: never;
         /**
          * Record money leaving or entering a wallet by hand.
-         * @description `sale_payment` is rejected with 422: a collection enters the ledger only by
-         *     charging a sale.
+         * @description `sale_payment` and `account_payment` are rejected with 422: money that
+         *     belongs to a sale or a customer's account enters the ledger only through
+         *     the flow that also writes its counterpart, never by hand.
          */
         post: operations["record_manual_movement_doc"];
         delete?: never;
@@ -578,6 +606,26 @@ export interface components {
             new_password: string;
         };
         /**
+         * @description A collection: money that arrived, and the sales it pays.
+         *
+         *     The allocations are the operator's decision; the server never invents one
+         *     and never applies the remainder — that remainder becomes the customer's
+         *     usable credit exactly by carrying no row.
+         */
+        CollectReceiptRequest: {
+            allocations: components["schemas"]["ReceiptAllocationRequest"][];
+            /** @example 150.00 */
+            amount: string;
+            /**
+             * @description Optional retry key. A repeated collection with the same key returns
+             *     the first receipt with `200` instead of collecting twice.
+             */
+            idempotency_key?: string | null;
+            note?: string | null;
+            /** Format: uuid */
+            payment_method_id: string;
+        };
+        /**
          * @description How the sale is paid. Required: a sale never closes without saying where the
          *     money went.
          */
@@ -596,6 +644,13 @@ export interface components {
         CompletedSaleResponse: {
             /** Format: date-time */
             completed_at: string;
+            /**
+             * @description How much of the on-account part the customer's available credit paid
+             *     automatically: `on_account - credit_applied` is the debt the sale
+             *     actually added. Money with two decimals, like `total`; `"0.00"` for
+             *     a sale that never used the account.
+             */
+            credit_applied: string;
             movement_ids: string[];
             /**
              * @description One movement per payment, so the client can follow the money into its
@@ -784,8 +839,9 @@ export interface components {
             /** @example 1200.00 */
             amount: string;
             /**
-             * @description `expense`, `adjustment_in` or `adjustment_out`. `sale_payment` is
-             *     rejected: that money is recorded by charging a sale.
+             * @description `expense`, `adjustment_in` or `adjustment_out`. `sale_payment` and
+             *     `account_payment` are rejected: that money is recorded by charging a
+             *     sale or collecting against a customer's account, not by hand.
              */
             kind: components["schemas"]["WalletMovementKind"];
             note?: string | null;
@@ -899,6 +955,48 @@ export interface components {
             stock?: string | null;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description Which sale one slice of the collected money pays. */
+        ReceiptAllocationRequest: {
+            /** @example 150.00 */
+            amount: string;
+            /** Format: uuid */
+            sale_id: string;
+        };
+        /** @description One allocated sale with what it still owes after the receipt. */
+        ReceiptAllocationResponse: {
+            /**
+             * @description The sale's outstanding amount after this receipt's allocation.
+             * @example 40.00
+             */
+            outstanding: string;
+            /** Format: uuid */
+            sale_id: string;
+        };
+        ReceiptResponse: {
+            allocations: components["schemas"]["ReceiptAllocationResponse"][];
+            /**
+             * @description The customer's balance after the collection. Positive: they still
+             *     owe. Negative: they hold money in their favour.
+             * @example 40.00
+             */
+            balance: string;
+            /**
+             * Format: uuid
+             * @description The ledger entry that recorded the collection.
+             */
+            receipt_id: string;
+            /**
+             * @description Money collected that no allocation consumed yet, and no refund has
+             *     returned: what the next sale on account may consume.
+             * @example 90.00
+             */
+            unapplied_credit: string;
+            /**
+             * Format: uuid
+             * @description The `account_payment` movement that carried the money into the wallet.
+             */
+            wallet_movement_id: string;
         };
         RecordMovementRequest: {
             note?: string | null;
@@ -1052,7 +1150,7 @@ export interface components {
          *     always arrives with a writer, a validation and a screen — that is, with code.
          * @enum {string}
          */
-        WalletMovementKind: "sale_payment" | "sale_refund" | "expense" | "adjustment_in" | "adjustment_out";
+        WalletMovementKind: "sale_payment" | "sale_refund" | "account_payment" | "expense" | "adjustment_in" | "adjustment_out";
         WalletMovementResponse: {
             /** @description Always positive; the kind carries the sign. */
             amount: string;
@@ -1466,6 +1564,78 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    collect_receipt_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Customer ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CollectReceiptRequest"];
+            };
+        };
+        responses: {
+            /** @description Existing receipt returned for a repeated idempotency key; nothing was written */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptResponse"];
+                };
+            };
+            /** @description Money collected: the wallet movement and the receipt are written together */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReceiptResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unknown customer, or an allocation names an unknown sale */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The customer account is busy, retry */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unknown or inactive payment method, a non-positive, too precise or too large amount, or allocations beyond what the sales owe */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

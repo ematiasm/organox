@@ -1859,6 +1859,101 @@ async fn a_receipt_cannot_be_backed_by_a_sale_payment(pool: PgPool) {
     assert_eq!(entries, 0, "the rejected receipt left an entry behind");
 }
 
+/// A wallet movement that belongs to a customer's account: the kind the
+/// collection endpoint writes, carrying the customer it collected for. Raw SQL
+/// on purpose, like every fixture here — at the ledger's layer of the stack no
+/// repository writer exists for it yet, and a fixture must not depend on the
+/// slice being tested.
+async fn seed_account_payment(pool: &PgPool, customer_id: Uuid, amount: Decimal) -> Uuid {
+    let wallet = Uuid::now_v7();
+    let method = Uuid::now_v7();
+    let movement = Uuid::now_v7();
+    let suffix = Uuid::new_v4();
+
+    sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, $2)")
+        .bind(wallet)
+        .bind(format!("Wallet {suffix}"))
+        .execute(pool)
+        .await
+        .expect("wallet");
+    sqlx::query("INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, $2, $3)")
+        .bind(method)
+        .bind(format!("Method {suffix}"))
+        .bind(wallet)
+        .execute(pool)
+        .await
+        .expect("method");
+    sqlx::query(
+        r#"
+        INSERT INTO wallet_movements (id, wallet_id, kind, amount, customer_id, payment_method_id)
+        VALUES ($1, $2, 'account_payment', $3, $4, $5)
+        "#,
+    )
+    .bind(movement)
+    .bind(wallet)
+    .bind(amount)
+    .bind(customer_id)
+    .bind(method)
+    .execute(pool)
+    .await
+    .expect("account payment");
+
+    movement
+}
+
+#[sqlx::test]
+async fn a_receipt_backed_by_another_customers_movement_is_rejected(pool: PgPool) {
+    let ana = seed_customer(&pool, "Ana").await;
+    let beto = seed_customer(&pool, "Beto").await;
+    let movement = seed_account_payment(&pool, beto, dec!(60.00)).await;
+
+    // The money exists, the amount agrees and the kind is not the till's own
+    // accounting of a sale: only the customer binding can refuse this, and it
+    // is the one a receipt cannot live without — collecting Beto's money
+    // against Ana's debt would move money between two people's accounts.
+    let mut tx = pool.begin().await.expect("transaction");
+    let result = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: movement,
+            amount: dec!(60.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            result,
+            Err(repository::RepoError::MovementOfAnotherCustomer)
+        ),
+        "a receipt was backed by another customer's movement"
+    );
+    tx.rollback().await.expect("rollback");
+
+    // The rejection must leave nothing behind: no entry for Ana, and Beto's
+    // movement still backs nothing.
+    let entries: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM customer_account_entries WHERE customer_id = $1")
+            .bind(ana)
+            .fetch_one(&pool)
+            .await
+            .expect("entry count");
+    assert_eq!(entries, 0, "the rejected receipt left an entry behind");
+
+    let backing: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customer_account_entries WHERE wallet_movement_id = $1",
+    )
+    .bind(movement)
+    .fetch_one(&pool)
+    .await
+    .expect("backing count");
+    assert_eq!(backing, 0);
+}
+
 #[sqlx::test]
 async fn allocating_a_receipt_succeeds_and_moves_the_debt(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
@@ -2288,4 +2383,172 @@ async fn a_negative_amount_is_not_authorized_as_nothing(pool: PgPool) {
         other => panic!("a negative amount slipped through the ceiling: {other:?}"),
     }
     tx.rollback().await.expect("rollback");
+}
+
+// --- Credit application --------------------------------------------------
+
+/// The credit the account can spend is consumed oldest receipt first: a
+/// sale that takes only part of the credit draws it all from the older
+/// receipt, and the newer one keeps everything it collected.
+#[sqlx::test]
+async fn applying_credit_consumes_the_oldest_receipt_first(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    tx.commit().await.expect("commit");
+
+    // Two receipts in two committed transactions: their `created_at` values
+    // order them, and only that ordering decides which one pays.
+    let older_movement = seed_movement(&pool, dec!(50.00)).await;
+    let mut tx = pool.begin().await.expect("transaction");
+    let older = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: customer,
+            wallet_movement_id: older_movement,
+            amount: dec!(50.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await
+    .expect("older receipt")
+    .entry_id;
+    tx.commit().await.expect("commit");
+
+    let newer_movement = seed_movement(&pool, dec!(30.00)).await;
+    let mut tx = pool.begin().await.expect("transaction");
+    let newer = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: customer,
+            wallet_movement_id: newer_movement,
+            amount: dec!(30.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await
+    .expect("newer receipt")
+    .entry_id;
+    tx.commit().await.expect("commit");
+
+    // The sale takes only 20 of the 80 the customer holds.
+    let mut tx = pool.begin().await.expect("transaction");
+    let applied = repository::apply_available_credit(&mut tx, customer, sale, dec!(20.00))
+        .await
+        .expect("credit applied");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(applied, dec!(20.00));
+
+    // The one allocation row names the older receipt; the newer one was
+    // never touched.
+    let (entry_id, amount): (Uuid, Decimal) = sqlx::query_as(
+        "SELECT entry_id, amount FROM customer_account_allocations WHERE sale_id = $1",
+    )
+    .bind(sale)
+    .fetch_one(&pool)
+    .await
+    .expect("allocation");
+    assert_eq!((entry_id, amount), (older, dec!(20.00)));
+    let newer_allocations: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM customer_account_allocations WHERE entry_id = $1")
+            .bind(newer)
+            .fetch_one(&pool)
+            .await
+            .expect("allocation count");
+    assert_eq!(newer_allocations, 0, "the newer receipt paid first");
+
+    // 80 collected, 20 spent on the sale: 60 stays usable, the sale keeps
+    // owing 80, and the books balance.
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.unapplied_credit, dec!(60.00));
+    assert_eq!(position.outstanding_total, dec!(80.00));
+    assert_eq!(position.balance, dec!(20.00));
+    assert!(position.is_consistent());
+}
+
+/// The application never exceeds the usable credit, even when the receipts
+/// carry more: money already handed back as a refund sits inside the receipt's
+/// own remainder, and only the customer-level ceiling can refuse it.
+#[sqlx::test]
+async fn applying_credit_never_exceeds_the_usable_credit(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(200.00)).await;
+
+    // 150 collected, then 50 handed back while the balance is still in the
+    // customer's favour (a refund is only allowed against money actually
+    // held): the receipt now carries 150 of unallocated money, but only 100
+    // of it is the customer's to spend.
+    let collected = seed_movement(&pool, dec!(150.00)).await;
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: customer,
+            wallet_movement_id: collected,
+            amount: dec!(150.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await
+    .expect("receipt");
+    tx.commit().await.expect("commit");
+
+    let refunded = seed_movement(&pool, dec!(50.00)).await;
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_credit_refund(
+        &mut tx,
+        customer,
+        refunded,
+        dec!(50.00),
+        None,
+        Uuid::now_v7(),
+    )
+    .await
+    .expect("refund");
+    tx.commit().await.expect("commit");
+
+    // Only now does the debt exist, larger than the credit that can pay it.
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(200.00), Uuid::now_v7())
+        .await
+        .expect("charge");
+    tx.commit().await.expect("commit");
+
+    // `up_to` is the whole charge and the sale owes all of it; only the
+    // usable credit can stop the application at 100.
+    let mut tx = pool.begin().await.expect("transaction");
+    let applied = repository::apply_available_credit(&mut tx, customer, sale, dec!(200.00))
+        .await
+        .expect("credit applied");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(
+        applied,
+        dec!(100.00),
+        "the application spent refunded money"
+    );
+
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.unapplied_credit, Decimal::ZERO);
+    assert_eq!(position.outstanding_total, dec!(100.00));
+    assert_eq!(position.balance, dec!(100.00));
+    assert!(position.is_consistent());
 }

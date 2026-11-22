@@ -38,8 +38,9 @@ money actually went, at the moment it went. Re-pointing a method changes where
 
 ```sql
 SELECT SUM(CASE kind
-    WHEN 'sale_payment'  THEN amount
-    WHEN 'adjustment_in' THEN amount
+    WHEN 'sale_payment'   THEN amount
+    WHEN 'account_payment' THEN amount
+    WHEN 'adjustment_in'  THEN amount
     ELSE -amount
 END)
 FROM wallet_movements WHERE wallet_id = $1;
@@ -62,11 +63,31 @@ matching the drawer.
 |---|---|---|
 | `sale_payment` | inflow | charging a sale, never by hand |
 | `sale_refund` | outflow | issuing a credit note, never by hand |
+| `account_payment` | inflow | collecting against a customer's account (`POST /customers/{id}/receipts`), never by hand |
 | `expense` | outflow | the operator, from the wallet |
 | `adjustment_in` | inflow | the operator, correcting a mistake |
 | `adjustment_out` | outflow | the operator, correcting a mistake |
 
 `-500` meaning "money entered" is a sign bug waiting to happen.
+
+## An account payment carries its customer
+
+An `account_payment` is the wallet side of a collection: money a customer
+handed over against what their account owes (`POST /customers/{id}/receipts`,
+the customers module's route — see `docs/customers.md`). Its movement carries
+the `customer_id` it was collected for and the `payment_method_id` used, and
+never a `sale_id` or a `credit_note_id`: which sales the money pays is the
+receipt's allocations, not the movement's link. The same transaction writes
+the movement and the ledger's `receipt` entry, so the wallet never takes money
+the ledger refused to book.
+
+The database keeps the attribution honest: only `account_payment` may carry a
+customer (`wallet_movements_customer_link_only_for_account_kinds`), and an
+`account_payment` without its customer or its method is refused
+(`wallet_movements_account_payment_is_complete`). And it is not a manual kind:
+`POST /wallets/{id}/movements` refuses it with `422`, because an account
+payment written by hand would put money in a wallet with no receipt saying
+whose debt it paid.
 
 ## The ledger is append-only
 

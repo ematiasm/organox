@@ -552,10 +552,11 @@ async fn an_amount_with_more_than_two_decimals_is_rejected(pool: PgPool) {
 /// time, which is the only way to notice that the SQL `CASE` needs it too.
 #[sqlx::test]
 async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
-    fn all_kinds() -> [WalletMovementKind; 5] {
+    fn all_kinds() -> [WalletMovementKind; 6] {
         let kinds = [
             WalletMovementKind::SalePayment,
             WalletMovementKind::SaleRefund,
+            WalletMovementKind::AccountPayment,
             WalletMovementKind::Expense,
             WalletMovementKind::AdjustmentIn,
             WalletMovementKind::AdjustmentOut,
@@ -564,6 +565,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
             match kind {
                 WalletMovementKind::SalePayment
                 | WalletMovementKind::SaleRefund
+                | WalletMovementKind::AccountPayment
                 | WalletMovementKind::Expense
                 | WalletMovementKind::AdjustmentIn
                 | WalletMovementKind::AdjustmentOut => {}
@@ -609,9 +611,19 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
     .await
     .unwrap();
 
+    // An account payment is collected for a customer: the CHECK constraint
+    // refuses one without it, and the customer is the attribution the debt
+    // ledger compares.
+    let customer: Uuid =
+        sqlx::query_scalar("INSERT INTO customers (id, name) VALUES ($1, 'Ana') RETURNING id")
+            .bind(Uuid::now_v7())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
     for (index, kind) in all_kinds().into_iter().enumerate() {
-        let (wallet, sale_id, payment_method_id, credit_note_id) = match kind {
-            WalletMovementKind::SalePayment => (sale_wallet, Some(sale), Some(method), None),
+        let (wallet, sale_id, payment_method_id, credit_note_id, customer_id) = match kind {
+            WalletMovementKind::SalePayment => (sale_wallet, Some(sale), Some(method), None, None),
             WalletMovementKind::SaleRefund => (
                 ledger::create_wallet(&pool, &format!("Wallet {index}"))
                     .await
@@ -619,6 +631,16 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 Some(sale),
                 Some(method),
                 Some(note),
+                None,
+            ),
+            WalletMovementKind::AccountPayment => (
+                ledger::create_wallet(&pool, &format!("Wallet {index}"))
+                    .await
+                    .unwrap(),
+                None,
+                Some(method),
+                None,
+                Some(customer),
             ),
             WalletMovementKind::Expense
             | WalletMovementKind::AdjustmentIn
@@ -626,6 +648,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 ledger::create_wallet(&pool, &format!("Wallet {index}"))
                     .await
                     .unwrap(),
+                None,
                 None,
                 None,
                 None,
@@ -641,6 +664,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 sale_id,
                 payment_method_id,
                 credit_note_id,
+                customer_id,
                 note: None,
                 created_by: Some(owner),
             },

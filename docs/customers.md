@@ -179,6 +179,56 @@ checkout would deadlock the counter on a back-office event neither the cashier
 nor the buyer caused. The rejected alternative — re-validating at completion —
 turns a registry cleanup into a reason a register cannot close a sale.
 
+## Collecting money against the account
+
+`POST /api/v1/customers/{id}/receipts` is the collection endpoint: money the
+customer hands over against what their account owes. The body is
+
+```json
+{
+  "idempotency_key": "till-close-1",
+  "payment_method_id": "…",
+  "amount": "150.00",
+  "allocations": [ { "sale_id": "…", "amount": "60.00" } ],
+  "note": "first collection"
+}
+```
+
+All fields except the three money/document ones are optional: `idempotency_key`
+and `note` may be omitted, and `allocations` may be an empty list — collecting
+money without deciding yet which sale it pays is a normal state, not an error.
+
+One transaction, in one order: the customer's advisory lock first, then the
+replay lookup, the payment method, one `account_payment` wallet movement
+(`docs/payments.md`) carrying the customer, and the ledger's `receipt` entry
+linked to that movement. The allocations are the operator's decision, the
+server never invents or auto-applies them, and every rule the ledger enforces
+per sale — a completed sale of this customer, nothing more than it still
+owes, together no more than was collected — rejects the whole request before
+anything is written.
+
+What it does to the numbers:
+
+- the **balance** drops by the full amount collected, the moment the money
+  arrives — allocating is saying which sale it pays, not moving the money;
+- each allocation lowers that sale's **outstanding**;
+- whatever no allocation consumed stays as **unapplied credit**: money the
+  shop holds for the customer, and never a second entry or a second table.
+  The next sale that goes on account spends it automatically at completion —
+  oldest receipt first, up to the part charged — so a customer holding money
+  is never asked for cash again for the same goods.
+
+The answer is `201` with the receipt id, the movement id, the balance, the
+usable credit and each allocated sale's outstanding amount. A repeated
+`idempotency_key` answers `200` with the first receipt and writes nothing —
+money that was already collected cannot be collected twice. The key is
+capped at 100 characters, counted exactly as sent, padding included: a blank
+key is no key at all, but a padded one is its own identity, and the cap must
+measure the same string the retry will send. Unknown or
+inactive method, a bad amount or an allocation the ledger refuses answer `422`
+with a sentence the operator can act on; an unknown customer or sale answers
+`404`; an account busy under another writer's lock answers `409`.
+
 ## API
 
 All routes require a session (`401` without a cookie). There is no additional
@@ -193,6 +243,7 @@ with the `detail` a client can show as-is.
 | GET | `/api/v1/customers/{id}` | `200` `CustomerResponse`; `404` unknown id |
 | PATCH | `/api/v1/customers/{id}` | `204`; `404` unknown id; `409` document taken; `422` invalid input |
 | POST | `/api/v1/customers/{id}/deactivate` | `204`, idempotent; `404` unknown id |
+| POST | `/api/v1/customers/{id}/receipts` | `201` fresh, `200` replay of the same idempotency key; `404` unknown customer or sale; `409` busy account; `422` invalid method, amount or allocation |
 | PUT | `/api/v1/sales/{id}/customer` | `204`; `404` unknown sale or customer; `409` closed sale or deactivated customer; `422` `customer_id` omitted |
 
 `PUT /sales/{id}/customer` is served by the sales module; it is documented
