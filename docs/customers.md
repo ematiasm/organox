@@ -229,6 +229,27 @@ inactive method, a bad amount or an allocation the ledger refuses answer `422`
 with a sentence the operator can act on; an unknown customer or sale answers
 `404`; an account busy under another writer's lock answers `409`.
 
+## Credit refunds, adjustments and deactivation
+
+- **`POST /api/v1/customers/{id}/credit-refunds`** hands collected credit back
+  to the customer: one `account_payment_refund` wallet movement (`docs/payments.md`)
+  carrying the customer and method, plus one `credit_refund` ledger entry
+  (`+amount`), in the same transaction under the customer's advisory lock.
+  Refused with `422` unless `amount <= unapplied_credit` and
+  `balance + amount <= 0` — money is only handed back against money actually
+  held in the customer's favour. Requires a non-blank `note`; accepts an
+  optional `idempotency_key` (`201` fresh, `200` replay, `409` if the key
+  belongs to another entry kind).
+- **`POST /api/v1/customers/{id}/adjustments`** records a manual
+  `adjustment_in` (`direction: "in"`) or `adjustment_out` (`direction: "out"`)
+  with a required non-blank `note`, touching no wallet. Both directions
+  require the balance to stay `>= 0`: an adjustment may load an opening
+  balance or correct a debt, never create or consume available credit.
+- **`POST /api/v1/customers/{id}/deactivate`** (and `PATCH /api/v1/customers/{id}`
+  with `is_active: false`) takes the customer's advisory lock first and
+  answers `409` naming the balance while `balance != 0` or
+  `unapplied_credit != 0`. The operator settles or refunds first.
+
 ## API
 
 All routes require a session (`401` without a cookie). There is no additional
@@ -241,9 +262,11 @@ with the `detail` a client can show as-is.
 | POST | `/api/v1/customers` | `201` with `{id}`; `409` document already in use; `422` invalid input |
 | GET | `/api/v1/customers?search=&include_inactive=&limit=&offset=` | `200` `{items, limit, offset, total}` |
 | GET | `/api/v1/customers/{id}` | `200` `CustomerResponse`; `404` unknown id |
-| PATCH | `/api/v1/customers/{id}` | `204`; `404` unknown id; `409` document taken; `422` invalid input |
-| POST | `/api/v1/customers/{id}/deactivate` | `204`, idempotent; `404` unknown id |
+| PATCH | `/api/v1/customers/{id}` | `204`; `404` unknown id; `409` document taken, busy account, or deactivating with an open position; `422` invalid input |
+| POST | `/api/v1/customers/{id}/deactivate` | `204`, idempotent; `404` unknown id; `409` open balance or unapplied credit, or busy account |
 | POST | `/api/v1/customers/{id}/receipts` | `201` fresh, `200` replay of the same idempotency key; `404` unknown customer or sale; `409` busy account; `422` invalid method, amount or allocation |
+| POST | `/api/v1/customers/{id}/credit-refunds` | `201` fresh, `200` replay of the same idempotency key; `404` unknown customer; `409` busy account or key collision; `422` invalid method, note, amount or insufficient credit |
+| POST | `/api/v1/customers/{id}/adjustments` | `201`; `404` unknown customer; `409` busy account; `422` blank note, invalid amount or adjustment crossing zero |
 | PUT | `/api/v1/sales/{id}/customer` | `204`; `404` unknown sale or customer; `409` closed sale or deactivated customer; `422` `customer_id` omitted |
 
 `PUT /sales/{id}/customer` is served by the sales module; it is documented

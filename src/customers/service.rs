@@ -6,12 +6,13 @@
 //!  * a page never claims the registry is empty when it is not.
 
 use rust_decimal::Decimal;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::model::Customer;
 use super::repository::{self, CustomerUpdate, NewCustomer, RepoError};
 use super::validation::{self, ValidationError};
+use crate::customer_accounts::repository as accounts;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CustomerError {
@@ -21,11 +22,30 @@ pub enum CustomerError {
     #[error("the document is already in use")]
     TaxIdTaken,
 
+    #[error("{}", format_open_position(*.balance, *.unapplied_credit))]
+    OpenAccountPosition {
+        balance: Decimal,
+        unapplied_credit: Decimal,
+    },
+
+    #[error("the customer account is busy, retry")]
+    AccountBusy,
+
     #[error("customer not found")]
     NotFound,
 
     #[error("internal customer error")]
     Internal(#[from] RepoError),
+}
+
+fn format_open_position(balance: Decimal, unapplied_credit: Decimal) -> String {
+    if !unapplied_credit.is_zero() {
+        format!(
+            "the customer cannot be deactivated with balance {balance:.2} and unapplied credit {unapplied_credit:.2}"
+        )
+    } else {
+        format!("the customer cannot be deactivated with balance {balance:.2}")
+    }
 }
 
 pub struct CreateCustomerInput {
@@ -153,26 +173,68 @@ pub async fn update_customer(
         None => None,
     };
 
-    repository::update_customer(
-        pool,
-        id,
-        CustomerUpdate {
-            name: name.as_deref(),
-            tax_id: tax_id.as_deref(),
-            email: email.as_deref(),
-            phone: phone.as_deref(),
-            is_active: input.is_active,
-            credit_limit,
-        },
-    )
-    .await
-    .map_err(map_repo_error)
+    let update = CustomerUpdate {
+        name: name.as_deref(),
+        tax_id: tax_id.as_deref(),
+        email: email.as_deref(),
+        phone: phone.as_deref(),
+        is_active: input.is_active,
+        credit_limit,
+    };
+
+    if input.is_active == Some(false) {
+        let mut tx = pool.begin().await.map_err(RepoError::Database)?;
+        ensure_zero_position_in(&mut tx, id).await?;
+        repository::update_customer_in(&mut *tx, id, update)
+            .await
+            .map_err(map_repo_error)?;
+        tx.commit().await.map_err(RepoError::Database)?;
+        return Ok(());
+    }
+
+    repository::update_customer(pool, id, update)
+        .await
+        .map_err(map_repo_error)
 }
 
 pub async fn deactivate_customer(pool: &PgPool, id: Uuid) -> Result<(), CustomerError> {
-    repository::deactivate_customer(pool, id)
+    let mut tx = pool.begin().await.map_err(RepoError::Database)?;
+    ensure_zero_position_in(&mut tx, id).await?;
+    repository::deactivate_customer_in(&mut *tx, id)
         .await
-        .map_err(map_repo_error)
+        .map_err(map_repo_error)?;
+    tx.commit().await.map_err(RepoError::Database)?;
+    Ok(())
+}
+
+/// Take the customer's advisory lock first — the same lock order
+/// `authorize_credit` uses — and verify the account carries neither a balance
+/// nor unapplied credit before deactivating the row.
+async fn ensure_zero_position_in(conn: &mut PgConnection, id: Uuid) -> Result<(), CustomerError> {
+    accounts::lock_customer(conn, id)
+        .await
+        .map_err(map_account_error)?;
+    let position = accounts::account_position_in(conn, id)
+        .await
+        .map_err(map_account_error)?;
+    if !position.balance.is_zero() || !position.unapplied_credit.is_zero() {
+        return Err(CustomerError::OpenAccountPosition {
+            balance: position.balance,
+            unapplied_credit: position.unapplied_credit,
+        });
+    }
+    Ok(())
+}
+
+fn map_account_error(err: accounts::RepoError) -> CustomerError {
+    match err {
+        accounts::RepoError::CustomerNotFound => CustomerError::NotFound,
+        accounts::RepoError::CustomerBusy => CustomerError::AccountBusy,
+        accounts::RepoError::Database(db) => CustomerError::Internal(RepoError::Database(db)),
+        other => CustomerError::Internal(RepoError::Database(sqlx::Error::Protocol(format!(
+            "customer accounts repository: {other}"
+        )))),
+    }
 }
 
 fn map_repo_error(err: RepoError) -> CustomerError {

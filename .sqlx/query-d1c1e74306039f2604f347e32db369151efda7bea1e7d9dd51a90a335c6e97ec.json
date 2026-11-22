@@ -17,7 +17,8 @@
                 "adjustment_in",
                 "adjustment_out",
                 "sale_refund",
-                "account_payment"
+                "account_payment",
+                "account_payment_refund"
               ]
             }
           }

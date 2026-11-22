@@ -1,16 +1,17 @@
-//! The collection use case: money arriving into a wallet against a customer's
-//! account, allocated to the sales it pays.
+//! Customer account use cases: collections, credit refunds and manual
+//! adjustments.
 //!
 //! One transaction, one order: the customer lock first (S5), the replay
 //! lookup under it and before anything is written, then the method, the
-//! `account_payment` movement and the ledger's receipt. A rejection anywhere
-//! rolls the whole transaction back — the wallet never takes money the ledger
-//! refused to book, and the ledger never books money no wallet saw.
+//! wallet movement and the ledger entry. A rejection anywhere rolls the whole
+//! transaction back — the wallet never moves money the ledger refused to book,
+//! and the ledger never books money no wallet saw.
 
 use rust_decimal::Decimal;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
+use crate::customer_accounts::model::CustomerAccountEntryKind;
 use crate::customer_accounts::repository::{self, RepoError};
 use crate::payments::model::WalletMovementKind;
 use crate::payments::repository as wallets;
@@ -35,9 +36,13 @@ pub enum ReceiptsError {
     #[error("the amount must be at most {max}")]
     AmountTooLarge { max: Decimal },
 
+    #[error("a credit refund needs a reason")]
+    RefundNoteRequired,
+
     /// The ledger's own typed rejections, each with a sentence the operator
-    /// can act on: a bad amount, a sale that is not payable, or allocations
-    /// beyond what a sale owes or the receipt collected.
+    /// can act on: a bad amount, a sale that is not payable, allocations
+    /// beyond what a sale owes or the receipt collected, a refund beyond
+    /// usable credit, or an adjustment that crosses zero.
     #[error("{0}")]
     Validation(RepoError),
 
@@ -62,7 +67,11 @@ impl From<RepoError> for ReceiptsError {
             | RepoError::OutstandingExceeded { .. }
             | RepoError::ReceiptOverAllocated { .. }
             | RepoError::DuplicateAllocation { .. }
-            | RepoError::MovementOfAnotherCustomer => ReceiptsError::Validation(err),
+            | RepoError::MovementOfAnotherCustomer
+            | RepoError::CreditRefundExceedsCredit { .. }
+            | RepoError::AdjustmentCrossesZero { .. }
+            | RepoError::AdjustmentNoteRequired
+            | RepoError::NotAnAdjustment => ReceiptsError::Validation(err),
             other => ReceiptsError::Internal(other),
         }
     }
@@ -98,6 +107,23 @@ impl From<wallets::RepoError> for ReceiptsError {
 fn max_amount() -> Decimal {
     // 12 integer digits and 2 decimals, the exact capacity of numeric(14, 2).
     Decimal::from_i128_with_scale(99_999_999_999_999, 2)
+}
+
+/// Shared money validation at the boundary, in published precedence order:
+/// sign, then precision, then column magnitude.
+fn validate_amount(amount: Decimal) -> Result<(), ReceiptsError> {
+    if amount <= Decimal::ZERO {
+        return Err(ReceiptsError::Validation(RepoError::NonPositiveAmount));
+    }
+    if amount.round_dp(2) != amount {
+        return Err(ReceiptsError::Validation(RepoError::TooManyDecimals {
+            amount,
+        }));
+    }
+    if amount > max_amount() {
+        return Err(ReceiptsError::AmountTooLarge { max: max_amount() });
+    }
+    Ok(())
 }
 
 /// One collection as the operator decided it. The allocations are theirs, not
@@ -164,17 +190,7 @@ pub async fn collect(
     // The ledger rejects these too, but only after the movement exists: a
     // boundary that publishes a 422 owns the sentence, and the transaction is
     // better off never opening.
-    if input.amount <= Decimal::ZERO {
-        return Err(ReceiptsError::Validation(RepoError::NonPositiveAmount));
-    }
-    if input.amount.round_dp(2) != input.amount {
-        return Err(ReceiptsError::Validation(RepoError::TooManyDecimals {
-            amount: input.amount,
-        }));
-    }
-    if input.amount > max_amount() {
-        return Err(ReceiptsError::AmountTooLarge { max: max_amount() });
-    }
+    validate_amount(input.amount)?;
 
     let mut tx = pool.begin().await?;
 
@@ -273,5 +289,156 @@ pub async fn collect(
         unapplied_credit,
         allocations,
         replayed: recorded.replayed,
+    })
+}
+
+// --- Credit refunds (S10) -----------------------------------------------
+
+pub struct RefundCreditInput<'a> {
+    pub payment_method_id: Uuid,
+    pub amount: Decimal,
+    pub note: &'a str,
+    pub idempotency_key: Option<&'a str>,
+    pub actor: Uuid,
+}
+
+pub struct RefundedCredit {
+    pub entry_id: Uuid,
+    pub wallet_movement_id: Uuid,
+    pub balance: Decimal,
+    pub unapplied_credit: Decimal,
+    pub replayed: bool,
+}
+
+/// Hand collected credit back to a customer through an `account_payment_refund`
+/// wallet movement and a `credit_refund` ledger entry, in one transaction.
+///
+/// The replay lookup runs under the customer lock before anything is written,
+/// mirroring [`collect`]: two copies of the same retry serialize, and the
+/// second returns the first refund with `replayed = true`.
+pub async fn refund_credit(
+    pool: &PgPool,
+    customer_id: Uuid,
+    input: RefundCreditInput<'_>,
+) -> Result<RefundedCredit, ReceiptsError> {
+    validate_amount(input.amount)?;
+    let note = input.note.trim();
+    if note.is_empty() {
+        return Err(ReceiptsError::RefundNoteRequired);
+    }
+
+    let mut tx = pool.begin().await?;
+    repository::lock_customer(&mut tx, customer_id).await?;
+
+    if let Some(key) = input.idempotency_key
+        && let Some(existing) =
+            repository::credit_refund_by_key_in(&mut tx, customer_id, key).await?
+    {
+        let position = repository::account_position_in(&mut tx, customer_id).await?;
+        tx.commit().await?;
+        return Ok(RefundedCredit {
+            entry_id: existing.entry_id,
+            wallet_movement_id: existing.wallet_movement_id,
+            balance: position.balance,
+            unapplied_credit: position.unapplied_credit,
+            replayed: true,
+        });
+    }
+
+    let method = wallets::find_method(&mut *tx, input.payment_method_id)
+        .await?
+        .ok_or(ReceiptsError::MethodUnavailable)?;
+    if !method.is_active || !method.wallet_is_active {
+        return Err(ReceiptsError::MethodUnavailable);
+    }
+
+    let movement_id = wallets::insert_movement(
+        &mut *tx,
+        wallets::NewWalletMovement {
+            wallet_id: method.wallet_id,
+            kind: WalletMovementKind::AccountPaymentRefund,
+            amount: input.amount,
+            sale_id: None,
+            payment_method_id: Some(method.id),
+            credit_note_id: None,
+            customer_id: Some(customer_id),
+            note: Some(note),
+            created_by: Some(input.actor),
+        },
+    )
+    .await?;
+
+    let entry_id = repository::record_credit_refund_with_key(
+        &mut tx,
+        repository::NewCreditRefund {
+            customer_id,
+            wallet_movement_id: movement_id,
+            amount: input.amount,
+            idempotency_key: input.idempotency_key,
+            note: Some(note),
+            created_by: input.actor,
+        },
+    )
+    .await?;
+
+    let position = repository::account_position_in(&mut tx, customer_id).await?;
+    tx.commit().await?;
+
+    Ok(RefundedCredit {
+        entry_id,
+        wallet_movement_id: movement_id,
+        balance: position.balance,
+        unapplied_credit: position.unapplied_credit,
+        replayed: false,
+    })
+}
+
+// --- Manual adjustments (S11) -------------------------------------------
+
+pub struct AdjustInput<'a> {
+    pub kind: CustomerAccountEntryKind,
+    pub amount: Decimal,
+    pub note: &'a str,
+    pub actor: Uuid,
+}
+
+pub struct RecordedAdjustment {
+    pub entry_id: Uuid,
+    pub kind: CustomerAccountEntryKind,
+    pub balance: Decimal,
+    pub unapplied_credit: Decimal,
+}
+
+/// Record a manual `adjustment_in` or `adjustment_out` without touching any
+/// wallet. The ledger enforces that the balance stays non-negative.
+pub async fn adjust(
+    pool: &PgPool,
+    customer_id: Uuid,
+    input: AdjustInput<'_>,
+) -> Result<RecordedAdjustment, ReceiptsError> {
+    let note = input.note.trim();
+    if note.is_empty() {
+        return Err(ReceiptsError::Validation(RepoError::AdjustmentNoteRequired));
+    }
+    validate_amount(input.amount)?;
+
+    let mut tx = pool.begin().await?;
+    let entry_id = repository::record_adjustment(
+        &mut tx,
+        customer_id,
+        input.kind,
+        input.amount,
+        note,
+        input.actor,
+    )
+    .await?;
+    let position = repository::account_position_in(&mut tx, customer_id).await?;
+    tx.commit().await?;
+
+    Ok(RecordedAdjustment {
+        entry_id,
+        kind: input.kind,
+        balance: position.balance,
+        unapplied_credit: position.unapplied_credit,
     })
 }

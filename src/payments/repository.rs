@@ -112,6 +112,7 @@ pub async fn list_wallets(
                        WHEN 'sale_payment' THEN m.amount
                        WHEN 'sale_refund'  THEN -m.amount
                        WHEN 'account_payment' THEN m.amount
+                       WHEN 'account_payment_refund' THEN -m.amount
                        WHEN 'adjustment_in' THEN m.amount
                        WHEN 'expense' THEN -m.amount
                        WHEN 'adjustment_out' THEN -m.amount
@@ -157,6 +158,7 @@ pub async fn get_wallet(pool: &PgPool, id: Uuid) -> Result<WalletWithBalance, Re
                        WHEN 'sale_payment' THEN m.amount
                        WHEN 'sale_refund'  THEN -m.amount
                        WHEN 'account_payment' THEN m.amount
+                       WHEN 'account_payment_refund' THEN -m.amount
                        WHEN 'adjustment_in' THEN m.amount
                        WHEN 'expense' THEN -m.amount
                        WHEN 'adjustment_out' THEN -m.amount
@@ -342,9 +344,9 @@ pub struct NewWalletMovement<'a> {
     pub payment_method_id: Option<Uuid>,
     /// The credit note that caused a `sale_refund`; `None` for every other kind.
     pub credit_note_id: Option<Uuid>,
-    /// The customer an `account_payment` was collected for; `None` for every
-    /// other kind, enforced by the `wallet_movements_customer_link_only_for_account_kinds`
-    /// constraint. The collection endpoint is the only writer that sets it.
+    /// The customer an `account_payment` or `account_payment_refund` belongs to;
+    /// `None` for every other kind, enforced by the
+    /// `wallet_movements_customer_link_only_for_account_kinds` constraint.
     pub customer_id: Option<Uuid>,
     pub note: Option<&'a str>,
     pub created_by: Option<Uuid>,

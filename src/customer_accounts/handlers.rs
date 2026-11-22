@@ -21,7 +21,10 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::AuthUser;
-use crate::customer_accounts::service::{self, CollectedReceipt, ReceiptsError};
+use crate::customer_accounts::model::CustomerAccountEntryKind;
+use crate::customer_accounts::service::{
+    self, CollectedReceipt, ReceiptsError, RecordedAdjustment, RefundedCredit,
+};
 use crate::error::AppError;
 
 /// The published contract caps the idempotency key at this many characters.
@@ -30,7 +33,10 @@ use crate::error::AppError;
 const MAX_IDEMPOTENCY_KEY_LEN: usize = 100;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/customers/{id}/receipts", post(collect_receipt))
+    Router::new()
+        .route("/customers/{id}/receipts", post(collect_receipt))
+        .route("/customers/{id}/credit-refunds", post(refund_credit))
+        .route("/customers/{id}/adjustments", post(record_adjustment))
 }
 
 // --- DTOs ---------------------------------------------------------------
@@ -87,7 +93,96 @@ pub struct ReceiptResponse {
     pub allocations: Vec<ReceiptAllocationResponse>,
 }
 
+/// A credit refund: money handed back to a customer who holds usable credit.
+#[derive(Deserialize, ToSchema)]
+pub struct RefundCreditRequest {
+    pub payment_method_id: Uuid,
+    #[schema(value_type = String, example = "50.00")]
+    pub amount: Decimal,
+    /// Why the money is being handed back. Required and non-blank.
+    pub note: String,
+    /// Optional retry key. A repeated refund with the same key returns the
+    /// first refund with `200` instead of handing the money back twice.
+    #[schema(max_length = 100)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CreditRefundResponse {
+    /// The ledger entry that recorded the refund.
+    pub refund_id: Uuid,
+    /// The `account_payment_refund` movement that carried the money out of the
+    /// wallet.
+    pub wallet_movement_id: Uuid,
+    /// The customer's balance after the refund. Never positive after a refund.
+    #[schema(value_type = String, example = "-20.00")]
+    pub balance: String,
+    /// Usable credit remaining after the refund.
+    #[schema(value_type = String, example = "20.00")]
+    pub unapplied_credit: String,
+}
+
+/// Direction of a manual debt adjustment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AdjustmentDirection {
+    /// Increase the customer's debt (for example, loading an opening balance).
+    In,
+    /// Decrease the customer's debt without crossing below zero.
+    Out,
+}
+
+impl AdjustmentDirection {
+    fn into_kind(self) -> CustomerAccountEntryKind {
+        match self {
+            AdjustmentDirection::In => CustomerAccountEntryKind::AdjustmentIn,
+            AdjustmentDirection::Out => CustomerAccountEntryKind::AdjustmentOut,
+        }
+    }
+}
+
+/// A manual adjustment against a customer's debt ledger. Touches no wallet.
+#[derive(Deserialize, ToSchema)]
+pub struct RecordAdjustmentRequest {
+    pub direction: AdjustmentDirection,
+    #[schema(value_type = String, example = "250.00")]
+    pub amount: Decimal,
+    /// Why the balance was adjusted. Required and non-blank.
+    pub note: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AdjustmentResponse {
+    /// The ledger entry that recorded the adjustment.
+    pub adjustment_id: Uuid,
+    pub kind: CustomerAccountEntryKind,
+    /// The customer's balance after the adjustment. Always `>= 0.00`.
+    #[schema(value_type = String, example = "250.00")]
+    pub balance: String,
+    #[schema(value_type = String, example = "0.00")]
+    pub unapplied_credit: String,
+}
+
 // --- Handlers -----------------------------------------------------------
+
+/// Normalize an optional idempotency key at the HTTP boundary.
+///
+/// Only *blank* keys are discarded. A non-blank key keeps exactly what the
+/// client sent: trimming it would rewrite the key namespace, so a record
+/// saved under a padded key would stop matching its own retry. The cap counts
+/// characters, matching the contract's wording.
+fn normalize_idempotency_key(raw: Option<String>) -> Result<Option<String>, AppError> {
+    let key = raw.filter(|key| !key.trim().is_empty());
+    if key
+        .as_ref()
+        .is_some_and(|key| key.chars().count() > MAX_IDEMPOTENCY_KEY_LEN)
+    {
+        return Err(AppError::Validation(format!(
+            "the idempotency key exceeds {MAX_IDEMPOTENCY_KEY_LEN} characters"
+        )));
+    }
+    Ok(key)
+}
 
 async fn collect_receipt(
     State(state): State<AppState>,
@@ -108,26 +203,7 @@ async fn collect_receipt(
         .map(|note| note.trim().to_string())
         .filter(|note| !note.is_empty());
 
-    // A blank key is "no key", never a key of spaces: a key a client cannot
-    // tell apart from another would make every later blank-key collection
-    // answer with the first receipt — money collected and nothing booked.
-    //
-    // Only *blank* keys are discarded. A non-blank key keeps exactly what the
-    // client sent: trimming it would rewrite the key namespace, so a receipt
-    // recorded before this change under a padded key would stop matching its
-    // own retry (booking a duplicate) and two padded variants would collapse
-    // onto one receipt. The cap below counts the characters of that string as
-    // sent, padding included — characters, not bytes, matching the contract's
-    // own wording, so a multi-byte key is never refused for its byte length.
-    let idempotency_key = body.idempotency_key.filter(|key| !key.trim().is_empty());
-    if idempotency_key
-        .as_ref()
-        .is_some_and(|key| key.chars().count() > MAX_IDEMPOTENCY_KEY_LEN)
-    {
-        return Err(AppError::Validation(format!(
-            "the idempotency key exceeds {MAX_IDEMPOTENCY_KEY_LEN} characters"
-        )));
-    }
+    let idempotency_key = normalize_idempotency_key(body.idempotency_key)?;
 
     let collected = service::collect(
         &state.pool,
@@ -151,6 +227,56 @@ async fn collect_receipt(
         StatusCode::CREATED
     };
     Ok((status, Json(to_response(collected))))
+}
+
+async fn refund_credit(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<RefundCreditRequest>,
+) -> Result<(StatusCode, Json<CreditRefundResponse>), AppError> {
+    let idempotency_key = normalize_idempotency_key(body.idempotency_key)?;
+
+    let refunded = service::refund_credit(
+        &state.pool,
+        id,
+        service::RefundCreditInput {
+            payment_method_id: body.payment_method_id,
+            amount: body.amount,
+            note: &body.note,
+            idempotency_key: idempotency_key.as_deref(),
+            actor: user.id(),
+        },
+    )
+    .await?;
+
+    let status = if refunded.replayed {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(to_refund_response(refunded))))
+}
+
+async fn record_adjustment(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<RecordAdjustmentRequest>,
+) -> Result<(StatusCode, Json<AdjustmentResponse>), AppError> {
+    let recorded = service::adjust(
+        &state.pool,
+        id,
+        service::AdjustInput {
+            kind: body.direction.into_kind(),
+            amount: body.amount,
+            note: &body.note,
+            actor: user.id(),
+        },
+    )
+    .await?;
+
+    Ok((StatusCode::CREATED, Json(to_adjustment_response(recorded))))
 }
 
 // --- Conversions --------------------------------------------------------
@@ -177,6 +303,24 @@ fn to_response(collected: CollectedReceipt) -> ReceiptResponse {
     }
 }
 
+fn to_refund_response(refunded: RefundedCredit) -> CreditRefundResponse {
+    CreditRefundResponse {
+        refund_id: refunded.entry_id,
+        wallet_movement_id: refunded.wallet_movement_id,
+        balance: format_money(refunded.balance),
+        unapplied_credit: format_money(refunded.unapplied_credit),
+    }
+}
+
+fn to_adjustment_response(recorded: RecordedAdjustment) -> AdjustmentResponse {
+    AdjustmentResponse {
+        adjustment_id: recorded.entry_id,
+        kind: recorded.kind,
+        balance: format_money(recorded.balance),
+        unapplied_credit: format_money(recorded.unapplied_credit),
+    }
+}
+
 // --- Errors -------------------------------------------------------------
 
 impl From<ReceiptsError> for AppError {
@@ -189,6 +333,7 @@ impl From<ReceiptsError> for AppError {
             ReceiptsError::AlreadyRecorded => AppError::Conflict(err.to_string()),
             ReceiptsError::MethodUnavailable
             | ReceiptsError::AmountTooLarge { .. }
+            | ReceiptsError::RefundNoteRequired
             | ReceiptsError::Validation(_) => AppError::Validation(err.to_string()),
             ReceiptsError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
@@ -229,3 +374,61 @@ impl From<ReceiptsError> for AppError {
 )]
 #[allow(dead_code)]
 fn collect_receipt_doc() {}
+
+/// Hand collected credit back to a customer through a wallet movement.
+///
+/// One request, one transaction: an `account_payment_refund` outflow leaves
+/// the method's wallet and a `credit_refund` entry moves the customer's
+/// balance toward zero. Refused unless `amount <= unapplied_credit` and
+/// `balance + amount <= 0`. An optional idempotency key returns the first
+/// refund with `200` instead of handing money back twice.
+#[utoipa::path(
+    post,
+    path = "/api/v1/customers/{id}/credit-refunds",
+    tag = "customer_accounts",
+    params(("id" = Uuid, Path, description = "Customer ID")),
+    request_body = RefundCreditRequest,
+    responses(
+        (status = 201, description = "Credit refunded: the wallet movement and ledger entry are written together",
+         body = CreditRefundResponse),
+        (status = 200, description = "Existing credit refund returned for a repeated idempotency key; nothing was written",
+         body = CreditRefundResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Busy customer account, or idempotency key already used by another entry kind", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Unknown or inactive payment method, blank note, invalid amount, or amount exceeding available credit", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn refund_credit_doc() {}
+
+/// Record a manual debt adjustment on a customer's account.
+///
+/// Writes `adjustment_in` or `adjustment_out` without touching any wallet.
+/// Both directions require the balance to stay `>= 0`: an adjustment may
+/// load an opening balance or correct a debt, never create or consume
+/// available credit.
+#[utoipa::path(
+    post,
+    path = "/api/v1/customers/{id}/adjustments",
+    tag = "customer_accounts",
+    params(("id" = Uuid, Path, description = "Customer ID")),
+    request_body = RecordAdjustmentRequest,
+    responses(
+        (status = 201, description = "Adjustment recorded", body = AdjustmentResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "The customer account is busy, retry", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Blank note, invalid amount, or adjustment crossing zero", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn record_adjustment_doc() {}

@@ -118,7 +118,7 @@ pub enum RepoError {
     #[error("the same sale appears twice in one receipt")]
     DuplicateAllocation { sale_id: Uuid },
 
-    #[error("a receipt cannot be backed by a {kind} movement")]
+    #[error("an account entry cannot be backed by a {kind} movement")]
     MovementNotFromAnAccount { kind: String },
 
     #[error("the wallet movement belongs to another customer")]
@@ -368,12 +368,6 @@ pub async fn outstanding_for_sale_in(
 /// deadlock against it. An xact-scoped advisory lock gives every
 /// balance-changing writer the same first step, and concurrent collections
 /// serialize here instead of racing on the sums.
-/// One writer, one lock, taken first. The lock is deliberately not the
-/// customer's row: the sale-completion transaction already locks the sale and
-/// its products, so a collection that locked the customer row first could
-/// deadlock against it. An xact-scoped advisory lock gives every
-/// balance-changing writer the same first step, and concurrent collections
-/// serialize here instead of racing on the sums.
 ///
 /// The wait is bounded: a writer that never finished would otherwise park
 /// every later collection behind it forever, so the lock times out and the
@@ -426,9 +420,10 @@ pub async fn lock_customer(conn: &mut PgConnection, customer_id: Uuid) -> Result
 /// first, so this gate serializes with every other balance-changing writer on
 /// the account; then the customer's row is read `FOR UPDATE`, so a
 /// deactivation racing the checkout cannot slip between the gate and the
-/// charge — it waits for the row lock, and when it finally runs the next
-/// completion sees `is_active = false`. The two orders cannot invert, because
-/// a deactivation takes only the row lock and never the advisory one.
+/// charge — it waits for the advisory lock first and then the row lock, the
+/// exact same order, so the two orders cannot invert and when deactivation
+/// finally runs it sees the new balance (or the next completion sees
+/// `is_active = false`).
 ///
 /// The rejection is on exposure, not on the single sale: `balance + amount`
 /// against `credit_limit`, where `NULL` means no limit at all and `0` means
@@ -533,14 +528,15 @@ async fn ensure_chargeable_sale(
 /// keeps passing: the ledger's own fixtures and history have no attribution to
 /// compare. And a `sale_payment` or `sale_refund` movement collected for a
 /// sale at the till: it is not money that came from the customer's account, so
-/// a receipt backed by it would collect the same money twice. The kinds are
-/// compared by name because the `account_payment*` kinds that will back these
-/// entries must keep passing here unchanged.
+/// an entry backed by it would count the same money twice. Likewise an inflow
+/// (`account_payment`) cannot back a credit refund and an outflow
+/// (`account_payment_refund`) cannot back a receipt.
 async fn ensure_movement_backing(
     conn: &mut PgConnection,
     customer_id: Uuid,
     wallet_movement_id: Uuid,
     amount: Decimal,
+    forbidden_account_kind: &str,
 ) -> Result<(), RepoError> {
     let movement = sqlx::query!(
         r#"SELECT amount, customer_id, kind::text AS "kind!" FROM wallet_movements WHERE id = $1"#,
@@ -564,7 +560,10 @@ async fn ensure_movement_backing(
         return Err(RepoError::MovementOfAnotherCustomer);
     }
 
-    if movement.kind == "sale_payment" || movement.kind == "sale_refund" {
+    if movement.kind == "sale_payment"
+        || movement.kind == "sale_refund"
+        || movement.kind == forbidden_account_kind
+    {
         return Err(RepoError::MovementNotFromAnAccount {
             kind: movement.kind,
         });
@@ -683,6 +682,7 @@ pub async fn record_receipt(
         receipt.customer_id,
         receipt.wallet_movement_id,
         receipt.amount,
+        "account_payment_refund",
     )
     .await?;
 
@@ -701,7 +701,7 @@ pub async fn record_receipt(
         let first = sqlx::query_scalar!(
             r#"
             SELECT id FROM customer_account_entries
-            WHERE customer_id = $1 AND idempotency_key = $2
+            WHERE customer_id = $1 AND idempotency_key = $2 AND kind = 'receipt'
             "#,
             receipt.customer_id,
             key,
@@ -1109,14 +1109,53 @@ pub async fn record_credit_note(
     Ok(id)
 }
 
+/// The credit refund an idempotency key already recorded, or none.
+pub struct ExistingCreditRefund {
+    pub entry_id: Uuid,
+    pub wallet_movement_id: Uuid,
+}
+
+/// Look up an existing credit refund by `(customer_id, idempotency_key)` under
+/// the customer lock before writing anything. Pinned to `credit_refund` so a
+/// key already used by a `receipt` is refused by the unique index rather than
+/// replayed across kinds.
+pub async fn credit_refund_by_key_in(
+    conn: &mut PgConnection,
+    customer_id: Uuid,
+    idempotency_key: &str,
+) -> Result<Option<ExistingCreditRefund>, RepoError> {
+    let row = sqlx::query!(
+        r#"
+        SELECT id                 AS "entry_id!: Uuid",
+               wallet_movement_id AS "wallet_movement_id!: Uuid"
+        FROM customer_account_entries
+        WHERE customer_id = $1 AND idempotency_key = $2 AND kind = 'credit_refund'
+        "#,
+        customer_id,
+        idempotency_key,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+
+    Ok(row.map(|row| ExistingCreditRefund {
+        entry_id: row.entry_id,
+        wallet_movement_id: row.wallet_movement_id,
+    }))
+}
+
+/// Input for recording a credit refund with an optional idempotency key.
+pub struct NewCreditRefund<'a> {
+    pub customer_id: Uuid,
+    pub wallet_movement_id: Uuid,
+    pub amount: Decimal,
+    pub idempotency_key: Option<&'a str>,
+    pub note: Option<&'a str>,
+    pub created_by: Uuid,
+}
+
 /// Hand collected money back to a customer who holds credit. The wallet
 /// movement is the money actually leaving; the entry is the ledger's copy,
 /// stored positive because a refund moves the balance toward zero.
-///
-/// Which wallet kind carried the money out is deliberately not this writer's
-/// business: the movement's amount is the contract, and the kind that refunds
-/// credit does not exist yet (it arrives with the slice that writes the
-/// movement).
 pub async fn record_credit_refund(
     conn: &mut PgConnection,
     customer_id: Uuid,
@@ -1125,13 +1164,40 @@ pub async fn record_credit_refund(
     note: Option<&str>,
     created_by: Uuid,
 ) -> Result<Uuid, RepoError> {
-    ensure_cents(amount)?;
-    lock_customer(conn, customer_id).await?;
+    record_credit_refund_with_key(
+        conn,
+        NewCreditRefund {
+            customer_id,
+            wallet_movement_id,
+            amount,
+            idempotency_key: None,
+            note,
+            created_by,
+        },
+    )
+    .await
+}
+
+/// [`record_credit_refund`] with an optional idempotency key.
+pub async fn record_credit_refund_with_key(
+    conn: &mut PgConnection,
+    refund: NewCreditRefund<'_>,
+) -> Result<Uuid, RepoError> {
+    ensure_cents(refund.amount)?;
+    lock_customer(conn, refund.customer_id).await?;
 
     // The same checks the receipt makes, for the same reasons: the movement
-    // carried what the entry claims, it belongs to this customer, and it is
-    // not a sale's own till money.
-    ensure_movement_backing(conn, customer_id, wallet_movement_id, amount).await?;
+    // carried what the entry claims, it belongs to this customer, it is not a
+    // sale's own till money, and an inflow (`account_payment`) cannot back an
+    // outflow refund.
+    ensure_movement_backing(
+        conn,
+        refund.customer_id,
+        refund.wallet_movement_id,
+        refund.amount,
+        "account_payment",
+    )
+    .await?;
 
     // A replay answers by identity, not by re-running the numbers: the first
     // refund already consumed the credit this one claims, so affordability
@@ -1143,7 +1209,7 @@ pub async fn record_credit_refund(
         SELECT id FROM customer_account_entries
         WHERE wallet_movement_id = $1
         "#,
-        wallet_movement_id,
+        refund.wallet_movement_id,
     )
     .fetch_optional(&mut *conn)
     .await?;
@@ -1151,7 +1217,7 @@ pub async fn record_credit_refund(
         return Err(RepoError::AlreadyRecorded);
     }
 
-    let position = account_position_in(conn, customer_id).await?;
+    let position = account_position_in(conn, refund.customer_id).await?;
 
     // Money is only handed back against money the shop actually holds: the
     // unapplied credit says it was collected, the negative balance says it was
@@ -1163,9 +1229,9 @@ pub async fn record_credit_refund(
         .unapplied_credit
         .min(-position.balance)
         .max(Decimal::ZERO);
-    if amount > available {
+    if refund.amount > available {
         return Err(RepoError::CreditRefundExceedsCredit {
-            requested: amount,
+            requested: refund.amount,
             available,
         });
     }
@@ -1174,24 +1240,23 @@ pub async fn record_credit_refund(
     sqlx::query!(
         r#"
         INSERT INTO customer_account_entries
-            (id, customer_id, kind, amount, wallet_movement_id, note, created_by)
-        VALUES ($1, $2, 'credit_refund', $3, $4, $5, $6)
+            (id, customer_id, kind, amount, wallet_movement_id, idempotency_key, note, created_by)
+        VALUES ($1, $2, 'credit_refund', $3, $4, $5, $6, $7)
         "#,
         id,
-        customer_id,
-        amount,
-        wallet_movement_id,
-        note,
-        created_by,
+        refund.customer_id,
+        refund.amount,
+        refund.wallet_movement_id,
+        refund.idempotency_key,
+        refund.note,
+        refund.created_by,
     )
     .execute(&mut *conn)
     .await
-    .map_err(|err| {
-        if violated_constraint(&err) == Some("customer_account_entries_one_entry_per_movement") {
-            RepoError::AlreadyRecorded
-        } else {
-            RepoError::Database(err)
-        }
+    .map_err(|err| match violated_constraint(&err) {
+        Some("customer_account_entries_one_entry_per_movement")
+        | Some("customer_account_entries_receipt_idempotency") => RepoError::AlreadyRecorded,
+        _ => RepoError::Database(err),
     })?;
 
     Ok(id)

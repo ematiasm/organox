@@ -216,7 +216,7 @@ and the new `on_account = 0` sibling.
 | T4 | S3, S5, S6 | **done**: `0018` adds the `account_payment` label alone, `0019` the `wallet_movements.customer_id` column and its two CHECKs; the kind joins both balance `CASE`s and the sign test; `POST /customers/{id}/receipts` answers 201/200 with the replay read under the lock; `ensure_movement_backing` now binds the movement's customer, closing `R1-receipt-backing-not-customer-bound`; 8 HTTP tests plus the ledger one | `4807009` |
 | T5 | S8 | **done**: `apply_available_credit` spends usable credit oldest-receipt-first inside the completion transaction, capped by the request, the account's credit and the sale's outstanding; `credit_applied` in the response says what the sale no longer owes. Closes the three banked advisories | `781a815` |
 | T6 | S9 | **done**: the note cancels `min(N, outstanding)` through the ledger and refunds only the surplus over the tenders that collected it (till payments, then receipt allocations), split in integer cents with largest remainders and computed cumulatively; `split_cash_refund` replaces `allocate_refund`; a busy account answers 409. Closes the four banked advisories | `2beefe1` |
-| T7 | S10, S11, S12 | credit refunds, adjustments, deactivation guard | feat/customer-accounts-adjustments |
+| T7 | S10, S11, S12 | **done**: `0020` adds the `account_payment_refund` label alone, `0021` extends both wallet customer-link CHECKs; `POST /customers/{id}/credit-refunds` (201/200, cross-kind key collision 409) writes the outflow movement and `credit_refund` entry under the customer lock bounded by `min(U, -balance)`; `POST /customers/{id}/adjustments` (`in`/`out`, non-blank note, never crosses zero, touches no wallet); `POST /customers/{id}/deactivate` and `PATCH /customers/{id}` (`is_active: false`) guard `balance == 0 && U == 0` under the customer lock and answer 409 naming the open position; 10 HTTP tests plus wallet/ledger tests | `38f674e` |
 | T8 | S13 | statement, receivables with aging, customer read columns | feat/customer-accounts-reads |
 | T9 | S14 | POS field, drawer, list column, receivables page, regenerated schema | feat/customer-accounts-ui |
 | T10 | S14 | docs, README, openapi regeneration | feat/customer-accounts-docs |
@@ -422,3 +422,25 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   same commit so the review sees it. `allocate_refund`'s seven unit tests were replaced by eight for
   `split_cash_refund`; one deliberate difference is pinned: a cent over [1.00, 2.00] now goes to the
   larger tender instead of whichever came last, which is the Hamilton rule.
+- L28 — T7 delivered in `38f674e`: credit refunds, manual adjustments and the deactivation guard.
+  Two migrations (`0020` adds `account_payment_refund` alone; `0021` extends both `wallet_movements`
+  customer-link CHECKs), outflow movement (`-1`) + `credit_refund` entry (`+amount`) written in one
+  transaction under the customer advisory lock bounded by `min(U, -balance)`, and `record_receipt`
+  now filters its replay lookup by `kind = 'receipt'` so reusing an idempotency key across receipts
+  and credit refunds answers 409 and rolls back instead of replaying across kinds. Adjustments stay
+  ledger-only with `balance >= 0` in both directions. Both `POST /customers/{id}/deactivate` and
+  `PATCH /customers/{id}` with `is_active: false` take the customer advisory lock before the row
+  update (matching `authorize_credit` so there is no lock inversion) and answer 409 naming the open
+  position while `balance != 0 || U != 0`. `KIND_LABELS` updated for the new wallet movement kind;
+  `.sqlx`, `openapi.json`, `schema.d.ts`, `docs/customers.md`, and `docs/payments.md` regenerated.
+  `make check` green at 365 tests (`account_operations.rs` 10/10, `payments.rs` 16/16,
+  `customer_accounts.rs` 58/58), clippy `-D warnings`, svelte-check 0/0. Independent verification
+  (`gentle-ai-verify`) passed all three specs with 9 additional probes (374/374) and no blockers.
+  Native review: lineage `review-ccdb2f928f8fe1f1`, target `sha256:0f056910…`, three lenses
+  (`risk`+`resilience`+`reliability`, omitting `--request-context` because this log exceeded the
+  per-lens context budget), **approved**, authority burned (`gentle-ai.review-acknowledged/v1`).
+  Eight non-blocking advisories banked (none reopen the review): session-only authz matches the rest
+  of the API; wallet-side floor/attribution and replay-time position match existing wallet/receipt
+  contracts (clarify explicitly in T10 docs); adjustments carry no idempotency key per S11; and
+  re-deactivating an already-inactive legacy customer with an open position now answers 409 rather
+  than a 204 no-op (evaluate in T8/T10 if needed).

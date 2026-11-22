@@ -2552,3 +2552,91 @@ async fn applying_credit_never_exceeds_the_usable_credit(pool: PgPool) {
     assert_eq!(position.balance, dec!(100.00));
     assert!(position.is_consistent());
 }
+
+#[sqlx::test]
+async fn account_movements_cannot_back_entries_of_the_opposite_direction(pool: PgPool) {
+    let ana = seed_customer(&pool, "Ana").await;
+    let wallet = Uuid::now_v7();
+    let method = Uuid::now_v7();
+    sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, 'Cash')")
+        .bind(wallet)
+        .execute(&pool)
+        .await
+        .expect("wallet");
+    sqlx::query("INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, 'Cash', $2)")
+        .bind(method)
+        .bind(wallet)
+        .execute(&pool)
+        .await
+        .expect("method");
+
+    let inflow = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO wallet_movements
+            (id, wallet_id, kind, amount, payment_method_id, customer_id)
+         VALUES ($1, $2, 'account_payment', $3, $4, $5)",
+    )
+    .bind(inflow)
+    .bind(wallet)
+    .bind(dec!(50.00))
+    .bind(method)
+    .bind(ana)
+    .execute(&pool)
+    .await
+    .expect("inflow");
+
+    let outflow = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO wallet_movements
+            (id, wallet_id, kind, amount, payment_method_id, customer_id)
+         VALUES ($1, $2, 'account_payment_refund', $3, $4, $5)",
+    )
+    .bind(outflow)
+    .bind(wallet)
+    .bind(dec!(50.00))
+    .bind(method)
+    .bind(ana)
+    .execute(&pool)
+    .await
+    .expect("outflow");
+
+    // A receipt cannot be backed by an `account_payment_refund`.
+    let mut tx = pool.begin().await.expect("tx");
+    let receipt_err = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: outflow,
+            amount: dec!(50.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: Uuid::now_v7(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        receipt_err,
+        Err(repository::RepoError::MovementNotFromAnAccount { ref kind })
+            if kind == "account_payment_refund"
+    ));
+    tx.rollback().await.expect("rollback");
+
+    // A credit refund cannot be backed by an `account_payment`.
+    let mut tx = pool.begin().await.expect("tx");
+    let refund_err = repository::record_credit_refund(
+        &mut tx,
+        ana,
+        inflow,
+        dec!(50.00),
+        Some("wrong direction"),
+        Uuid::now_v7(),
+    )
+    .await;
+    assert!(matches!(
+        refund_err,
+        Err(repository::RepoError::MovementNotFromAnAccount { ref kind })
+            if kind == "account_payment"
+    ));
+    tx.rollback().await.expect("rollback");
+}

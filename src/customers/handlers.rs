@@ -234,6 +234,9 @@ impl From<CustomerError> for AppError {
             CustomerError::TaxIdTaken => {
                 AppError::Conflict("the document is already in use".to_string())
             }
+            CustomerError::OpenAccountPosition { .. } | CustomerError::AccountBusy => {
+                AppError::Conflict(err.to_string())
+            }
             CustomerError::NotFound => AppError::NotFound,
             CustomerError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
@@ -318,7 +321,7 @@ fn get_customer_doc() {}
          content_type = "application/problem+json"),
         (status = 404, description = "Not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "Document is already in use", body = crate::openapi::Problem,
+        (status = 409, description = "Document is already in use, account is busy, or deactivating a customer with an open balance or unapplied credit", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 422, description = "Invalid input", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
@@ -328,6 +331,8 @@ fn get_customer_doc() {}
 fn update_customer_doc() {}
 
 /// Soft deletion. Idempotent. Never deletes: history points at the customer.
+/// Refused with `409` while the customer carries a non-zero balance or
+/// unapplied credit.
 #[utoipa::path(
     post,
     path = "/api/v1/customers/{id}/deactivate",
@@ -338,6 +343,8 @@ fn update_customer_doc() {}
         (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Customer carries an open balance or unapplied credit, or the account is busy", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
