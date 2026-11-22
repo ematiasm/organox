@@ -28,7 +28,10 @@
 	// `sale_payment` and `sale_refund` are deliberately absent: that money only
 	// moves by charging a sale or returning one. The server rejects them here,
 	// and the form does not offer them.
-	type ManualKind = Exclude<WalletMovementKind, 'sale_payment' | 'sale_refund'>;
+	type ManualKind = Exclude<
+		WalletMovementKind,
+		'sale_payment' | 'sale_refund' | 'account_payment' | 'account_payment_refund' | 'purchase_payment'
+	>;
 	const MANUAL_KINDS: { value: ManualKind; label: string }[] = [
 		{ value: 'expense', label: 'Expense' },
 		{ value: 'adjustment_in', label: 'Adjustment in' },
@@ -39,6 +42,7 @@
 		sale_refund: 'Sale refund',
 		account_payment: 'Account payment',
 		account_payment_refund: 'Credit refund',
+		purchase_payment: 'Purchase payment',
 		expense: 'Expense',
 		adjustment_in: 'Adjustment in',
 		adjustment_out: 'Adjustment out'

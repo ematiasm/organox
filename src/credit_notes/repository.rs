@@ -861,6 +861,7 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
                     kind: WalletMovementKind::SaleRefund,
                     amount: share,
                     sale_id: Some(new.sale_id),
+                    purchase_id: None,
                     payment_method_id: Some(tender.payment_method_id),
                     credit_note_id: Some(note_id),
                     // Refund money leaves through the sale's own tenders, never

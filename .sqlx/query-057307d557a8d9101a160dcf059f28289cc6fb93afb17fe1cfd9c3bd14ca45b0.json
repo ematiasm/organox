@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE purchase_items\n        SET quantity = $3, unit_cost = $4\n        WHERE purchase_id = $1 AND product_id = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Numeric",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "057307d557a8d9101a160dcf059f28289cc6fb93afb17fe1cfd9c3bd14ca45b0"
+}

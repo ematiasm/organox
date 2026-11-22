@@ -112,6 +112,15 @@ pub struct Problem {
         crate::suppliers::handlers::get_supplier_doc,
         crate::suppliers::handlers::update_supplier_doc,
         crate::suppliers::handlers::deactivate_supplier_doc,
+        crate::purchases::handlers::open_draft_doc,
+        crate::purchases::handlers::list_purchases_doc,
+        crate::purchases::handlers::get_purchase_doc,
+        crate::purchases::handlers::set_purchase_supplier_doc,
+        crate::purchases::handlers::add_item_doc,
+        crate::purchases::handlers::set_item_doc,
+        crate::purchases::handlers::remove_item_doc,
+        crate::purchases::handlers::complete_purchase_doc,
+        crate::purchases::handlers::cancel_purchase_doc,
     ),
     components(schemas(
         Problem,
@@ -187,6 +196,17 @@ pub struct Problem {
         crate::suppliers::handlers::SupplierIdResponse,
         crate::suppliers::handlers::CreateSupplierRequest,
         crate::suppliers::handlers::UpdateSupplierRequest,
+        crate::purchases::handlers::PurchaseResponse,
+        crate::purchases::handlers::PurchaseItemResponse,
+        crate::purchases::handlers::PurchaseListResponse,
+        crate::purchases::handlers::PurchaseDraftResponse,
+        crate::purchases::handlers::CompletedPurchaseResponse,
+        crate::purchases::handlers::SetPurchaseSupplierRequest,
+        crate::purchases::handlers::AddPurchaseItemRequest,
+        crate::purchases::handlers::SetPurchaseItemRequest,
+        crate::purchases::handlers::PurchasePaymentRequest,
+        crate::purchases::handlers::CompletePurchaseRequest,
+        crate::purchases::model::PurchaseStatus,
     )),
     tags(
         (name = "auth", description = "Sessions and users"),
@@ -197,6 +217,7 @@ pub struct Problem {
         (name = "payments", description = "Wallets, payment methods and the money ledger"),
         (name = "credit_notes", description = "Returns of a charged sale"),
         (name = "suppliers", description = "Suppliers and their documents"),
+        (name = "purchases", description = "Persisted purchase drafts and cash supplier purchases"),
     )
 )]
 pub struct ApiDoc;
@@ -282,6 +303,14 @@ mod tests {
             "/api/v1/suppliers",
             "/api/v1/suppliers/{id}",
             "/api/v1/suppliers/{id}/deactivate",
+            "/api/v1/purchases/draft",
+            "/api/v1/purchases",
+            "/api/v1/purchases/{id}",
+            "/api/v1/purchases/{id}/supplier",
+            "/api/v1/purchases/{id}/items",
+            "/api/v1/purchases/{id}/items/{product_id}",
+            "/api/v1/purchases/{id}/complete",
+            "/api/v1/purchases/{id}/cancel",
         ] {
             assert!(
                 paths.contains_key(expected),
@@ -345,6 +374,15 @@ mod tests {
                     "total_adjustments",
                 ],
             ),
+            ("PurchaseResponse", &["total"]),
+            (
+                "PurchaseItemResponse",
+                &["quantity", "unit_cost", "subtotal"],
+            ),
+            ("CompletedPurchaseResponse", &["total"]),
+            ("AddPurchaseItemRequest", &["quantity", "unit_cost"]),
+            ("SetPurchaseItemRequest", &["quantity", "unit_cost"]),
+            ("PurchasePaymentRequest", &["amount"]),
         ];
 
         let doc = json();

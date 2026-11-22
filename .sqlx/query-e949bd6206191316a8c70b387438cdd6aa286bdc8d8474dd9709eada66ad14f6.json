@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE purchases\n        SET total = ROUND(COALESCE((\n            SELECT SUM(quantity * unit_cost) FROM purchase_items WHERE purchase_id = $1\n        ), 0), 2)\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e949bd6206191316a8c70b387438cdd6aa286bdc8d8474dd9709eada66ad14f6"
+}

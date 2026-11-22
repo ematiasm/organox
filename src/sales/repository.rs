@@ -709,6 +709,7 @@ pub async fn complete(
                 kind: WalletMovementKind::SalePayment,
                 amount: charge.amount,
                 sale_id: Some(sale_id),
+                purchase_id: None,
                 payment_method_id: Some(charge.payment_method_id),
                 credit_note_id: None,
                 // Till money is never an account payment: the customer link

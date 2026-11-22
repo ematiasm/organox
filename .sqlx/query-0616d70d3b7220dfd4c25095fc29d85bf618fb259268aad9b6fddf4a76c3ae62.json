@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE purchases\n        SET status        = 'completed',\n            total         = $2,\n            supplier_name = $3,\n            completed_by  = $4,\n            completed_at  = now(),\n            note          = $5\n        WHERE id = $1\n        RETURNING completed_at AS \"completed_at!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "completed_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "purchases",
+            "name": "completed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Numeric",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "0616d70d3b7220dfd4c25095fc29d85bf618fb259268aad9b6fddf4a76c3ae62"
+}

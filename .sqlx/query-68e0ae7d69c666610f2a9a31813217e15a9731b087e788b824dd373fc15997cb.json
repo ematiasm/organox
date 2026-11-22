@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT w.id,\n               w.name,\n               w.is_active,\n               w.created_at,\n               w.updated_at,\n               COALESCE(SUM(\n                   CASE m.kind\n                       WHEN 'sale_payment' THEN m.amount\n                       WHEN 'sale_refund'  THEN -m.amount\n                       WHEN 'account_payment' THEN m.amount\n                       WHEN 'account_payment_refund' THEN -m.amount\n                       WHEN 'adjustment_in' THEN m.amount\n                       WHEN 'expense' THEN -m.amount\n                       WHEN 'adjustment_out' THEN -m.amount\n                       ELSE 0\n                   END\n               ), 0)::numeric(14, 2) AS \"balance!: Decimal\"\n        FROM wallets w\n        LEFT JOIN wallet_movements m ON m.wallet_id = w.id\n        WHERE $1 OR w.is_active\n        GROUP BY w.id, w.name, w.is_active, w.created_at, w.updated_at\n        ORDER BY lower(w.name)\n        ",
+  "query": "\n        SELECT w.id,\n               w.name,\n               w.is_active,\n               w.created_at,\n               w.updated_at,\n               COALESCE(SUM(\n                   CASE m.kind\n                       WHEN 'sale_payment' THEN m.amount\n                       WHEN 'sale_refund'  THEN -m.amount\n                       WHEN 'account_payment' THEN m.amount\n                       WHEN 'account_payment_refund' THEN -m.amount\n                       WHEN 'purchase_payment' THEN -m.amount\n                       WHEN 'adjustment_in' THEN m.amount\n                       WHEN 'expense' THEN -m.amount\n                       WHEN 'adjustment_out' THEN -m.amount\n                       ELSE 0\n                   END\n               ), 0)::numeric(14, 2) AS \"balance!: Decimal\"\n        FROM wallets w\n        LEFT JOIN wallet_movements m ON m.wallet_id = w.id\n        WHERE $1 OR w.is_active\n        GROUP BY w.id, w.name, w.is_active, w.created_at, w.updated_at\n        ORDER BY lower(w.name)\n        ",
   "describe": {
     "columns": [
       {
@@ -79,5 +79,5 @@
       null
     ]
   },
-  "hash": "1ff11f7cf54107d01774a750ad6baa0a500ff7c81501bb52dfd8e08fa0c8e727"
+  "hash": "68e0ae7d69c666610f2a9a31813217e15a9731b087e788b824dd373fc15997cb"
 }

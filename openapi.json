@@ -1638,6 +1638,636 @@
         }
       }
     },
+    "/api/v1/purchases": {
+      "get": {
+        "tags": [
+          "purchases"
+        ],
+        "summary": "List purchases newest first with optional status and supplier filters.",
+        "operationId": "list_purchases_doc",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/PurchaseStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "name": "supplier_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Purchase page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/purchases/draft": {
+      "post": {
+        "tags": [
+          "purchases"
+        ],
+        "summary": "Open or reuse the current operator's draft purchase.",
+        "operationId": "open_draft_doc",
+        "responses": {
+          "200": {
+            "description": "Existing open draft reused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseDraftResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "New draft created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseDraftResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/purchases/{id}": {
+      "get": {
+        "tags": [
+          "purchases"
+        ],
+        "summary": "Purchase details including its items and calculated or frozen total.",
+        "operationId": "get_purchase_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Purchase ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Purchase",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/purchases/{id}/cancel": {
+      "post": {
+        "tags": [
+          "purchases"
+        ],
+        "summary": "Cancel a draft purchase. Completed purchases cannot be cancelled.",
+        "operationId": "cancel_purchase_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Purchase ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Purchase cancelled"
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Purchase is already closed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/purchases/{id}/complete": {
+      "post": {
+        "tags": [
+          "purchases"
+        ],
+        "summary": "Complete a draft purchase: record stock inflows and cash wallet outflows atomically.",
+        "operationId": "complete_purchase_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Purchase ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompletePurchaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Purchase completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletedPurchaseResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Purchase, supplier or product not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Purchase is closed, supplier is inactive, or product is a service",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing supplier, empty purchase, or invalid payments",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/purchases/{id}/items": {
+      "post": {
+        "tags": [
+          "purchases"
+        ],
+        "summary": "Add a product to a draft purchase (sums quantity and updates unit_cost if already present).",
+        "operationId": "add_item_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Purchase ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddPurchaseItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Purchase or product not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Purchase is closed or product is a service",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid quantity or unit cost",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/purchases/{id}/items/{product_id}": {
+      "put": {
+        "tags": [
+          "purchases"
+        ],
+        "summary": "Replace quantity and unit cost of an item in a draft purchase.",
+        "operationId": "set_item_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Purchase ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "product_id",
+            "in": "path",
+            "description": "Product ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPurchaseItemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Purchase or item not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Purchase is closed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid quantity or unit cost",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "purchases"
+        ],
+        "summary": "Remove an item from a draft purchase.",
+        "operationId": "remove_item_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Purchase ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "product_id",
+            "in": "path",
+            "description": "Product ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Purchase or item not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Purchase is closed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/purchases/{id}/supplier": {
+      "put": {
+        "tags": [
+          "purchases"
+        ],
+        "summary": "Attach or clear the supplier on a draft purchase.",
+        "operationId": "set_purchase_supplier_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Purchase ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPurchaseSupplierRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Supplier updated"
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Purchase or supplier not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Purchase is closed or supplier is inactive",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/sales": {
       "get": {
         "tags": [
@@ -3315,6 +3945,28 @@
           }
         }
       },
+      "AddPurchaseItemRequest": {
+        "type": "object",
+        "required": [
+          "product_id",
+          "quantity",
+          "unit_cost"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "string",
+            "example": "10"
+          },
+          "unit_cost": {
+            "type": "string",
+            "example": "125.50"
+          }
+        }
+      },
       "AdjustmentDirection": {
         "type": "string",
         "description": "Direction of a manual debt adjustment.",
@@ -3470,6 +4122,23 @@
           }
         }
       },
+      "CompletePurchaseRequest": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchasePaymentRequest"
+            }
+          }
+        }
+      },
       "CompleteSaleRequest": {
         "type": "object",
         "description": "How the sale is paid. Required: a sale never closes without saying where the\nmoney went.",
@@ -3487,6 +4156,44 @@
             "items": {
               "$ref": "#/components/schemas/SalePaymentRequest"
             }
+          }
+        }
+      },
+      "CompletedPurchaseResponse": {
+        "type": "object",
+        "required": [
+          "purchase_id",
+          "total",
+          "movement_ids",
+          "payment_movement_ids",
+          "completed_at"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "movement_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "payment_movement_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "purchase_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "total": {
+            "type": "string",
+            "example": "1255.00"
           }
         }
       },
@@ -4159,7 +4866,7 @@
           },
           "kind": {
             "$ref": "#/components/schemas/WalletMovementKind",
-            "description": "`expense`, `adjustment_in` or `adjustment_out`. `sale_payment`,\n`sale_refund`, `account_payment` and `account_payment_refund` are\nrejected: that money is recorded by charging or returning a sale, or\nby collecting or refunding a customer's account, not by hand."
+            "description": "`expense`, `adjustment_in` or `adjustment_out`. `sale_payment`,\n`sale_refund`, `account_payment`, `account_payment_refund` and\n`purchase_payment` are rejected: that money is recorded by charging or\nreturning a sale, collecting or refunding a customer's account, or\ncompleting a purchase, not by hand."
           },
           "note": {
             "type": [
@@ -4453,6 +5160,173 @@
             "format": "date-time"
           }
         }
+      },
+      "PurchaseDraftResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "reused"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reused": {
+            "type": "boolean",
+            "description": "`true` if the operator's existing open draft was reused."
+          }
+        }
+      },
+      "PurchaseItemResponse": {
+        "type": "object",
+        "required": [
+          "product_id",
+          "product_name",
+          "quantity",
+          "unit_cost",
+          "subtotal"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_name": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "string",
+            "example": "10"
+          },
+          "subtotal": {
+            "type": "string",
+            "example": "1255.00"
+          },
+          "unit_cost": {
+            "type": "string",
+            "example": "125.50"
+          }
+        }
+      },
+      "PurchaseListResponse": {
+        "type": "object",
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchaseResponse"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PurchasePaymentRequest": {
+        "type": "object",
+        "required": [
+          "payment_method_id",
+          "amount"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "1255.00"
+          },
+          "payment_method_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "PurchaseResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "items",
+          "total",
+          "item_count",
+          "created_at"
+        ],
+        "properties": {
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "item_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchaseItemResponse"
+            }
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/PurchaseStatus"
+          },
+          "supplier_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "supplier_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Live registry name while draft; frozen snapshot once completed."
+          },
+          "total": {
+            "type": "string",
+            "example": "1255.00"
+          }
+        }
+      },
+      "PurchaseStatus": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "completed",
+          "cancelled"
+        ]
       },
       "ReceiptAllocationRequest": {
         "type": "object",
@@ -4963,6 +5837,36 @@
           "cancelled"
         ]
       },
+      "SetPurchaseItemRequest": {
+        "type": "object",
+        "required": [
+          "quantity",
+          "unit_cost"
+        ],
+        "properties": {
+          "quantity": {
+            "type": "string",
+            "example": "10"
+          },
+          "unit_cost": {
+            "type": "string",
+            "example": "125.50"
+          }
+        }
+      },
+      "SetPurchaseSupplierRequest": {
+        "type": "object",
+        "properties": {
+          "supplier_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Supplier to attach to the draft, or `null` to clear it."
+          }
+        }
+      },
       "SetQuantityRequest": {
         "type": "object",
         "required": [
@@ -5275,6 +6179,7 @@
           "sale_refund",
           "account_payment",
           "account_payment_refund",
+          "purchase_payment",
           "expense",
           "adjustment_in",
           "adjustment_out"
@@ -5324,7 +6229,15 @@
               "null"
             ],
             "format": "uuid",
-            "description": "Set only for a `sale_payment`: which method was used."
+            "description": "Set for `sale_payment`, `sale_refund`, `account_payment`, `account_payment_refund`,\nor `purchase_payment`: which payment method was used."
+          },
+          "purchase_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Set only for a `purchase_payment`: which purchase paid out this money."
           },
           "sale_id": {
             "type": [
@@ -5332,7 +6245,7 @@
               "null"
             ],
             "format": "uuid",
-            "description": "Set only for a `sale_payment`: which sale put this money here."
+            "description": "Set only for a `sale_payment` or `sale_refund`: which sale moved this money."
           },
           "signed_amount": {
             "type": "string",
@@ -5409,6 +6322,10 @@
     {
       "name": "suppliers",
       "description": "Suppliers and their documents"
+    },
+    {
+      "name": "purchases",
+      "description": "Persisted purchase drafts and cash supplier purchases"
     }
   ]
 }
