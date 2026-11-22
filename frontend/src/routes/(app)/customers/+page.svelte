@@ -12,6 +12,7 @@
 		TableHeader,
 		TableRow
 	} from '$lib/components/ui/table';
+	import { cn } from '$lib/utils';
 
 	let { data } = $props();
 
@@ -143,6 +144,7 @@
 					<TableHead>Document</TableHead>
 					<TableHead>Email</TableHead>
 					<TableHead>Phone</TableHead>
+					<TableHead class="text-right">Balance</TableHead>
 					<TableHead>Status</TableHead>
 				</TableRow>
 			</TableHeader>
@@ -157,6 +159,18 @@
 						<TableCell class="text-muted-foreground">{customer.tax_id ?? '—'}</TableCell>
 						<TableCell class="text-muted-foreground">{customer.email ?? '—'}</TableCell>
 						<TableCell class="text-muted-foreground">{customer.phone ?? '—'}</TableCell>
+						<TableCell
+							class={cn(
+								'text-right tabular-nums',
+								customer.balance === '0.00'
+									? 'text-muted-foreground'
+									: customer.balance.startsWith('-')
+										? 'font-medium text-primary'
+										: 'font-medium'
+							)}
+						>
+							{customer.balance}
+						</TableCell>
 						<TableCell>
 							<Badge variant={customer.is_active ? 'outline' : 'secondary'}>
 								{customer.is_active ? 'Active' : 'Inactive'}

@@ -83,20 +83,30 @@ src/
     service.rs    rules: negative stock, service without stock, transaction
     handlers.rs   catalog endpoints
   customers/
-    model.rs      Customer, is_active
-    validation.rs name, document, email, phone
-    repository.rs customer SQL
-    service.rs    rules: unique document, honest page totals
+    model.rs      Customer, is_active, credit_limit
+    validation.rs name, document, email, phone, credit limit
+    repository.rs customer SQL (with derived balance and available credit)
+    service.rs    rules: unique document, open-position deactivation guard, honest page totals
     handlers.rs   customer endpoints
+  customer_accounts/
+    model.rs      CustomerAccountEntry, AccountPosition, AgingBuckets
+    repository.rs append-only debt ledger, per-sale allocations, advisory locks, aging reads
+    service.rs    rules: credit authorization, FIFO credit application, collections, refunds, adjustments
+    handlers.rs   statement, receipts, credit refunds, adjustments and receivables endpoints
+  payments/
+    model.rs      Wallet, PaymentMethod, WalletMovementKind
+    repository.rs wallet ledger SQL and derived balances
+    service.rs    rules: manual movements, active methods and wallets
+    handlers.rs   wallets and payment methods endpoints
   sales/
     model.rs      Sale, SaleItem, SaleStatus
-    repository.rs sales SQL and transactional checkout
-    service.rs    rules: one draft per cashier, non-saleable service
+    repository.rs sales SQL and transactional checkout (cash + on-account)
+    service.rs    rules: one draft per cashier, non-saleable service, credit checkout
     handlers.rs   sales endpoints
   credit_notes/
-    model.rs      CreditNote, frozen lines, refund allocation
+    model.rs      CreditNote, frozen lines, debt-first cash refund split
     repository.rs credit notes SQL and transactional writes
-    service.rs    rules: returnable quantity and atomicity
+    service.rs    rules: returnable quantity, debt cancellation and atomicity
     handlers.rs   credit-note endpoints
   ratelimit/
     account.rs    failed attempts per account (Postgres)
@@ -117,14 +127,17 @@ frontend/
     (app)/              every private screen, behind the session guard
       +layout.svelte    the single navigation rail
       +layout.ts        session guard: api.me(), 401 -> /login
-      products/         product list, search, stock
-      customers/        customer registry: search, create/edit sheet, deactivate
-      operations/pos/   point of sale with barcode scanner
+      products/         product list, search, stock, create/edit drawer
+      customers/        customer registry: search, balance column, edit & account drawer
+      receivables/      receivables aging report (0–30, 31–60, 61–90, 90+ days)
+      operations/pos/   point of sale with barcode scanner and on-account checkout
       operations/movements/  stock ledger history
+      settings/payments/     wallets, payment methods and wallet movements
       users/            users (owner only)
     (app)/pos/          redirect -> /operations/pos
     login/              the first screen
   src/lib/
+    money.ts             exact BigInt cent arithmetic and formatting
     api/client.ts        typed fetch wrapper, 401 -> /login, Retry-After
     api/schema.d.ts      generated from openapi.json (never hand-edited)
     components/app-shell.svelte  the rail: groups, expand, user menu
@@ -175,21 +188,28 @@ Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 | POST | `/products/{id}/deactivate` | session | Soft-deactivate, idempotent |
 | GET | `/products/{id}/movements` | session | History, newest first |
 | POST | `/products/{id}/movements` | session | Records a stock movement |
-| GET | `/customers` | session | List (`?search=&include_inactive=&limit=&offset=`), ordered by name |
-| POST | `/customers` | session | Create a customer |
-| GET | `/customers/{id}` | session | One customer |
-| PATCH | `/customers/{id}` | session | Updates only the fields supplied |
-| POST | `/customers/{id}/deactivate` | session | Soft-deactivate, idempotent |
+| GET | `/customers` | session | List (`?search=&include_inactive=&limit=&offset=`), ordered by name, with balance and available credit |
+| POST | `/customers` | session | Create a customer (optional `credit_limit`) |
+| GET | `/customers/{id}` | session | One customer with derived balance and available credit |
+| PATCH | `/customers/{id}` | session | Updates only the fields supplied (`credit_limit: null` clears limit) |
+| POST | `/customers/{id}/deactivate` | session | Soft-deactivate (refuses `409` while balance or unapplied credit is non-zero) |
+| GET | `/customers/{id}/account` | session | Account statement (entries oldest first with running balance, position, open sales) |
+| GET | `/customers/{id}/receipts` | session | Collection write log, newest first (`?limit=`) |
+| POST | `/customers/{id}/receipts` | session | Collect money against the account with explicit per-sale allocations (`idempotency_key` optional) |
+| POST | `/customers/{id}/credit-refunds` | session | Refund unapplied credit back through a wallet (`idempotency_key` optional) |
+| GET | `/customers/{id}/adjustments` | session | Manual debt adjustments, newest first (`?limit=`) |
+| POST | `/customers/{id}/adjustments` | session | Record a manual debt adjustment (`in` / `out`, never crosses below zero) |
+| GET | `/accounts/receivables` | session | Open customer accounts with portfolio totals and aging buckets (`0-30`, `31-60`, `61-90`, `90+`) |
 | POST | `/sales/draft` | session | Opens (or reuses) the cart |
 | GET | `/sales/{id}` | session | Sale with server-calculated total |
 | POST | `/sales/{id}/items` | session | Adds an item |
 | PUT | `/sales/{id}/items/{product_id}` | session | Sets quantity (0 = remove) |
 | DELETE | `/sales/{id}/items/{product_id}` | session | Removes an item |
-| POST | `/sales/{id}/complete` | session | Completes checkout and deducts stock |
+| POST | `/sales/{id}/complete` | session | Completes checkout (payments + optional `on_account`), deducts stock, applies credit |
 | POST | `/sales/{id}/cancel` | session | Cancels the draft |
 | PUT | `/sales/{id}/customer` | session | Attaches or clears the draft's customer (`customer_id` or `null`) |
 | GET | `/sales` | session | Completed sales |
-| POST | `/sales/{id}/credit-notes` | session | Returns part or all of a charged sale; refunds its wallets |
+| POST | `/sales/{id}/credit-notes` | session | Returns part or all of a charged sale; cancels debt first, then refunds cash |
 | GET | `/sales/{id}/credit-notes` | session | Credits of a sale, with what is still returnable |
 | GET | `/wallets` | session | Wallets with their balance |
 | POST | `/wallets` | session | Create a wallet |
@@ -213,7 +233,7 @@ curl -b jar.txt localhost:3000/api/v1/auth/me
 ## Current state
 
 The whole feature set as of this branch: skeleton, authentication, catalog,
-a stock ledger, sales, payments, credit notes and customers.
+a stock ledger, sales, payments, credit notes, customers and customer accounts.
 
 - **Auth**: login/logout/`me`, revocable DB sessions, `HttpOnly`+`SameSite=Strict`
   cookie, argon2id. Binary RBAC (`owner`, `manager`).
@@ -222,25 +242,38 @@ a stock ledger, sales, payments, credit notes and customers.
   of movements. You cannot sell what is not available.
 - **Login rate limiting**: per-account lockout (survives restarts) and per-IP
   limit (blocks before spending time on argon2), with `429` + `Retry-After`.
-- **Sales**: server-persisted cart with transactional checkout.
+- **Sales**: server-persisted cart with transactional checkout supporting till
+  payments, optional `on_account` charges, hard credit-limit enforcement and
+  automatic FIFO application of available customer credit.
 - **Credit notes**: a completed sale can be returned in several notes without
-  editing it; returned goods rejoin stock and the money goes back to the
-  wallets that collected the payment.
+  editing it; returned goods rejoin stock, open account debt is cancelled first,
+  and only the remaining cash surplus is refunded proportionally across the
+  tenders (till payments and allocated receipts) that collected it.
 - **Payments**: payment methods that point at a wallet, an append-only money
-  ledger, and a balance read from it rather than stored.
-- **Customers**: a registry with an optional unique document, soft deactivation
-  and search; a sale may point at one, and the name is frozen at checkout.
-- **252 tests** (unit + integration against real Postgres).
+  ledger (including `account_payment` and `account_payment_refund`), and a
+  balance read from it rather than stored.
+- **Customers**: a registry with an optional unique document, optional
+  `credit_limit` (`NULL` unlimited, `0` cash only), soft deactivation guarded
+  against open account positions, and search; a sale may point at one, and the
+  name is frozen at checkout.
+- **Customer accounts**: an append-only debt ledger with per-sale allocations,
+  derived balances and unapplied credit, idempotent collections and credit
+  refunds, non-negative manual adjustments, per-customer statements and a
+  portfolio receivables aging report (`0-30`, `31-60`, `61-90`, `90+`).
+- **372 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
-  navigation rail** (expandable, with groups and user menu), product list,
-  movements, **point of sale with barcode scanner** at `/operations/pos`, users
-  and customers.
+  navigation rail** (expandable, with groups and user menu), product list and
+  drawer, stock movements, **point of sale with barcode scanner and on-account
+  checkout** at `/operations/pos`, wallets and payment methods at
+  `/settings/payments`, users, customers (balance column, credit limit, account
+  statement and receipt form) and `/receivables` aging report.
 - **OpenAPI 3.1** generated from code; frontend types are generated from that
   spec (`make fe-schema`).
 
-See `docs/auth.md`, `docs/catalog.md`, `docs/customers.md`, `docs/ratelimit.md`,
-`docs/sales.md`, `docs/credit-notes.md`, `docs/payments.md` and `docs/backup.md` for
-the reasoning and what is missing.
+See `docs/auth.md`, `docs/catalog.md`, `docs/customers.md`,
+`docs/customer-accounts.md`, `docs/ratelimit.md`, `docs/sales.md`,
+`docs/credit-notes.md`, `docs/payments.md` and `docs/backup.md` for the
+reasoning and what is missing.
 
 ## Frontend
 
@@ -327,9 +360,6 @@ hit the Vite dev server instead.
 When an API type changes, regenerate instead of editing: `make fe-schema`
 runs the OpenAPI generator and then `openapi-typescript`. `schema.d.ts` is
 generated; never edit it by hand.
-
-Next slice: product creation and editing in the UI, user listing, or the first
-business report.
 
 ## Deploy
 

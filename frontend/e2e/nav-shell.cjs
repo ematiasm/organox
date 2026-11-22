@@ -75,7 +75,7 @@ async function login(page) {
 			const links = navs[0].links.join(', ');
 			// The list of charged sales is where credit notes are issued, so it sits
 			// next to the point of sale in the rail.
-			const expected = 'Sale, Sales, Products, Movements, Payments, Users';
+			const expected = 'Sale, Sales, Products, Customers, Receivables, Movements, Payments, Users';
 			check('R1', `${path}: canonical navigation`, links === expected, `"${links}" != "${expected}"`);
 		}
 	}

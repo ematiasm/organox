@@ -19,6 +19,23 @@ export type ProductKind = components['schemas']['ProductKind'];
 export type Customer = components['schemas']['CustomerResponse'];
 export type CustomerList = components['schemas']['CustomerListResponse'];
 export type CustomerId = components['schemas']['CustomerIdResponse'];
+export type CustomerAccount = components['schemas']['CustomerAccountResponse'];
+export type AccountStatementEntry = components['schemas']['AccountStatementEntryResponse'];
+export type AccountEntryKind = components['schemas']['CustomerAccountEntryKind'];
+export type OutstandingSale = components['schemas']['OutstandingSaleResponse'];
+export type CollectReceiptRequest = components['schemas']['CollectReceiptRequest'];
+export type ReceiptAllocationRequest = components['schemas']['ReceiptAllocationRequest'];
+export type Receipt = components['schemas']['ReceiptResponse'];
+export type ReceiptLog = components['schemas']['ReceiptLogResponse'];
+export type RefundCreditRequest = components['schemas']['RefundCreditRequest'];
+export type CreditRefund = components['schemas']['CreditRefundResponse'];
+export type RecordAdjustmentRequest = components['schemas']['RecordAdjustmentRequest'];
+export type AdjustmentDirection = components['schemas']['AdjustmentDirection'];
+export type Adjustment = components['schemas']['AdjustmentResponse'];
+export type AdjustmentLog = components['schemas']['AdjustmentLogResponse'];
+export type Receivables = components['schemas']['ReceivablesResponse'];
+export type ReceivableCustomer = components['schemas']['ReceivableCustomerResponse'];
+export type AgingBuckets = components['schemas']['AgingBucketsResponse'];
 export type Movement = components['schemas']['MovementResponse'];
 export type MovementReason = components['schemas']['MovementReason'];
 export type Role = components['schemas']['Role'];
@@ -232,16 +249,66 @@ export const api = {
 
 	getCustomer: (id: string) => request<Customer>(`/api/v1/customers/${id}`),
 
-	createCustomer: (body: { name: string; tax_id?: string; email?: string; phone?: string }) =>
-		request<CustomerId>('/api/v1/customers', { method: 'POST', body }),
+	createCustomer: (body: {
+		name: string;
+		tax_id?: string;
+		email?: string;
+		phone?: string;
+		credit_limit?: string | null;
+	}) => request<CustomerId>('/api/v1/customers', { method: 'POST', body }),
 
 	updateCustomer: (
 		id: string,
-		body: { name?: string; tax_id?: string; email?: string; phone?: string }
+		body: {
+			name?: string;
+			tax_id?: string;
+			email?: string;
+			phone?: string;
+			credit_limit?: string | null;
+			is_active?: boolean;
+		}
 	) => request<void>(`/api/v1/customers/${id}`, { method: 'PATCH', body }),
 
 	deactivateCustomer: (id: string) =>
 		request<void>(`/api/v1/customers/${id}/deactivate`, { method: 'POST' }),
+
+	// --- Customer accounts ---
+	//
+	// Debt ledger, receipts, credit refunds, manual adjustments and receivables.
+	// Amounts travel as decimal strings; the server owns every invariant.
+
+	getCustomerAccount: (customerId: string) =>
+		request<CustomerAccount>(`/api/v1/customers/${encodeURIComponent(customerId)}/account`),
+
+	listCustomerReceipts: (customerId: string, limit?: number) =>
+		request<ReceiptLog[]>(`/api/v1/customers/${encodeURIComponent(customerId)}/receipts`, {
+			query: { limit }
+		}),
+
+	collectCustomerReceipt: (customerId: string, body: CollectReceiptRequest) =>
+		request<Receipt>(`/api/v1/customers/${encodeURIComponent(customerId)}/receipts`, {
+			method: 'POST',
+			body
+		}),
+
+	refundCustomerCredit: (customerId: string, body: RefundCreditRequest) =>
+		request<CreditRefund>(`/api/v1/customers/${encodeURIComponent(customerId)}/credit-refunds`, {
+			method: 'POST',
+			body
+		}),
+
+	listCustomerAdjustments: (customerId: string, limit?: number) =>
+		request<AdjustmentLog[]>(`/api/v1/customers/${encodeURIComponent(customerId)}/adjustments`, {
+			query: { limit }
+		}),
+
+	recordCustomerAdjustment: (customerId: string, body: RecordAdjustmentRequest) =>
+		request<Adjustment>(`/api/v1/customers/${encodeURIComponent(customerId)}/adjustments`, {
+			method: 'POST',
+			body
+		}),
+
+	getReceivables: () => request<Receivables>('/api/v1/accounts/receivables'),
 
 	// --- Wallets and payment methods ---
 	//
@@ -313,10 +380,10 @@ export const api = {
 			method: 'DELETE'
 		}),
 
-	completeSale: (saleId: string, payments: SalePayment[]) =>
+	completeSale: (saleId: string, payments: SalePayment[], onAccount?: string) =>
 		request<CompletedSale>(`/api/v1/sales/${saleId}/complete`, {
 			method: 'POST',
-			body: { payments }
+			body: onAccount !== undefined ? { payments, on_account: onAccount } : { payments }
 		}),
 
 	// The one sale mutation that answers 204 instead of the recalculated sale:

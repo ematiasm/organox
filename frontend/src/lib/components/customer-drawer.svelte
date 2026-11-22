@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api, ApiError, type Customer } from '$lib/api/client';
+	import CustomerAccountPanel from '$lib/components/customer-account-panel.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -44,6 +45,7 @@
 		tax_id: string;
 		email: string;
 		phone: string;
+		credit_limit: string;
 	};
 
 	let editing = $state(false);
@@ -54,7 +56,7 @@
 	let form = $state<Form>(emptyForm());
 
 	function emptyForm(): Form {
-		return { name: '', tax_id: '', email: '', phone: '' };
+		return { name: '', tax_id: '', email: '', phone: '', credit_limit: '' };
 	}
 
 	/** Seed the form from the customer; blank strings for what is `null`. */
@@ -63,7 +65,8 @@
 			name: customer.name,
 			tax_id: customer.tax_id ?? '',
 			email: customer.email ?? '',
-			phone: customer.phone ?? ''
+			phone: customer.phone ?? '',
+			credit_limit: customer.credit_limit ?? ''
 		};
 	}
 
@@ -105,6 +108,16 @@
 		saving = true;
 		formError = null;
 		try {
+			const trimmedLimit = form.credit_limit.trim();
+			// Tri-state PATCH contract (S7): explicit `null` clears an existing
+			// limit back to unlimited; omitting keeps it unchanged; a value sets it.
+			let creditLimit: string | null | undefined;
+			if (trimmedLimit !== '') {
+				creditLimit = trimmedLimit;
+			} else if (customer.credit_limit !== null && customer.credit_limit !== undefined) {
+				creditLimit = null;
+			}
+
 			await api.updateCustomer(customer.id, {
 				name: form.name,
 				// The API cannot clear a document, an email or a phone (COALESCE on
@@ -112,7 +125,8 @@
 				// pretending to clear, and an empty string would be rejected.
 				tax_id: form.tax_id || undefined,
 				email: form.email || undefined,
-				phone: form.phone || undefined
+				phone: form.phone || undefined,
+				credit_limit: creditLimit
 			});
 			editing = false;
 			await onSaved();
@@ -127,11 +141,13 @@
 		saving = true;
 		formError = null;
 		try {
+			const trimmedLimit = form.credit_limit.trim();
 			const { id } = await api.createCustomer({
 				name: form.name,
 				tax_id: form.tax_id || undefined,
 				email: form.email || undefined,
-				phone: form.phone || undefined
+				phone: form.phone || undefined,
+				credit_limit: trimmedLimit || undefined
 			});
 			onCreated(id);
 		} catch (error) {
@@ -171,10 +187,21 @@
 	function optionalPlaceholder(): string {
 		return creating ? 'Optional' : 'Unchanged when empty';
 	}
+	function creditLimitLabel(limit: string | null | undefined): string {
+		if (limit === null || limit === undefined) return 'Unlimited';
+		if (limit === '0.00' || limit === '0') return '0.00 (cash only)';
+		return limit;
+	}
+
+	function balanceHint(balance: string): string {
+		if (balance.startsWith('-')) return 'In customer favor';
+		if (balance === '0.00' || balance === '0') return 'Settled';
+		return 'Customer owes';
+	}
 </script>
 
 <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
-	<SheetContent side="right" class="overflow-y-auto sm:max-w-md">
+	<SheetContent side="right" class="overflow-y-auto sm:max-w-xl">
 		{#if creating || (customer && editing)}
 			<SheetHeader>
 				<SheetTitle>{creating ? 'New customer' : 'Edit customer'}</SheetTitle>
@@ -212,6 +239,21 @@
 				<div class="grid gap-2">
 					<Label for="phone">Phone</Label>
 					<Input id="phone" bind:value={form.phone} maxlength={40} placeholder={optionalPlaceholder()} />
+				</div>
+
+				<div class="grid gap-2">
+					<Label for="credit_limit">Credit limit</Label>
+					<Input
+						id="credit_limit"
+						type="text"
+						inputmode="decimal"
+						bind:value={form.credit_limit}
+						placeholder="Unlimited (leave empty)"
+						class="tabular-nums"
+					/>
+					<p class="text-xs text-muted-foreground">
+						Leave empty for no limit; enter 0 for cash only.
+					</p>
 				</div>
 
 				{#if formError}
@@ -258,6 +300,28 @@
 				{/if}
 			</div>
 
+			<div class="grid grid-cols-3 gap-2 px-4">
+				<div class="rounded-md border border-border p-2.5">
+					<div class="text-xs text-muted-foreground">Balance</div>
+					<div class="mt-0.5 text-base font-semibold tabular-nums">{customer.balance}</div>
+					<div class="text-[11px] text-muted-foreground">{balanceHint(customer.balance)}</div>
+				</div>
+				<div class="rounded-md border border-border p-2.5">
+					<div class="text-xs text-muted-foreground">Available credit</div>
+					<div class="mt-0.5 text-base font-semibold tabular-nums">
+						{customer.available_credit}
+					</div>
+					<div class="text-[11px] text-muted-foreground">Unapplied receipts</div>
+				</div>
+				<div class="rounded-md border border-border p-2.5">
+					<div class="text-xs text-muted-foreground">Credit limit</div>
+					<div class="mt-0.5 text-base font-semibold tabular-nums">
+						{creditLimitLabel(customer.credit_limit)}
+					</div>
+					<div class="text-[11px] text-muted-foreground">Max exposure</div>
+				</div>
+			</div>
+
 			<dl class="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-2 px-4 text-sm">
 				<dt class="text-muted-foreground">Document</dt>
 				<dd>{customer.tax_id ?? '—'}</dd>
@@ -276,6 +340,8 @@
 				<dt class="text-muted-foreground">Updated</dt>
 				<dd class="text-muted-foreground">{when(customer.updated_at)}</dd>
 			</dl>
+
+			<CustomerAccountPanel customerId={customer.id} onMutated={onSaved} />
 		{:else}
 			<SheetHeader>
 				<SheetTitle>Customer not found</SheetTitle>
