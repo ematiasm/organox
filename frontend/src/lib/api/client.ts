@@ -22,6 +22,13 @@ export type CustomerId = components['schemas']['CustomerIdResponse'];
 export type Supplier = components['schemas']['SupplierResponse'];
 export type SupplierList = components['schemas']['SupplierListResponse'];
 export type SupplierId = components['schemas']['SupplierIdResponse'];
+export type Purchase = components['schemas']['PurchaseResponse'];
+export type PurchaseItem = components['schemas']['PurchaseItemResponse'];
+export type PurchaseList = components['schemas']['PurchaseListResponse'];
+export type PurchaseStatus = components['schemas']['PurchaseStatus'];
+export type PurchaseDraft = components['schemas']['PurchaseDraftResponse'];
+export type CompletedPurchase = components['schemas']['CompletedPurchaseResponse'];
+export type PurchasePayment = components['schemas']['PurchasePaymentRequest'];
 export type CustomerAccount = components['schemas']['CustomerAccountResponse'];
 export type AccountStatementEntry = components['schemas']['AccountStatementEntryResponse'];
 export type AccountEntryKind = components['schemas']['CustomerAccountEntryKind'];
@@ -318,6 +325,69 @@ export const api = {
 
 	deactivateSupplier: (id: string) =>
 		request<void>(`/api/v1/suppliers/${encodeURIComponent(id)}/deactivate`, { method: 'POST' }),
+
+	// --- Purchases ---
+	//
+	// Persisted draft-to-confirm cash purchases mirroring sales. Item mutations
+	// return the recalculated full purchase; completion records stock inflows
+	// and wallet outflows atomically on the server.
+
+	openPurchaseDraft: () => request<PurchaseDraft>('/api/v1/purchases/draft', { method: 'POST' }),
+
+	listPurchases: (params: {
+		status?: PurchaseStatus;
+		supplierId?: string;
+		limit?: number;
+		offset?: number;
+	}) =>
+		request<PurchaseList>('/api/v1/purchases', {
+			query: {
+				status: params.status,
+				supplier_id: params.supplierId,
+				limit: params.limit,
+				offset: params.offset
+			}
+		}),
+
+	getPurchase: (id: string) => request<Purchase>(`/api/v1/purchases/${encodeURIComponent(id)}`),
+
+	setPurchaseSupplier: (purchaseId: string, supplierId: string | null) =>
+		request<void>(`/api/v1/purchases/${encodeURIComponent(purchaseId)}/supplier`, {
+			method: 'PUT',
+			body: { supplier_id: supplierId }
+		}),
+
+	addPurchaseItem: (purchaseId: string, productId: string, quantity: string, unitCost: string) =>
+		request<Purchase>(`/api/v1/purchases/${encodeURIComponent(purchaseId)}/items`, {
+			method: 'POST',
+			body: { product_id: productId, quantity, unit_cost: unitCost }
+		}),
+
+	setPurchaseItem: (purchaseId: string, productId: string, quantity: string, unitCost: string) =>
+		request<Purchase>(
+			`/api/v1/purchases/${encodeURIComponent(purchaseId)}/items/${encodeURIComponent(productId)}`,
+			{
+				method: 'PUT',
+				body: { quantity, unit_cost: unitCost }
+			}
+		),
+
+	removePurchaseItem: (purchaseId: string, productId: string) =>
+		request<Purchase>(
+			`/api/v1/purchases/${encodeURIComponent(purchaseId)}/items/${encodeURIComponent(productId)}`,
+			{ method: 'DELETE' }
+		),
+
+	completePurchase: (purchaseId: string, payments: PurchasePayment[], note?: string) =>
+		request<CompletedPurchase>(`/api/v1/purchases/${encodeURIComponent(purchaseId)}/complete`, {
+			method: 'POST',
+			body: note ? { payments, note } : { payments }
+		}),
+
+	cancelPurchase: (purchaseId: string) =>
+		request<void>(`/api/v1/purchases/${encodeURIComponent(purchaseId)}/cancel`, {
+			method: 'POST'
+		}),
 
 	// --- Customer accounts ---
 	//

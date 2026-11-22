@@ -57,8 +57,8 @@ S12. Every repository artifact is in English (`AGENTS.md`); migrations are forwa
 |---|---|---|---|---|---|
 | T1 | Backend suppliers module: `0022_suppliers.sql`, `src/suppliers/*`, router, OpenAPI, `tests/suppliers.rs`, `.sqlx`, schema | S1, S2, S3, S10, S12 | inline | done | 2f6f6ae |
 | T2 | Wallet `purchase_payment` + backend purchases module: `0023`/`0024` migrations, `src/payments/*` extension, `src/purchases/*`, router, OpenAPI, `tests/purchases.rs`, `.sqlx`, schema | S4, S5, S6, S7, S8, S9, S10, S12 | inline | done | 311ecaa |
-| T3 | Frontend suppliers screen: `/suppliers` route, rail item, API wrappers, search/pager/inactive filter, create/edit/deactivate Sheet | S1, S2, S3, S11, S12 | inline | done | this branch |
-| T4 | Frontend purchases screen: `/operations/purchases` route, rail item, API wrappers, draft workspace (supplier, items with unit cost, split payments, confirm/cancel), history & detail drawer | S5, S6, S7, S8, S9, S11, S12 | inline | pending | - |
+| T3 | Frontend suppliers screen: `/suppliers` route, rail item, API wrappers, search/pager/inactive filter, create/edit/deactivate Sheet | S1, S2, S3, S11, S12 | inline | done | 35391d2 |
+| T4 | Frontend purchases screen: `/operations/purchases` route, rail item, API wrappers, draft workspace (supplier, items with unit cost, split payments, confirm/cancel), history & detail drawer | S5, S6, S7, S8, S9, S11, S12 | inline | done | this branch |
 | T5 | Documentation & verification: `docs/suppliers.md`, `docs/purchases.md`, `docs/payments.md`, `README.md`, full `make check`, independent verification | S12 | inline + verify | pending | - |
 
 ## Log
@@ -77,4 +77,6 @@ L3. T1 delivered (`2f6f6ae`): `0022_suppliers.sql`, `src/suppliers/*`, router + 
 
 L4. T2 delivered (`311ecaa`): `0023_wallet_purchase_payment_kind.sql`, `0024_purchases.sql`, `WalletMovementKind::PurchasePayment` + `purchase_id` across `src/payments/*` and callers + payments UI label, `src/purchases/*` (draft-to-confirm lifecycle, atomic stock + wallet writes, frozen `supplier_name`/`total`), OpenAPI + `.sqlx` + `schema.d.ts`, `tests/purchases.rs` (7 integration + 1 unit), `tests/payments.rs` (exhaustive 8-kind sign test + manual rejection test). `fmt`, `clippy -D warnings`, `fe-check` green.
 
-L5. T3 delivered: `/suppliers` screen (`+page.ts`, `+page.svelte`, `supplier-drawer.svelte`), suppliers API wrappers in `client.ts`, rail link in `app-shell.svelte`; `make fe-check` and `make fe-build` clean.
+L5. T3 delivered (`35391d2`): `/suppliers` screen (`+page.ts`, `+page.svelte`, `supplier-drawer.svelte`), suppliers API wrappers in `client.ts`, rail link in `app-shell.svelte`; `make fe-check` and `make fe-build` clean.
+
+L6. T4 delivered: `/operations/purchases` screen (`+page.ts`, `+page.svelte`), purchases API wrappers in `client.ts`, rail link in `app-shell.svelte`; `make fe-check` (0 errors, 0 warnings) and `make fe-build` clean.

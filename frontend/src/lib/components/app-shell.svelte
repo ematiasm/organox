@@ -15,6 +15,7 @@
 	import ChangePasswordDialog from './change-password-dialog.svelte';
 	import CartIcon from '@lucide/svelte/icons/shopping-cart';
 	import ReceiptIcon from '@lucide/svelte/icons/receipt';
+	import PackagePlusIcon from '@lucide/svelte/icons/package-plus';
 	import ListIcon from '@lucide/svelte/icons/list';
 	import ContactIcon from '@lucide/svelte/icons/contact';
 	import TruckIcon from '@lucide/svelte/icons/truck';
@@ -57,6 +58,12 @@
 					label: 'Sales',
 					icon: ReceiptIcon,
 					current: (path) => path.startsWith('/operations/sales')
+				},
+				{
+					href: '/operations/purchases',
+					label: 'Purchases',
+					icon: PackagePlusIcon,
+					current: (path) => path.startsWith('/operations/purchases')
 				}
 			]
 		},
