@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COUNT(*) AS \"count!\"\n        FROM suppliers s\n        WHERE ($1::bool OR s.is_active)\n          AND (\n                $2::text IS NULL\n                OR s.name ILIKE $2::text ESCAPE E'\\\\'\n                OR s.tax_id ILIKE $2::text ESCAPE E'\\\\'\n          )\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ab629ca23a5915efb1dd25a466744d9b71473408699690d7c051a11b8748183c"
+}

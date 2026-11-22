@@ -1,0 +1,298 @@
+//! Suppliers HTTP handlers.
+//!
+//! Authorization: every route requires a valid session. Registering and editing
+//! suppliers is operational work, so both `owner` and `manager` may access it.
+
+use axum::Json;
+use axum::Router;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::routing::{get, post};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+use uuid::Uuid;
+
+use crate::AppState;
+use crate::auth::AuthUser;
+use crate::error::AppError;
+use crate::suppliers::model::Supplier;
+use crate::suppliers::service::{self, CreateSupplierInput, SupplierError, UpdateSupplierInput};
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/suppliers", get(list_suppliers).post(create_supplier))
+        .route("/suppliers/{id}", get(get_supplier).patch(update_supplier))
+        .route("/suppliers/{id}/deactivate", post(deactivate_supplier))
+}
+
+// --- DTOs ---------------------------------------------------------------
+
+#[derive(Serialize, ToSchema)]
+pub struct SupplierResponse {
+    pub id: Uuid,
+    pub name: String,
+    /// `null` when the supplier was registered without a tax document.
+    pub tax_id: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct SupplierListResponse {
+    pub items: Vec<SupplierResponse>,
+    /// Page size actually applied (defaults to 50, capped at 200).
+    pub limit: i64,
+    /// Offset of `items[0]` in the filtered set.
+    pub offset: i64,
+    /// Total matching suppliers across all pages.
+    pub total: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct SupplierIdResponse {
+    pub id: Uuid,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CreateSupplierRequest {
+    pub name: String,
+    /// Optional and unique when present. A blank string means "no document".
+    pub tax_id: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateSupplierRequest {
+    pub name: Option<String>,
+    /// `null` means "leave the document as it is", never "clear it".
+    pub tax_id: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub is_active: Option<bool>,
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ListSuppliersQuery {
+    /// Include deactivated suppliers. Absent, only active suppliers are returned.
+    #[serde(default)]
+    pub include_inactive: bool,
+    /// Matches name or document, case-insensitively.
+    pub search: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+// --- Handlers -----------------------------------------------------------
+
+async fn list_suppliers(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Query(query): Query<ListSuppliersQuery>,
+) -> Result<Json<SupplierListResponse>, AppError> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let (items, total) = service::list_suppliers(
+        &state.pool,
+        query.include_inactive,
+        query.search.as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
+
+    Ok(Json(SupplierListResponse {
+        items: items.into_iter().map(to_response).collect(),
+        limit,
+        offset,
+        total,
+    }))
+}
+
+async fn create_supplier(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Json(body): Json<CreateSupplierRequest>,
+) -> Result<(StatusCode, Json<SupplierIdResponse>), AppError> {
+    let id = service::create_supplier(
+        &state.pool,
+        CreateSupplierInput {
+            name: body.name,
+            tax_id: body.tax_id,
+            email: body.email,
+            phone: body.phone,
+        },
+    )
+    .await?;
+
+    Ok((StatusCode::CREATED, Json(SupplierIdResponse { id })))
+}
+
+async fn get_supplier(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SupplierResponse>, AppError> {
+    let supplier = service::get_supplier(&state.pool, id).await?;
+    Ok(Json(to_response(supplier)))
+}
+
+async fn update_supplier(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateSupplierRequest>,
+) -> Result<StatusCode, AppError> {
+    service::update_supplier(
+        &state.pool,
+        id,
+        UpdateSupplierInput {
+            name: body.name,
+            tax_id: body.tax_id,
+            email: body.email,
+            phone: body.phone,
+            is_active: body.is_active,
+        },
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn deactivate_supplier(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    service::deactivate_supplier(&state.pool, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// --- Conversions --------------------------------------------------------
+
+fn to_response(supplier: Supplier) -> SupplierResponse {
+    SupplierResponse {
+        id: supplier.id,
+        name: supplier.name,
+        tax_id: supplier.tax_id,
+        email: supplier.email,
+        phone: supplier.phone,
+        is_active: supplier.is_active,
+        created_at: supplier.created_at,
+        updated_at: supplier.updated_at,
+    }
+}
+
+// --- Errors -------------------------------------------------------------
+
+impl From<SupplierError> for AppError {
+    fn from(err: SupplierError) -> Self {
+        match err {
+            SupplierError::Validation(validation) => AppError::Validation(validation.to_string()),
+            SupplierError::TaxIdTaken => {
+                AppError::Conflict("the document is already in use".to_string())
+            }
+            SupplierError::NotFound => AppError::NotFound,
+            SupplierError::Internal(repo) => AppError::Internal(repo.to_string()),
+        }
+    }
+}
+
+// --- OpenAPI documentation ---------------------------------------------
+
+/// List suppliers alphabetically by name.
+#[utoipa::path(
+    get,
+    path = "/api/v1/suppliers",
+    tag = "suppliers",
+    params(ListSuppliersQuery),
+    responses(
+        (status = 200, description = "Supplier page", body = SupplierListResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn list_suppliers_doc() {}
+
+/// Register a supplier.
+///
+/// `tax_id` is optional and unique when present; a duplicate returns 409.
+#[utoipa::path(
+    post,
+    path = "/api/v1/suppliers",
+    tag = "suppliers",
+    request_body = CreateSupplierRequest,
+    responses(
+        (status = 201, description = "Supplier created", body = SupplierIdResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Document is already in use", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn create_supplier_doc() {}
+
+/// Supplier details.
+#[utoipa::path(
+    get,
+    path = "/api/v1/suppliers/{id}",
+    tag = "suppliers",
+    params(("id" = Uuid, Path, description = "Supplier ID")),
+    responses(
+        (status = 200, description = "Supplier", body = SupplierResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn get_supplier_doc() {}
+
+/// Update only the fields sent.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/suppliers/{id}",
+    tag = "suppliers",
+    params(("id" = Uuid, Path, description = "Supplier ID")),
+    request_body = UpdateSupplierRequest,
+    responses(
+        (status = 204, description = "Updated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Document is already in use", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn update_supplier_doc() {}
+
+/// Soft deactivation. Idempotent. Never deletes: purchases reference the supplier.
+#[utoipa::path(
+    post,
+    path = "/api/v1/suppliers/{id}/deactivate",
+    tag = "suppliers",
+    params(("id" = Uuid, Path, description = "Supplier ID")),
+    responses(
+        (status = 204, description = "Deactivated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn deactivate_supplier_doc() {}

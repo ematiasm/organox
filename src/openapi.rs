@@ -107,6 +107,11 @@ pub struct Problem {
         crate::payments::handlers::list_payment_methods_doc,
         crate::payments::handlers::create_payment_method_doc,
         crate::payments::handlers::update_payment_method_doc,
+        crate::suppliers::handlers::list_suppliers_doc,
+        crate::suppliers::handlers::create_supplier_doc,
+        crate::suppliers::handlers::get_supplier_doc,
+        crate::suppliers::handlers::update_supplier_doc,
+        crate::suppliers::handlers::deactivate_supplier_doc,
     ),
     components(schemas(
         Problem,
@@ -177,6 +182,11 @@ pub struct Problem {
         crate::credit_notes::handlers::CreditNoteRefundResponse,
         crate::credit_notes::handlers::CreditableLineResponse,
         crate::credit_notes::handlers::SaleCreditNotesResponse,
+        crate::suppliers::handlers::SupplierResponse,
+        crate::suppliers::handlers::SupplierListResponse,
+        crate::suppliers::handlers::SupplierIdResponse,
+        crate::suppliers::handlers::CreateSupplierRequest,
+        crate::suppliers::handlers::UpdateSupplierRequest,
     )),
     tags(
         (name = "auth", description = "Sessions and users"),
@@ -186,6 +196,7 @@ pub struct Problem {
         (name = "sales", description = "Persisted cart and checkout"),
         (name = "payments", description = "Wallets, payment methods and the money ledger"),
         (name = "credit_notes", description = "Returns of a charged sale"),
+        (name = "suppliers", description = "Suppliers and their documents"),
     )
 )]
 pub struct ApiDoc;
@@ -268,6 +279,9 @@ mod tests {
             "/api/v1/customers/{id}/credit-refunds",
             "/api/v1/customers/{id}/adjustments",
             "/api/v1/accounts/receivables",
+            "/api/v1/suppliers",
+            "/api/v1/suppliers/{id}",
+            "/api/v1/suppliers/{id}/deactivate",
         ] {
             assert!(
                 paths.contains_key(expected),

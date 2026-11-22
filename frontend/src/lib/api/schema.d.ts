@@ -590,6 +590,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/suppliers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List suppliers alphabetically by name. */
+        get: operations["list_suppliers_doc"];
+        put?: never;
+        /**
+         * Register a supplier.
+         * @description `tax_id` is optional and unique when present; a duplicate returns 409.
+         */
+        post: operations["create_supplier_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/suppliers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Supplier details. */
+        get: operations["get_supplier_doc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update only the fields sent. */
+        patch: operations["update_supplier_doc"];
+        trace?: never;
+    };
+    "/api/v1/suppliers/{id}/deactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Soft deactivation. Idempotent. Never deletes: purchases reference the supplier. */
+        post: operations["deactivate_supplier_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -883,6 +939,13 @@ export interface components {
              */
             price?: string | null;
             sku?: string | null;
+        };
+        CreateSupplierRequest: {
+            email?: string | null;
+            name: string;
+            phone?: string | null;
+            /** @description Optional and unique when present. A blank string means "no document". */
+            tax_id?: string | null;
         };
         CreateUserRequest: {
             email: string;
@@ -1455,6 +1518,42 @@ export interface components {
              */
             customer_id?: string | null;
         };
+        SupplierIdResponse: {
+            /** Format: uuid */
+            id: string;
+        };
+        SupplierListResponse: {
+            items: components["schemas"]["SupplierResponse"][];
+            /**
+             * Format: int64
+             * @description Page size actually applied (defaults to 50, capped at 200).
+             */
+            limit: number;
+            /**
+             * Format: int64
+             * @description Offset of `items[0]` in the filtered set.
+             */
+            offset: number;
+            /**
+             * Format: int64
+             * @description Total matching suppliers across all pages.
+             */
+            total: number;
+        };
+        SupplierResponse: {
+            /** Format: date-time */
+            created_at: string;
+            email?: string | null;
+            /** Format: uuid */
+            id: string;
+            is_active: boolean;
+            name: string;
+            phone?: string | null;
+            /** @description `null` when the supplier was registered without a tax document. */
+            tax_id?: string | null;
+            /** Format: date-time */
+            updated_at: string;
+        };
         UpdateCustomerRequest: {
             /**
              * @description The one clearable field: absent leaves the limit untouched, an explicit
@@ -1490,6 +1589,14 @@ export interface components {
             /** @example 1500.50 */
             price?: string | null;
             sku?: string | null;
+        };
+        UpdateSupplierRequest: {
+            email?: string | null;
+            is_active?: boolean | null;
+            name?: string | null;
+            phone?: string | null;
+            /** @description `null` means "leave the document as it is", never "clear it". */
+            tax_id?: string | null;
         };
         UpdateWalletRequest: {
             is_active?: boolean | null;
@@ -3319,6 +3426,234 @@ export interface operations {
                 };
             };
             /** @description Sale or product not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_suppliers_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Include deactivated suppliers. Absent, only active suppliers are returned. */
+                include_inactive: boolean;
+                /** @description Matches name or document, case-insensitively. */
+                search: string | null;
+                limit: number | null;
+                offset: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Supplier page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierListResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_supplier_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSupplierRequest"];
+            };
+        };
+        responses: {
+            /** @description Supplier created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierIdResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Document is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_supplier_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Supplier ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Supplier */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_supplier_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Supplier ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSupplierRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Document is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    deactivate_supplier_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Supplier ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deactivated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;
