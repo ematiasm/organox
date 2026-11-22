@@ -26,6 +26,9 @@ pub enum PurchaseError {
     #[error("product not found")]
     ProductNotFound,
 
+    #[error("the product is deactivated and cannot be added to a purchase")]
+    ProductInactive,
+
     #[error("a service does not track stock and cannot be added to a purchase")]
     ServiceNotPurchasable,
 
@@ -224,6 +227,7 @@ fn map_repo_error(err: RepoError) -> PurchaseError {
     match err {
         RepoError::NotFound => PurchaseError::NotFound,
         RepoError::ProductNotFound => PurchaseError::ProductNotFound,
+        RepoError::ProductInactive => PurchaseError::ProductInactive,
         RepoError::ProductDoesNotTrackStock => PurchaseError::ServiceNotPurchasable,
         RepoError::NotEditable => PurchaseError::NotEditable,
         RepoError::EmptyPurchase => PurchaseError::EmptyPurchase,

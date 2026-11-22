@@ -24,6 +24,9 @@ pub enum RepoError {
     #[error("product not found")]
     ProductNotFound,
 
+    #[error("the product is deactivated and cannot be added to a purchase")]
+    ProductInactive,
+
     #[error("a service does not track stock and cannot be added to a purchase")]
     ProductDoesNotTrackStock,
 
@@ -168,9 +171,9 @@ pub async fn upsert_item(
 
     let product = sqlx::query!(
         r#"
-        SELECT kind AS "kind: ProductKind"
+        SELECT kind AS "kind: ProductKind", is_active
         FROM products
-        WHERE id = $1 AND is_active = true
+        WHERE id = $1
         "#,
         product_id
     )
@@ -178,6 +181,9 @@ pub async fn upsert_item(
     .await?
     .ok_or(RepoError::ProductNotFound)?;
 
+    if !product.is_active {
+        return Err(RepoError::ProductInactive);
+    }
     if !product.kind.tracks_stock() {
         return Err(RepoError::ProductDoesNotTrackStock);
     }
@@ -641,7 +647,7 @@ pub async fn complete(
         .ok_or(RepoError::ProductNotFound)?;
 
         if !product.is_active {
-            return Err(RepoError::ProductNotFound);
+            return Err(RepoError::ProductInactive);
         }
         if !product.kind.tracks_stock() {
             return Err(RepoError::ProductDoesNotTrackStock);

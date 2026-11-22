@@ -91,10 +91,24 @@ pub struct CompletedPurchaseResponse {
     pub completed_at: DateTime<Utc>,
 }
 
+/// Attaches a supplier to the draft, or clears it.
+///
+/// `supplier_id` must be present: clearing is an explicit `null`, and an
+/// omitted field is rejected (`422`) instead of detaching the supplier silently.
 #[derive(Deserialize, ToSchema)]
 pub struct SetPurchaseSupplierRequest {
     /// Supplier to attach to the draft, or `null` to clear it.
-    pub supplier_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "present_option")]
+    #[schema(value_type = Option<Uuid>)]
+    pub supplier_id: Option<Option<Uuid>>,
+}
+
+/// Distinguishes an omitted field (`None`) from an explicit `null` (`Some(None)`).
+fn present_option<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Uuid>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -188,7 +202,10 @@ async fn set_purchase_supplier(
     Path(id): Path<Uuid>,
     Json(body): Json<SetPurchaseSupplierRequest>,
 ) -> Result<StatusCode, AppError> {
-    service::set_supplier(&state.pool, id, body.supplier_id).await?;
+    let supplier_id = body.supplier_id.ok_or_else(|| {
+        AppError::Validation("the supplier_id field is required; pass null to clear it".into())
+    })?;
+    service::set_supplier(&state.pool, id, supplier_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -306,7 +323,8 @@ impl From<PurchaseError> for AppError {
             PurchaseError::NotFound
             | PurchaseError::ProductNotFound
             | PurchaseError::SupplierNotFound => AppError::NotFound,
-            PurchaseError::ServiceNotPurchasable
+            PurchaseError::ProductInactive
+            | PurchaseError::ServiceNotPurchasable
             | PurchaseError::NotEditable
             | PurchaseError::SupplierInactive => AppError::Conflict(err.to_string()),
             PurchaseError::EmptyPurchase
@@ -391,6 +409,8 @@ fn get_purchase_doc() {}
          content_type = "application/problem+json"),
         (status = 409, description = "Purchase is closed or supplier is inactive", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
+        (status = 422, description = "supplier_id field omitted", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -409,7 +429,7 @@ fn set_purchase_supplier_doc() {}
          content_type = "application/problem+json"),
         (status = 404, description = "Purchase or product not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "Purchase is closed or product is a service", body = crate::openapi::Problem,
+        (status = 409, description = "Purchase is closed, product is inactive, or product is a service", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 422, description = "Invalid quantity or unit cost", body = crate::openapi::Problem,
          content_type = "application/problem+json"),

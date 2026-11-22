@@ -96,7 +96,10 @@
 			checked={data.includeInactive}
 			onchange={(e) =>
 				goto(
-					suppliersUrl({ includeInactive: (e.target as HTMLInputElement).checked }),
+					suppliersUrl({
+						includeInactive: (e.target as HTMLInputElement).checked,
+						page: 1
+					}),
 					{ reset: false }
 				)}
 		/>

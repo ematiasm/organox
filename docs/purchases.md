@@ -121,7 +121,7 @@ All routes require a session (`401` without a cookie). Errors use
 | GET | `/api/v1/purchases/{id}` | Full purchase with items, supplier snapshot/live name, and calculated/frozen total |
 | PUT | `/api/v1/purchases/{id}/supplier` | Attaches or clears the draft's supplier (`{"supplier_id": "<uuid>"}` or `null`) |
 | POST | `/api/v1/purchases/{id}/items` | Adds a line (if already present, adds quantity and updates `unit_cost`) |
-| PUT | `/api/v1/purchases/{id}/items/{product_id}` | Sets `quantity` and `unit_cost` (`quantity = 0` removes the line) |
+| PUT | `/api/v1/purchases/{id}/items/{product_id}` | Sets `quantity` (`> 0`) and `unit_cost` |
 | DELETE | `/api/v1/purchases/{id}/items/{product_id}` | Removes the line |
 | POST | `/api/v1/purchases/{id}/complete` | Completes the purchase, writes `stock_movements` and `wallet_movements` |
 | POST | `/api/v1/purchases/{id}/cancel` | Cancels a `draft` (`204`) |

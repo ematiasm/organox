@@ -219,7 +219,7 @@ async fn rejects_services_inactive_products_and_invalid_quantities_or_costs(pool
     let err = purchases::add_item(&pool, draft_id, good, dec!(2), dec!(50.00))
         .await
         .unwrap_err();
-    assert!(matches!(err, PurchaseError::ProductNotFound));
+    assert!(matches!(err, PurchaseError::ProductInactive));
 }
 
 #[sqlx::test]
@@ -630,4 +630,142 @@ async fn http_purchase_flow_and_paginated_list(pool: PgPool) {
     assert_eq!(list["items"][0]["id"], purchase_id);
     assert_eq!(list["items"][0]["total"], "1000.00");
     assert_eq!(list["items"][0]["supplier_name"], "Distro Central");
+}
+
+#[sqlx::test]
+async fn inactive_product_returns_409_on_add_and_complete_and_omitted_supplier_returns_422(
+    pool: PgPool,
+) {
+    let (_, password) = seed_user(&pool, "probe-http@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Vendor Probe").await;
+    let good1 = seed_good(&pool, "Oats").await;
+    let good2 = seed_good(&pool, "Barley").await;
+    let (_wallet_id, method_id) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "probe-http@organox.test", &password).await;
+
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/purchases/draft")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let pid = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    // S10: adding an inactive product returns 409 Conflict (not 404).
+    catalog::deactivate_product(&pool, good1).await.unwrap();
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{pid}/items"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "product_id": good1, "quantity": "2", "unit_cost": "10.00" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/problem+json"
+    );
+
+    // Attach supplier, then verify omitted `supplier_id` (`{}`) returns 422 and keeps supplier.
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/purchases/{pid}/supplier"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "supplier_id": supplier_id }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/purchases/{pid}/supplier"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(json!({}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/purchases/{pid}"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(json_body(res).await["supplier_id"], supplier_id.to_string());
+
+    // S10: completing after deactivating a draft's product returns 409 with zero ledger writes.
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{pid}/items"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "product_id": good2, "quantity": "2", "unit_cost": "10.00" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    catalog::deactivate_product(&pool, good2).await.unwrap();
+    let res = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{pid}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "payments": [{ "payment_method_id": method_id, "amount": "20.00" }] })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        catalog::get_product(&pool, good2).await.unwrap().stock,
+        Some(dec!(0))
+    );
 }

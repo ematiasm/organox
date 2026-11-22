@@ -473,3 +473,27 @@ async fn http_endpoints_enforce_auth_and_rfc7807_errors(pool: PgPool) {
         .unwrap();
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
+
+#[sqlx::test]
+async fn list_orders_suppliers_case_insensitively_by_lower_name(pool: PgPool) {
+    for name in ["beta", "Alpha", "aardvark"] {
+        service::create_supplier(
+            &pool,
+            CreateSupplierInput {
+                name: name.to_string(),
+                tax_id: None,
+                email: None,
+                phone: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    let (items, total) = service::list_suppliers(&pool, false, None, 50, 0)
+        .await
+        .unwrap();
+    assert_eq!(total, 3);
+    let names: Vec<&str> = items.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["aardvark", "Alpha", "beta"]);
+}

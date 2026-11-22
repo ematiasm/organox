@@ -2016,7 +2016,7 @@
             }
           },
           "409": {
-            "description": "Purchase is closed or product is a service",
+            "description": "Purchase is closed, product is inactive, or product is a service",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2257,6 +2257,16 @@
           },
           "409": {
             "description": "Purchase is closed or supplier is inactive",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "supplier_id field omitted",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5856,6 +5866,7 @@
       },
       "SetPurchaseSupplierRequest": {
         "type": "object",
+        "description": "Attaches a supplier to the draft, or clears it.\n\n`supplier_id` must be present: clearing is an explicit `null`, and an\nomitted field is rejected (`422`) instead of detaching the supplier silently.",
         "properties": {
           "supplier_id": {
             "type": [

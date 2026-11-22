@@ -234,7 +234,7 @@ Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 | GET | `/purchases/{id}` | session | Purchase with items, supplier and server-calculated/frozen total |
 | PUT | `/purchases/{id}/supplier` | session | Attaches or clears the draft's supplier (`supplier_id` or `null`) |
 | POST | `/purchases/{id}/items` | session | Adds a line (`product_id`, `quantity`, `unit_cost`) |
-| PUT | `/purchases/{id}/items/{product_id}` | session | Sets `quantity` and `unit_cost` (`0` removes) |
+| PUT | `/purchases/{id}/items/{product_id}` | session | Sets `quantity` (`> 0`) and `unit_cost` |
 | DELETE | `/purchases/{id}/items/{product_id}` | session | Removes a line |
 | POST | `/purchases/{id}/complete` | session | Completes the purchase, writes stock entries and `purchase_payment` wallet outflows |
 | POST | `/purchases/{id}/cancel` | session | Cancels the draft |
@@ -293,7 +293,7 @@ suppliers and cash purchases.
 - **Purchases**: server-persisted draft-to-confirm cash purchases (one open
   draft per operator) recording line `unit_cost` into `stock_movements` and
   `purchase_payment` outflows into wallets in a single transaction.
-- **392 tests** (unit + integration against real Postgres).
+- **394 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
   navigation rail** (expandable, with groups and user menu), product list and
   drawer, stock movements, **point of sale with barcode scanner and on-account

@@ -312,6 +312,11 @@
 			onchange={onSupplierChange}
 		>
 			<option value="">Select a supplier…</option>
+			{#if draft.supplier_id && !data.suppliers.some((s) => s.id === draft.supplier_id)}
+				<option value={draft.supplier_id}>
+					{draft.supplier_name ?? 'Inactive supplier'} (inactive)
+				</option>
+			{/if}
 			{#each data.suppliers as s (s.id)}
 				<option value={s.id}>
 					{s.name}{s.tax_id ? ` (${s.tax_id})` : ''}

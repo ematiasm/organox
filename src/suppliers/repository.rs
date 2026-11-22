@@ -89,7 +89,7 @@ pub async fn list_suppliers(
                 OR s.name ILIKE $2::text ESCAPE E'\\'
                 OR s.tax_id ILIKE $2::text ESCAPE E'\\'
           )
-        ORDER BY s.name, s.id
+        ORDER BY lower(s.name), s.id
         LIMIT $3 OFFSET $4
         "#,
         include_inactive,

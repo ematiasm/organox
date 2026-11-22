@@ -59,7 +59,7 @@ S12. Every repository artifact is in English (`AGENTS.md`); migrations are forwa
 | T2 | Wallet `purchase_payment` + backend purchases module: `0023`/`0024` migrations, `src/payments/*` extension, `src/purchases/*`, router, OpenAPI, `tests/purchases.rs`, `.sqlx`, schema | S4, S5, S6, S7, S8, S9, S10, S12 | inline | done | 311ecaa |
 | T3 | Frontend suppliers screen: `/suppliers` route, rail item, API wrappers, search/pager/inactive filter, create/edit/deactivate Sheet | S1, S2, S3, S11, S12 | inline | done | 35391d2 |
 | T4 | Frontend purchases screen: `/operations/purchases` route, rail item, API wrappers, draft workspace (supplier, items with unit cost, split payments, confirm/cancel), history & detail drawer | S5, S6, S7, S8, S9, S11, S12 | inline | done | 5ae1fab |
-| T5 | Documentation & verification: `docs/suppliers.md`, `docs/purchases.md`, `docs/payments.md`, `README.md`, full `make check`, independent verification | S12 | inline + verify | done | this branch |
+| T5 | Documentation & verification: `docs/suppliers.md`, `docs/purchases.md`, `docs/payments.md`, `README.md`, full `make check`, independent verification | S12 | inline + verify | done | 63b9d17 |
 
 ## Log
 
@@ -81,4 +81,6 @@ L5. T3 delivered (`35391d2`): `/suppliers` screen (`+page.ts`, `+page.svelte`, `
 
 L6. T4 delivered (`5ae1fab`): `/operations/purchases` screen (`+page.ts`, `+page.svelte`), purchases API wrappers in `client.ts`, rail link in `app-shell.svelte`; `make fe-check` (0 errors, 0 warnings) and `make fe-build` clean.
 
-L7. T5 delivered: `docs/suppliers.md`, `docs/purchases.md`, updated `docs/payments.md` and `README.md`; full `make check` green (392 tests passed, `fmt`, `clippy -D warnings`, `svelte-check` 0 errors/0 warnings), `SQLX_OFFLINE=true cargo check --all-targets` green, `make fe-build` green.
+L7. T5 delivered (`63b9d17`): `docs/suppliers.md`, `docs/purchases.md`, updated `docs/payments.md` and `README.md`; full `make check` green (392 tests passed, `fmt`, `clippy -D warnings`, `svelte-check` 0 errors/0 warnings), `SQLX_OFFLINE=true cargo check --all-targets` green, `make fe-build` green.
+
+L8. Independent verification (`gentle-ai-verify`) caught 4 blockers + 2 UI advisories, all resolved and covered by regression tests: (1) inactive products on `POST /purchases/{id}/items` and `POST /purchases/{id}/complete` now return `409 Conflict` (`PurchaseError::ProductInactive`), (2) `PUT /purchases/{id}/supplier` rejects omitted `supplier_id` (`{}`) with `422`, (3) `docs/purchases.md` and `README.md` aligned with `quantity > 0` on `PUT /purchases/{id}/items/{product_id}`, (4) `list_suppliers` now orders by `lower(s.name), s.id`, plus `/suppliers` filter toggle resets `page: 1` and `/operations/purchases` displays a deactivated draft supplier cleanly. `.sqlx/`, `openapi.json`, and `schema.d.ts` regenerated; 394 tests green.

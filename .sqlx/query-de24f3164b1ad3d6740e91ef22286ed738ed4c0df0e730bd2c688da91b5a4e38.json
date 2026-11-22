@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            s.id,\n            s.name,\n            s.tax_id,\n            s.email,\n            s.phone,\n            s.is_active,\n            s.created_at,\n            s.updated_at,\n            COUNT(*) OVER () AS \"total!\"\n        FROM suppliers s\n        WHERE ($1::bool OR s.is_active)\n          AND (\n                $2::text IS NULL\n                OR s.name ILIKE $2::text ESCAPE E'\\\\'\n                OR s.tax_id ILIKE $2::text ESCAPE E'\\\\'\n          )\n        ORDER BY s.name, s.id\n        LIMIT $3 OFFSET $4\n        ",
+  "query": "\n        SELECT\n            s.id,\n            s.name,\n            s.tax_id,\n            s.email,\n            s.phone,\n            s.is_active,\n            s.created_at,\n            s.updated_at,\n            COUNT(*) OVER () AS \"total!\"\n        FROM suppliers s\n        WHERE ($1::bool OR s.is_active)\n          AND (\n                $2::text IS NULL\n                OR s.name ILIKE $2::text ESCAPE E'\\\\'\n                OR s.tax_id ILIKE $2::text ESCAPE E'\\\\'\n          )\n        ORDER BY lower(s.name), s.id\n        LIMIT $3 OFFSET $4\n        ",
   "describe": {
     "columns": [
       {
@@ -118,5 +118,5 @@
       null
     ]
   },
-  "hash": "a21ac0af2962d7abf59010c45c2724b6ed09fa251ac5ece7975ef12755fbc859"
+  "hash": "de24f3164b1ad3d6740e91ef22286ed738ed4c0df0e730bd2c688da91b5a4e38"
 }

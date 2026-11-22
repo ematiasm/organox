@@ -1717,6 +1717,12 @@ export interface components {
             /** @example 125.50 */
             unit_cost: string;
         };
+        /**
+         * @description Attaches a supplier to the draft, or clears it.
+         *
+         *     `supplier_id` must be present: clearing is an explicit `null`, and an
+         *     omitted field is rejected (`422`) instead of detaching the supplier silently.
+         */
         SetPurchaseSupplierRequest: {
             /**
              * Format: uuid
@@ -3379,7 +3385,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Purchase is closed or product is a service */
+            /** @description Purchase is closed, product is inactive, or product is a service */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3559,6 +3565,15 @@ export interface operations {
             };
             /** @description Purchase is closed or supplier is inactive */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description supplier_id field omitted */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
