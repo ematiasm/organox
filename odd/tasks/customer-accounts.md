@@ -215,7 +215,7 @@ and the new `on_account = 0` sibling.
 | T3 | S5, S7 + L12 | **next**: `0017` adds `customers.credit_limit`; the customers module exposes it (NULL = unlimited, `0` = cash only, clearable through PATCH); `customer_accounts::authorize_credit` takes the customer lock, reads the row `FOR UPDATE`, checks activity and exposure (`balance + amount` against the limit, floored at zero for the message) and returns the available amount; sales calls it before writing and answers 409 naming the remaining credit. Closes `R1-on-account-credit-unbounded`, `R3-active-check-race` and `R4-on-account-active-gate-race` | feat/customer-accounts-limit |
 | T4 | S3, S5, S6 | **done**: `0018` adds the `account_payment` label alone, `0019` the `wallet_movements.customer_id` column and its two CHECKs; the kind joins both balance `CASE`s and the sign test; `POST /customers/{id}/receipts` answers 201/200 with the replay read under the lock; `ensure_movement_backing` now binds the movement's customer, closing `R1-receipt-backing-not-customer-bound`; 8 HTTP tests plus the ledger one | `4807009` |
 | T5 | S8 | **done**: `apply_available_credit` spends usable credit oldest-receipt-first inside the completion transaction, capped by the request, the account's credit and the sale's outstanding; `credit_applied` in the response says what the sale no longer owes. Closes the three banked advisories | `781a815` |
-| T6 | S9 | debt-first note split, `allocate_refund` rewrite, `account_payment_refund` kind | feat/customer-accounts-note-split |
+| T6 | S9 | **done**: the note cancels `min(N, outstanding)` through the ledger and refunds only the surplus over the tenders that collected it (till payments, then receipt allocations), split in integer cents with largest remainders and computed cumulatively; `split_cash_refund` replaces `allocate_refund`; a busy account answers 409. Closes the four banked advisories | `2beefe1` |
 | T7 | S10, S11, S12 | credit refunds, adjustments, deactivation guard | feat/customer-accounts-adjustments |
 | T8 | S13 | statement, receivables with aging, customer read columns | feat/customer-accounts-reads |
 | T9 | S14 | POS field, drawer, list column, receivables page, regenerated schema | feat/customer-accounts-ui |
@@ -412,3 +412,13 @@ verification per slice, and each slice stays under roughly 400 authored lines.
   The three banked advisories closed in the same commit, inside this range instead of as a separate
   candidate — that is the policy adopted after three review rounds were spent on T4's fixes: bank
   them, then fix them where the next review will see them.
+- L27 — T6 delivered in `2beefe1`: debt first, cash second. `cancel = min(N, outstanding)` goes through
+  `record_credit_note`; the remaining cash is split over the sale's till payments **and** the receipts
+  allocated to it, each capped by what it collected, in integer cents with largest remainders. The
+  split is recomputed for the cumulative cash and subtracted per tender, which is what makes three
+  notes of 33.33 on a 100 sale refund 99.99 and never a cent more — the drift its own advisory had
+  recorded. A fully unpaid credit sale refunds nothing: no wallet movement, only the debt cancelled.
+  A busy customer account now answers 409 from the note route too instead of a 500, closed in the
+  same commit so the review sees it. `allocate_refund`'s seven unit tests were replaced by eight for
+  `split_cash_refund`; one deliberate difference is pinned: a cent over [1.00, 2.00] now goes to the
+  larger tender instead of whichever came last, which is the Hamilton rule.

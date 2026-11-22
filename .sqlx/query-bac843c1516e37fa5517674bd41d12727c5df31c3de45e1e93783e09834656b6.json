@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COALESCE(SUM(amount), 0) AS \"refunded!: Decimal\"\n           FROM wallet_movements\n           WHERE kind = 'sale_refund' AND sale_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "refunded!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bac843c1516e37fa5517674bd41d12727c5df31c3de45e1e93783e09834656b6"
+}

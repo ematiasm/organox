@@ -135,6 +135,14 @@ pub enum RepoError {
         requested: Decimal,
         available: Decimal,
     },
+
+    /// The caps inside `apply_available_credit` re-derive everything the
+    /// ledger's own guards check, so a guard firing there is an impossible
+    /// ledger violation, not a client error. Typed so the completion can
+    /// answer an internal error without pretending a database protocol
+    /// failed.
+    #[error("the credit application disagreed with the ledger's own guards")]
+    CreditApplicationBroken,
 }
 
 /// The customer's account as of now: balance, usable credit, what is owed.
@@ -967,6 +975,11 @@ pub async fn apply_available_credit(
     // The receipts that still carry unallocated money, oldest first. The `id`
     // tiebreaker keeps the order total: two receipts created in the same
     // instant are still one before the other, and the ids are time-ordered.
+    // The bound is deliberate: a fragmented account applies at most this many
+    // receipts per completion and the rest stays usable credit, so one
+    // checkout cannot hold the account lock for an unbounded time — and the
+    // next completion spends the remainder oldest-first again, so nothing is
+    // lost, only deferred.
     let receipts = sqlx::query!(
         r#"
         SELECT e.id                                          AS "entry_id!: Uuid",
@@ -978,6 +991,7 @@ pub async fn apply_available_credit(
         GROUP BY e.id
         HAVING -e.amount - COALESCE(SUM(a.amount), 0) > 0
         ORDER BY e.created_at, e.id
+        LIMIT 100
         "#,
         customer_id
     )
@@ -991,10 +1005,22 @@ pub async fn apply_available_credit(
         }
         let take = remaining.min(receipt.available);
         // `allocate` keeps every guard — receipt, sale, credit — and a guard
-        // firing here means the caps above lied about what could be applied.
-        // That is a bug, so the error propagates and the caller's transaction
-        // dies rather than quietly applying less than the books say.
-        allocate(conn, receipt.entry_id, sale_id, take).await?;
+        // firing here means the caps above lied about what could be applied:
+        // an impossible ledger violation, not a client error. It is typed so
+        // the completion can answer an internal error without pretending a
+        // database protocol failed, and the caller's transaction dies rather
+        // than quietly applying less than the books say.
+        allocate(conn, receipt.entry_id, sale_id, take)
+            .await
+            .map_err(|err| match err {
+                RepoError::OutstandingExceeded { .. }
+                | RepoError::AllocationExceedsReceipt { .. }
+                | RepoError::AllocationExceedsCredit { .. } => RepoError::CreditApplicationBroken,
+                // Everything else is a real condition this function must
+                // not rewrite: infrastructure, or the busy lock the caller
+                // owns.
+                other => other,
+            })?;
         applied += take;
         remaining -= take;
     }

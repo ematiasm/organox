@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT m.wallet_id,\n                   w.name AS \"wallet_name!\",\n                   m.payment_method_id AS \"payment_method_id!\",\n                   pm.name AS \"payment_method_name!\",\n                   a.amount\n            FROM customer_account_allocations a\n            JOIN customer_account_entries e ON e.id = a.entry_id\n            JOIN wallet_movements m ON m.id = e.wallet_movement_id\n            JOIN wallets w ON w.id = m.wallet_id\n            JOIN payment_methods pm ON pm.id = m.payment_method_id\n            WHERE a.sale_id = $1 AND e.kind = 'receipt'\n            ORDER BY e.created_at, e.id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "wallet_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "wallet_movements",
+            "name": "wallet_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "wallet_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "wallets",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "payment_method_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "wallet_movements",
+            "name": "payment_method_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "payment_method_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "amount",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "customer_account_allocations",
+            "name": "amount"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "41b5b6be4f9121d5f4ed316c8dd5b41a092210c5d3528dc38f083ec1bcb175dc"
+}

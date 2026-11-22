@@ -16,6 +16,7 @@ use organox::catalog::model::{MovementReason, ProductKind};
 use organox::catalog::service::{self as catalog, CreateProductInput, RecordMovementInput};
 use organox::credit_notes::model::ReturnLine;
 use organox::credit_notes::service::{self as credit_notes, CreditNotesError};
+use organox::customer_accounts::repository as ledger;
 use organox::payments::service::{self as payments, CreateMethodInput, CreateWalletInput};
 use organox::routes::router;
 use organox::sales::model::SalePaymentInput;
@@ -1805,4 +1806,512 @@ async fn a_keyed_create_needs_one_pool_connection(pool: PgPool) {
     assert_eq!(note_count(&pool, sale).await, 1);
     assert_eq!(return_movement_count(&pool, product).await, 1);
     assert_eq!(balance(&pool, wallet).await, charged - dec!(100.00));
+}
+
+// --- T6: debt is cancelled before cash is refunded ----------------------
+
+/// A customer, the way the ledger's own tests seed one: the registry's rule
+/// is not what these tests exercise.
+async fn seed_customer(pool: &PgPool, name: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query("INSERT INTO customers (id, name) VALUES ($1, $2)")
+        .bind(id)
+        .bind(name)
+        .execute(pool)
+        .await
+        .expect("customer");
+    id
+}
+
+/// One authenticated POST with a JSON body, over the real router.
+async fn post_json(
+    pool: &PgPool,
+    cookie: &str,
+    uri: String,
+    body: serde_json::Value,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+
+    let response = app(pool.clone())
+        .oneshot(
+            with_session("POST", &uri, cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+/// Issue a credit note over HTTP: `quantity` units of `product` come back.
+async fn note_http(
+    pool: &PgPool,
+    cookie: &str,
+    sale: Uuid,
+    product: Uuid,
+    quantity: Decimal,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    post_json(
+        pool,
+        cookie,
+        format!("/api/v1/sales/{sale}/credit-notes"),
+        serde_json::json!({
+            "reason": "Customer changed their mind",
+            "items": [{ "product_id": product, "quantity": quantity.to_string() }],
+        }),
+    )
+    .await
+}
+
+/// Collect money against a customer's account over HTTP, optionally paying
+/// one sale with it.
+async fn collect_http(
+    pool: &PgPool,
+    cookie: &str,
+    customer: Uuid,
+    method: Uuid,
+    amount: &str,
+    allocation: Option<(Uuid, &str)>,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    let allocations: Vec<serde_json::Value> = allocation
+        .map(|(sale_id, amount)| serde_json::json!({ "sale_id": sale_id, "amount": amount }))
+        .into_iter()
+        .collect();
+    post_json(
+        pool,
+        cookie,
+        format!("/api/v1/customers/{customer}/receipts"),
+        serde_json::json!({
+            "payment_method_id": method,
+            "amount": amount,
+            "allocations": allocations,
+        }),
+    )
+    .await
+}
+
+/// A completed sale of `quantity` units of `product` to `customer`, with
+/// `at_till` collected by `method` and the rest charged to the account.
+/// No customer and `at_till == total` is the plain cash sale of every older
+/// test; no method and `at_till == 0` is a sale taken wholly on account.
+async fn sale_part_on_account(
+    pool: &PgPool,
+    actor: Uuid,
+    product: Uuid,
+    quantity: Decimal,
+    customer: Option<Uuid>,
+    method: Option<Uuid>,
+    at_till: Decimal,
+) -> Uuid {
+    let sale = sales::open_draft(pool, actor).await.expect("draft");
+    sales::add_item(pool, sale, product, quantity)
+        .await
+        .expect("item");
+    if let Some(customer) = customer {
+        sales::set_customer(pool, sale, Some(customer))
+            .await
+            .expect("customer");
+    }
+    let total = sales::get(pool, sale).await.expect("sale").total();
+    let payments = method
+        .map(|method| {
+            vec![SalePaymentInput {
+                payment_method_id: method,
+                amount: at_till,
+            }]
+        })
+        .unwrap_or_default();
+    sales::complete_with_on_account(pool, sale, actor, &payments, total - at_till)
+        .await
+        .expect("charge");
+    sale
+}
+
+/// How many `sale_refund` movements one sale has written.
+async fn refund_count(pool: &PgPool, sale: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wallet_movements WHERE kind = 'sale_refund' AND sale_id = $1",
+    )
+    .bind(sale)
+    .fetch_one(pool)
+    .await
+    .expect("refund count")
+}
+
+#[sqlx::test]
+async fn a_note_on_an_unpaid_credit_sale_only_cancels_debt(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let customer = seed_customer(&pool, "Ana").await;
+    let product = seed_product(&pool, "Flour", dec!(10.00)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    // A sale of 100 taken entirely on account: nothing at the till, all debt.
+    let sale = sale_part_on_account(
+        &pool,
+        actor,
+        product,
+        dec!(10),
+        Some(customer),
+        None,
+        Decimal::ZERO,
+    )
+    .await;
+    let cookie = login_cookie(&pool, &password).await;
+
+    let (status, body) = note_http(&pool, &cookie, sale, product, dec!(6)).await;
+
+    // The note is taken, and its whole value cancels debt: no wallet ever
+    // collected any money for this sale, so none may hand any back.
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(body["total"], "60.00");
+    assert!(
+        body["refunds"].as_array().expect("refunds").is_empty(),
+        "an unpaid credit sale refunded cash: {body}"
+    );
+
+    // The sale keeps owing the remaining 40 on the ledger's own definition.
+    let owed = ledger::outstanding_by_sale(&pool, customer)
+        .await
+        .expect("outstanding");
+    assert_eq!(owed.len(), 1);
+    assert_eq!(owed[0].sale_id, sale);
+    assert_eq!(owed[0].outstanding, dec!(40.00));
+
+    // No wallet movement was written at all.
+    let movements: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wallet_movements")
+        .fetch_one(&pool)
+        .await
+        .expect("movement count");
+    assert_eq!(movements, 0);
+
+    // And the two books agree: 40 of debt, 40 of balance, nothing else.
+    let position = ledger::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, dec!(40.00));
+    assert_eq!(position.outstanding_total, dec!(40.00));
+    assert!(position.is_consistent());
+}
+
+#[sqlx::test]
+async fn a_note_cancels_debt_before_refunding_cash(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let customer = seed_customer(&pool, "Ana").await;
+    let product = seed_product(&pool, "Flour", dec!(10.00)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let method = cash(&pool).await;
+    let wallet = wallet_of(&pool, method).await;
+
+    // 40 at the till, 60 on the account.
+    let sale = sale_part_on_account(
+        &pool,
+        actor,
+        product,
+        dec!(10),
+        Some(customer),
+        Some(method),
+        dec!(40.00),
+    )
+    .await;
+    assert_eq!(balance(&pool, wallet).await, dec!(40.00));
+    let cookie = login_cookie(&pool, &password).await;
+
+    // A note of 80: the 60 of debt go first, only 20 leave the wallet.
+    let (status, body) = note_http(&pool, &cookie, sale, product, dec!(8)).await;
+
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(body["total"], "80.00");
+    assert_eq!(body["refunds"].as_array().expect("refunds").len(), 1);
+    assert_eq!(body["refunds"][0]["wallet_name"], "Caja");
+    assert_eq!(body["refunds"][0]["amount"], "20.00");
+
+    // The wallet that collected 40 gave back only the cash part of the note.
+    assert_eq!(balance(&pool, wallet).await, dec!(20.00));
+
+    // The debt is gone: the ledger carries the 60 as a cancellation.
+    let owed = ledger::outstanding_by_sale(&pool, customer)
+        .await
+        .expect("outstanding");
+    assert!(owed.is_empty());
+    let cancelled: Decimal = sqlx::query_scalar!(
+        r#"SELECT -amount AS "cancelled!: Decimal"
+           FROM customer_account_entries
+           WHERE sale_id = $1 AND kind = 'credit_note'"#,
+        sale
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("cancellation");
+    assert_eq!(cancelled, dec!(60.00));
+
+    let position = ledger::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, Decimal::ZERO);
+    assert!(position.is_consistent());
+
+    // One refund movement through the till's own method, and nothing else.
+    assert_eq!(refund_count(&pool, sale).await, 1);
+}
+
+#[sqlx::test]
+async fn a_note_refunds_only_the_money_actually_collected(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let customer = seed_customer(&pool, "Ana").await;
+    let product = seed_product(&pool, "Flour", dec!(10.00)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let cash_method = cash(&pool).await;
+    let till_wallet = wallet_of(&pool, cash_method).await;
+    let bank_wallet = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Bank".to_string(),
+        },
+    )
+    .await
+    .expect("wallet");
+    let bank_method = payments::create_method(
+        &pool,
+        CreateMethodInput {
+            name: "Card".to_string(),
+            wallet_id: bank_wallet,
+        },
+    )
+    .await
+    .expect("method");
+
+    // 40 at the till, 60 on the account.
+    let sale = sale_part_on_account(
+        &pool,
+        actor,
+        product,
+        dec!(10),
+        Some(customer),
+        Some(cash_method),
+        dec!(40.00),
+    )
+    .await;
+    let cookie = login_cookie(&pool, &password).await;
+
+    // The customer pays the 60 later, by a collection allocated to the sale.
+    let (status, _) = collect_http(
+        &pool,
+        &cookie,
+        customer,
+        bank_method,
+        "60.00",
+        Some((sale, "60.00")),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(balance(&pool, bank_wallet).await, dec!(60.00));
+
+    // A note for the whole sale: the collection already paid the debt, so
+    // nothing is cancelled; the 100 is refunded by the tenders that
+    // collected it — the till's 40 and the collection's 60.
+    let (status, body) = note_http(&pool, &cookie, sale, product, dec!(10)).await;
+
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(body["total"], "100.00");
+    let refunds = body["refunds"].as_array().expect("refunds");
+    assert_eq!(refunds.len(), 2);
+    assert_eq!(refunds[0]["wallet_name"], "Caja");
+    assert_eq!(refunds[0]["amount"], "40.00");
+    assert_eq!(refunds[1]["wallet_name"], "Bank");
+    assert_eq!(refunds[1]["amount"], "60.00");
+
+    // Both wallets are back to zero: every cent went back the way it came.
+    assert_eq!(balance(&pool, till_wallet).await, Decimal::ZERO);
+    assert_eq!(balance(&pool, bank_wallet).await, Decimal::ZERO);
+
+    // No debt was cancelled — the collection had already paid it — and no
+    // stray movement exists beyond the two refunds.
+    let owed = ledger::outstanding_by_sale(&pool, customer)
+        .await
+        .expect("outstanding");
+    assert!(owed.is_empty());
+    let cancellations: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customer_account_entries
+         WHERE sale_id = $1 AND kind = 'credit_note'",
+    )
+    .bind(sale)
+    .fetch_one(&pool)
+    .await
+    .expect("cancellation count");
+    assert_eq!(cancellations, 0);
+    assert_eq!(refund_count(&pool, sale).await, 2);
+
+    let position = ledger::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, Decimal::ZERO);
+    assert!(position.is_consistent());
+}
+
+#[sqlx::test]
+async fn a_note_on_a_cash_sale_keeps_refunding_its_payments(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100.00)).await;
+    stock(&pool, actor, product, dec!(3)).await;
+    let cash_method = cash(&pool).await;
+    let till_wallet = wallet_of(&pool, cash_method).await;
+    let bank_wallet = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Bank".to_string(),
+        },
+    )
+    .await
+    .expect("wallet");
+    let bank_method = payments::create_method(
+        &pool,
+        CreateMethodInput {
+            name: "Card".to_string(),
+            wallet_id: bank_wallet,
+        },
+    )
+    .await
+    .expect("method");
+
+    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    sales::add_item(&pool, sale, product, dec!(3))
+        .await
+        .expect("item");
+    let total = sales::get(&pool, sale).await.expect("sale").total();
+    sales::complete(
+        &pool,
+        sale,
+        actor,
+        &[
+            SalePaymentInput {
+                payment_method_id: cash_method,
+                amount: dec!(100.00),
+            },
+            SalePaymentInput {
+                payment_method_id: bank_method,
+                amount: dec!(200.00),
+            },
+        ],
+    )
+    .await
+    .expect("charge");
+    assert_eq!(total, dec!(300.00));
+
+    let cookie = login_cookie(&pool, &password).await;
+    let (status, body) = note_http(&pool, &cookie, sale, product, dec!(1)).await;
+
+    // No customer, no account: the note is pure cash, split over the
+    // payments in proportion, exactly as before the account existed.
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(body["refunds"][0]["amount"], "33.33");
+    assert_eq!(body["refunds"][1]["amount"], "66.67");
+    assert_eq!(balance(&pool, till_wallet).await, dec!(66.67));
+    assert_eq!(balance(&pool, bank_wallet).await, dec!(133.33));
+    assert_eq!(refund_count(&pool, sale).await, 2);
+}
+
+#[sqlx::test]
+async fn three_notes_never_refund_more_than_the_sale_charged(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(10.00)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let method = cash(&pool).await;
+    let wallet = wallet_of(&pool, method).await;
+
+    // A fully collected cash sale of 100.
+    let sale = sale_part_on_account(
+        &pool,
+        actor,
+        product,
+        dec!(10),
+        None,
+        Some(method),
+        dec!(100.00),
+    )
+    .await;
+    let charged = balance(&pool, wallet).await;
+    assert_eq!(charged, dec!(100.00));
+
+    let cookie = login_cookie(&pool, &password).await;
+
+    // Three notes of 33.33: each is the floor of a third of the money, and
+    // the cumulative split must never invent the missing cent back.
+    for _ in 0..3 {
+        let (status, _) = note_http(&pool, &cookie, sale, product, dec!(3.333)).await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+    }
+
+    assert_eq!(note_count(&pool, sale).await, 3);
+    // 99.99 left the wallet, never 100.00.
+    assert_eq!(balance(&pool, wallet).await, dec!(0.01));
+    let refunded: Decimal = sqlx::query_scalar!(
+        r#"SELECT COALESCE(SUM(amount), 0) AS "refunded!: Decimal"
+           FROM wallet_movements
+           WHERE kind = 'sale_refund' AND sale_id = $1"#,
+        sale
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("refunded");
+    assert_eq!(refunded, dec!(99.99));
+}
+
+#[sqlx::test]
+async fn a_note_refuses_cash_no_tender_collected(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(10.00)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+
+    // A completed sale whose money never reached any wallet: raw rows,
+    // because the completion invariant cannot produce it — payments plus
+    // on_account always equal the total, so a sale that still needs cash
+    // has a tender somewhere. The refusal below is the guard for a ledger
+    // that has drifted, and drift must be reported, not papered over.
+    let sale = Uuid::now_v7();
+    sqlx::query(
+        r#"
+        INSERT INTO sales (id, status, total, created_by, completed_by, completed_at)
+        VALUES ($1, 'completed', $2, $3, $3, now())
+        "#,
+    )
+    .bind(sale)
+    .bind(dec!(100.00))
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .expect("sale");
+    sqlx::query(
+        "INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(sale)
+    .bind(product)
+    .bind(dec!(10))
+    .bind(dec!(10.00))
+    .execute(&pool)
+    .await
+    .expect("sale item");
+
+    let cookie = login_cookie(&pool, &password).await;
+    let (status, _) = note_http(&pool, &cookie, sale, product, dec!(10)).await;
+
+    // Refused whole, not silently short: cash no tender ever collected
+    // cannot leave any wallet.
+    assert_eq!(
+        status,
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "a note owing cash with no tender was accepted"
+    );
+    assert_eq!(note_count(&pool, sale).await, 0);
+    assert_eq!(refund_count(&pool, sale).await, 0);
+    // The goods never moved either: the whole note was refused.
+    assert_eq!(current_stock(&pool, product).await, dec!(10));
+    assert_eq!(return_movement_count(&pool, product).await, 0);
 }

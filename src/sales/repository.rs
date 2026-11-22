@@ -520,6 +520,12 @@ fn map_apply_error(err: crate::customer_accounts::repository::RepoError) -> Repo
     match err {
         ApplyError::Database(sql) => RepoError::Database(sql),
         ApplyError::CustomerBusy => RepoError::CustomerAccountBusy,
+        // The caps inside `apply_available_credit` re-derived everything the
+        // ledger's guards check, so this firing is an invariant violation:
+        // internal, never a 4xx the operator could act on.
+        ApplyError::CreditApplicationBroken => RepoError::Database(sqlx::Error::Protocol(
+            "the credit application disagreed with the ledger's own guards".into(),
+        )),
         other => RepoError::Database(sqlx::Error::Protocol(format!(
             "apply_available_credit refused an allocation the completion had validated: {other}"
         ))),

@@ -71,11 +71,15 @@ pub enum CreditNotesError {
 
     #[error("internal credit-note error")]
     Internal(#[from] RepoError),
+
+    #[error("the customer account is busy, retry")]
+    CustomerBusy,
 }
 
 fn map_repo_error(err: RepoError) -> CreditNotesError {
     match err {
         RepoError::SaleNotFound => CreditNotesError::SaleNotFound,
+        RepoError::CustomerBusy => CreditNotesError::CustomerBusy,
         RepoError::SaleNotCreditable => CreditNotesError::SaleNotCreditable,
         RepoError::ProductNotInSale { .. } => CreditNotesError::ProductNotInSale,
         RepoError::ExceedsReturnable {

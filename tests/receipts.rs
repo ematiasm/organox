@@ -841,3 +841,64 @@ async fn a_key_that_only_fits_after_trimming_is_rejected(pool: PgPool) {
     );
     assert_eq!(account_payment_count(&pool, customer).await, 0);
 }
+
+/// The cap measures characters, not bytes: a key of 100 accented
+/// characters is 200 bytes on the wire, and the contract says characters.
+/// This is what pins the unit the wording names — a byte-wise cap would
+/// refuse keys the contract promised, and an untested cap is a wish.
+#[sqlx::test]
+async fn a_multibyte_key_is_capped_in_characters_not_bytes(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let (method, _wallet) = seed_method(&pool, "Cash").await;
+
+    let router = app(pool.clone());
+    let (_owner, owner_password) = seed_owner(&pool).await;
+    let cookie = login(&router, "owner@pyme.com", &owner_password).await;
+
+    let exact = "é".repeat(100);
+    assert_eq!(exact.chars().count(), 100);
+    assert_eq!(exact.len(), 200, "the fixture must be multi-byte");
+
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/receipts"),
+        Some(&cookie),
+        Some(json!({
+            "idempotency_key": exact,
+            "payment_method_id": method,
+            "amount": "10.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "100 characters were refused although the cap says characters"
+    );
+    assert_eq!(account_payment_count(&pool, customer).await, 1);
+
+    // One character over is refused with the same sentence as any other
+    // over-long key, and the refusal costs no write.
+    let over = "é".repeat(101);
+    let (status, problem) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/receipts"),
+        Some(&cookie),
+        Some(json!({
+            "idempotency_key": over,
+            "payment_method_id": method,
+            "amount": "10.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        problem["detail"],
+        "the idempotency key exceeds 100 characters"
+    );
+    assert_eq!(account_payment_count(&pool, customer).await, 1);
+}

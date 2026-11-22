@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT (COALESCE((SELECT SUM(total) FROM credit_notes\n                              WHERE sale_id = $1 AND id <> $2), 0)\n                  - COALESCE((SELECT -SUM(amount) FROM customer_account_entries\n                              WHERE sale_id = $1 AND kind = 'credit_note'\n                                AND credit_note_id <> $2), 0))::numeric(14, 2)\n                   AS \"cash_before!: Decimal\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cash_before!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2727878132f9f2ef4b85a1b932ba65827027765f24dc8389ecc695ee1cadc9fb"
+}

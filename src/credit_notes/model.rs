@@ -11,6 +11,7 @@
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use uuid::Uuid;
 
 /// Longest accepted reason, in characters after trimming.
@@ -119,43 +120,78 @@ pub struct ReturnLine {
     pub quantity: Decimal,
 }
 
-/// Split `total` across the original payments, in proportion to each one.
+/// Split `total` across the tenders that collected money for a sale, in
+/// proportion to what each one collected.
 ///
-/// The result is aligned one-to-one with `payments`, so the caller knows which
-/// wallet each share belongs to. Every share is rounded to cents and the last
-/// payment absorbs the rounding remainder, so the shares add up to `total`
-/// exactly: never a cent more, never a cent less.
+/// The result is aligned one-to-one with `collected`, so the caller knows
+/// which wallet each share belongs to. The arithmetic runs in integer
+/// cents: each share is the floor of its proportional part, and the cents
+/// the floors lost go to the largest fractional remainders, ties broken by
+/// index. No share is rounded on its own — per-share rounding is exactly
+/// how a sequence of notes drifts past what the sale charged — and no
+/// single tender absorbs the whole remainder, so the split never depends on
+/// which tender happens to be last.
+///
+/// The shares add up to `total` exactly. When `total` is at most the sum of
+/// `collected` — the only case the refund path allows — no share exceeds its
+/// tender's collected amount either. Beyond that the shares are capped at
+/// what each tender collected, the sum falls short of `total`, and the
+/// caller refuses the note rather than refunding money nobody paid.
 ///
 /// A share of zero stays in place, so the alignment survives, but it is never
-/// written to the ledger (`wallet_movements.amount > 0`). The sum invariant is
-/// what the caller can rely on; the alignment is what keeps each refund in the
-/// wallet that collected the money.
-pub fn allocate_refund(total: Decimal, payments: &[Decimal]) -> Vec<Decimal> {
-    if payments.is_empty() || total <= Decimal::ZERO {
+/// written to the ledger (`wallet_movements.amount > 0`). An empty list has
+/// no alignment to keep, so it returns no shares at all; a list with nothing
+/// to split over returns aligned zeros, so a caller subtracting two splits
+/// stays aligned even on that branch.
+pub fn split_cash_refund(total: Decimal, collected: &[Decimal]) -> Vec<Decimal> {
+    if collected.is_empty() {
         return Vec::new();
     }
 
-    let paid: Decimal = payments.iter().copied().sum();
-    if paid <= Decimal::ZERO {
-        return Vec::new();
+    // Money here never carries more than two decimals (`numeric(14, 2)`), so
+    // the shift to cents is exact; the truncation only defends a caller that
+    // breaks that rule, flooring instead of inventing a fraction of a cent.
+    let cents =
+        |amount: Decimal| -> i128 { (amount * Decimal::from(100)).trunc().to_i128().unwrap_or(0) };
+
+    let total_cents = cents(total);
+    let caps: Vec<i128> = collected.iter().copied().map(cents).collect();
+    let sum_caps: i128 = caps.iter().sum();
+
+    // Nothing to split, or nothing any tender collected.
+    if total_cents <= 0 || sum_caps <= 0 {
+        return vec![Decimal::ZERO; caps.len()];
     }
 
-    let mut shares = Vec::with_capacity(payments.len());
-    let mut allocated = Decimal::ZERO;
-    for (index, payment) in payments.iter().enumerate() {
-        let remaining = total - allocated;
-        let share = if index + 1 == payments.len() {
-            // The remainder lands here so the shares sum to `total` exactly.
-            remaining
-        } else {
-            // `min(remaining)` keeps a rounded-up share from overshooting what
-            // is left; the payment that follows would then take the zero.
-            (total * *payment / paid).round_dp(2).min(remaining)
-        };
-        allocated += share;
-        shares.push(share);
+    // The floor of each proportional share, and the fractional remainder it
+    // lost. Scaled by `sum_caps` once, so every division below is the same
+    // denominator and the remainders are comparable with each other.
+    let mut shares = Vec::with_capacity(caps.len());
+    let mut remainders = Vec::with_capacity(caps.len());
+    for cap in &caps {
+        let scaled = total_cents * cap;
+        shares.push(scaled / sum_caps);
+        remainders.push(scaled % sum_caps);
     }
+
+    // The floors together lost at most one cent per tender; hand those cents
+    // back one by one to the largest fractional remainders, ties broken by
+    // index. Deterministic, and it keeps the split stable across notes.
+    let leftover = (total_cents - shares.iter().sum::<i128>()) as usize;
+    let mut by_remainder: Vec<usize> = (0..caps.len()).collect();
+    by_remainder.sort_by(|&a, &b| remainders[b].cmp(&remainders[a]).then(a.cmp(&b)));
+    for &index in by_remainder.iter().take(leftover) {
+        shares[index] += 1;
+    }
+
+    // The cap is the promise: a tender never hands back more than it took.
+    // It only bites when `total` exceeds what was collected, which the refund
+    // path never allows — the caller's sum check turns it into a refusal.
     shares
+        .into_iter()
+        .zip(caps)
+        .map(|(share, cap)| Decimal::from_i128_with_scale(share.min(cap), 2))
+        .collect()
 }
 
 #[cfg(test)]
@@ -164,62 +200,135 @@ mod tests {
     use rust_decimal_macros::dec;
 
     #[test]
-    fn a_single_payment_receives_the_whole_refund() {
+    fn a_single_tender_takes_the_whole_refund() {
         assert_eq!(
-            allocate_refund(dec!(120.00), &[dec!(300.00)]),
+            split_cash_refund(dec!(120.00), &[dec!(300.00)]),
             vec![dec!(120.00)]
         );
     }
 
     #[test]
-    fn a_full_refund_returns_each_payment_exactly() {
-        let payments = [dec!(33.33), dec!(66.67)];
+    fn two_tenders_split_proportionally() {
+        // A third of the money came from the first tender, two thirds from
+        // the second, and the split says exactly that.
         assert_eq!(
-            allocate_refund(dec!(100.00), &payments),
+            split_cash_refund(dec!(100.00), &[dec!(100.00), dec!(200.00)]),
             vec![dec!(33.33), dec!(66.67)]
         );
     }
 
     #[test]
-    fn a_partial_refund_is_proportional_to_the_payments() {
-        let payments = [dec!(33.33), dec!(66.67)];
+    fn a_full_refund_returns_each_tender_exactly() {
         assert_eq!(
-            allocate_refund(dec!(10.00), &payments),
-            vec![dec!(3.33), dec!(6.67)]
+            split_cash_refund(dec!(100.00), &[dec!(40.00), dec!(60.00)]),
+            vec![dec!(40.00), dec!(60.00)]
         );
     }
 
     #[test]
-    fn a_cent_is_never_lost_to_rounding() {
-        // Proportional rounding alone could leave the note a cent short; the
-        // last share absorbs it whichever direction the strategy rounds.
-        let shares = allocate_refund(dec!(0.01), &[dec!(50.00), dec!(50.00)]);
-        assert_eq!(shares.iter().sum::<Decimal>(), dec!(0.01));
+    fn cent_remainders_go_to_the_largest_fractional_parts() {
+        // One cent over two tenders: the second's fractional part is larger,
+        // so the cent is its share — not whichever tender happens to be
+        // first or last.
+        assert_eq!(
+            split_cash_refund(dec!(0.01), &[dec!(1.00), dec!(2.00)]),
+            vec![dec!(0.00), dec!(0.01)]
+        );
+
+        // One cent over three equal tenders: the remainders tie, so the
+        // lowest index decides, and the choice is stable.
+        assert_eq!(
+            split_cash_refund(dec!(1.00), &[dec!(1.00), dec!(1.00), dec!(1.00)]),
+            vec![dec!(0.34), dec!(0.33), dec!(0.33)]
+        );
     }
 
     #[test]
-    fn a_zero_share_stays_aligned_with_its_payment() {
-        let payments = [dec!(0.50), dec!(99.50)];
-        let shares = allocate_refund(dec!(0.01), &payments);
-        assert_eq!(shares.len(), payments.len());
-        assert_eq!(shares.iter().sum::<Decimal>(), dec!(0.01));
-    }
-
-    #[test]
-    fn shares_sum_to_the_total_and_are_never_negative() {
-        let payments = [dec!(10.00), dec!(20.00), dec!(30.00)];
-        for total in [dec!(0.01), dec!(7.77), dec!(33.33), dec!(60.00)] {
-            let shares = allocate_refund(total, &payments);
-            assert_eq!(shares.iter().sum::<Decimal>(), total);
+    fn the_shares_sum_exactly_to_the_total() {
+        let tenders = [dec!(10.00), dec!(20.00), dec!(30.00), dec!(0.50)];
+        for total in [
+            dec!(0.01),
+            dec!(0.67),
+            dec!(7.77),
+            dec!(33.33),
+            dec!(60.49),
+            dec!(60.50),
+        ] {
+            let shares = split_cash_refund(total, &tenders);
+            assert_eq!(shares.iter().copied().sum::<Decimal>(), total);
             assert!(shares.iter().all(|share| *share >= Decimal::ZERO));
         }
     }
 
     #[test]
-    fn nothing_is_allocated_without_payments_or_total() {
-        assert!(allocate_refund(dec!(10.00), &[]).is_empty());
-        assert!(allocate_refund(dec!(0.00), &[dec!(50.00)]).is_empty());
-        assert!(allocate_refund(dec!(10.00), &[dec!(0.00)]).is_empty());
+    fn a_share_never_exceeds_what_its_tender_collected() {
+        // Full capacity is the boundary: every share lands exactly on its
+        // cap without being clamped.
+        let tenders = [dec!(40.00), dec!(60.00)];
+        for total in [dec!(40.00), dec!(99.99), dec!(100.00)] {
+            for (share, cap) in split_cash_refund(total, &tenders).into_iter().zip(tenders) {
+                assert!(share <= cap, "{share} exceeded its tender's {cap}");
+            }
+        }
+
+        // Beyond capacity the shares are capped and the sum falls short —
+        // the caller's job to refuse, not the split's to invent.
+        assert_eq!(
+            split_cash_refund(dec!(150.00), &[dec!(100.00)]),
+            vec![dec!(100.00)]
+        );
+    }
+
+    #[test]
+    fn the_cumulative_subtraction_property_holds_note_after_note() {
+        // Three notes of 33.33 against two tenders of 50 each, applied the
+        // way the refund path applies them: each note writes the difference
+        // between the cumulative split after it and the one before it.
+        let tenders = [dec!(50.00), dec!(50.00)];
+        let mut cash_before = Decimal::ZERO;
+        let mut refunded_per_tender = [Decimal::ZERO, Decimal::ZERO];
+
+        for _ in 0..3 {
+            let after = split_cash_refund(cash_before + dec!(33.33), &tenders);
+            let before = split_cash_refund(cash_before, &tenders);
+            let increments: Vec<Decimal> =
+                after.iter().zip(&before).map(|(a, b)| *a - *b).collect();
+
+            // No tender is ever asked to hand back a cent it did not take,
+            // and the two increments are this note's cash, to the cent.
+            assert!(
+                increments.iter().all(|share| *share >= Decimal::ZERO),
+                "a negative increment: {increments:?}"
+            );
+            assert_eq!(increments.iter().copied().sum::<Decimal>(), dec!(33.33));
+
+            for (tender, share) in refunded_per_tender.iter_mut().zip(increments) {
+                *tender += share;
+            }
+            cash_before += dec!(33.33);
+        }
+
+        // 99.99 out of the 100 the sale charged — never a cent more — and
+        // no tender refunded beyond what it collected.
+        assert_eq!(cash_before, dec!(99.99));
+        assert_eq!(refunded_per_tender[0], dec!(50.00));
+        assert_eq!(refunded_per_tender[1], dec!(49.99));
+    }
+
+    #[test]
+    fn an_empty_or_zero_capacity_list_refunds_nothing() {
+        // No tenders: no alignment to keep.
+        assert!(split_cash_refund(dec!(10.00), &[]).is_empty());
+        // Tenders that collected nothing, or nothing to split: aligned
+        // zeros, so a cumulative subtraction over them stays aligned.
+        assert_eq!(
+            split_cash_refund(dec!(10.00), &[dec!(0.00), dec!(0.00)]),
+            vec![Decimal::ZERO, Decimal::ZERO]
+        );
+        assert_eq!(
+            split_cash_refund(dec!(0.00), &[dec!(50.00)]),
+            vec![Decimal::ZERO]
+        );
     }
 
     #[test]
