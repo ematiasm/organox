@@ -10,10 +10,12 @@ pub mod db;
 pub mod error;
 pub mod openapi;
 pub mod payments;
+pub mod purchases;
 pub mod ratelimit;
 pub mod routes;
 pub mod sales;
 pub mod search;
+pub mod suppliers;
 pub mod telemetry;
 
 use sqlx::PgPool;

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE purchases SET status = 'cancelled' WHERE id = $1 AND status = 'draft'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8665d4ce2866d3a5ee06a0f2b86cd9ed152b8be8c5d52d1850c726b2ca99f9d5"
+}

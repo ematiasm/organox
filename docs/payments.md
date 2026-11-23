@@ -65,13 +65,14 @@ matching the drawer.
 | `sale_refund` | outflow | issuing a credit note, never by hand |
 | `account_payment` | inflow | collecting against a customer's account (`POST /customers/{id}/receipts`), never by hand |
 | `account_payment_refund` | outflow | handing back a customer's credit balance (`POST /customers/{id}/credit-refunds`), never by hand |
+| `purchase_payment` | outflow | completing a cash purchase (`POST /purchases/{id}/complete`), never by hand |
 | `expense` | outflow | the operator, from the wallet |
 | `adjustment_in` | inflow | the operator, correcting a mistake |
 | `adjustment_out` | outflow | the operator, correcting a mistake |
 
 `-500` meaning "money entered" is a sign bug waiting to happen.
 
-## Account movements carry their customer
+## Account and purchase movements carry their source document
 
 An `account_payment` is the wallet side of a collection: money a customer
 handed over against what their account owes (`POST /customers/{id}/receipts`,
@@ -81,18 +82,28 @@ the outflow written when collected credit is handed back
 `customer_id` and `payment_method_id` used, copy the method's default
 `wallet_id` at write time (the same attribution rule as `sale_payment`), impose
 no wallet-balance floor (a wallet balance may go negative), and never carry a
-`sale_id` or a `credit_note_id`. The same transaction writes the movement and
-its ledger entry (`receipt` or `credit_refund`), so the wallet and the debt
-ledger never disagree.
+`sale_id`, `credit_note_id`, or `purchase_id`. The same transaction writes the
+movement and its ledger entry (`receipt` or `credit_refund`), so the wallet and
+the debt ledger never disagree.
+
+A `purchase_payment` is the wallet side of a cash purchase
+(`POST /purchases/{id}/complete`, see `docs/purchases.md`): an outflow carrying
+`purchase_id` and `payment_method_id`, copying the method's default `wallet_id`
+at write time, written in the same transaction as the inbound `stock_movements`
+and with no wallet-balance floor.
 
 The database keeps the attribution honest: only `account_payment` and
 `account_payment_refund` may carry a customer
 (`wallet_movements_customer_link_only_for_account_kinds`), and either kind
 without its customer or its method is refused
-(`wallet_movements_account_payment_is_complete`). Neither is a manual kind:
-`POST /wallets/{id}/movements` refuses both with `422`, because an account
-movement written by hand would move wallet money with no customer-ledger
-counterpart.
+(`wallet_movements_account_payment_is_complete`). Likewise, only
+`purchase_payment` may carry a `purchase_id`
+(`wallet_movements_purchase_link_only_for_purchase_kinds`), and a
+`purchase_payment` without both `purchase_id` and `payment_method_id` is
+refused (`wallet_movements_purchase_payment_is_complete`). None of these are
+manual kinds: `POST /wallets/{id}/movements` refuses all three with `422`,
+because writing them by hand would move wallet money without its ledger or
+purchase counterpart.
 
 ## The ledger is append-only
 

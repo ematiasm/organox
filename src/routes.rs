@@ -79,6 +79,8 @@ fn api_v1(state: AppState) -> Router<AppState> {
         .merge(crate::payments::handlers::router())
         .merge(crate::credit_notes::handlers::router())
         .merge(crate::sales::handlers::router())
+        .merge(crate::suppliers::handlers::router())
+        .merge(crate::purchases::handlers::router())
 }
 
 /// Liveness: the process is alive. Does not touch external dependencies.

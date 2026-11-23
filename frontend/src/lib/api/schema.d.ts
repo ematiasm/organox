@@ -397,6 +397,143 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/purchases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List purchases newest first with optional status and supplier filters. */
+        get: operations["list_purchases_doc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/purchases/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open or reuse the current operator's draft purchase. */
+        post: operations["open_draft_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/purchases/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Purchase details including its items and calculated or frozen total. */
+        get: operations["get_purchase_doc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/purchases/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel a draft purchase. Completed purchases cannot be cancelled. */
+        post: operations["cancel_purchase_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/purchases/{id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete a draft purchase: record stock inflows and cash wallet outflows atomically. */
+        post: operations["complete_purchase_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/purchases/{id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add a product to a draft purchase (sums quantity and updates unit_cost if already present). */
+        post: operations["add_item_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/purchases/{id}/items/{product_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Replace quantity and unit cost of an item in a draft purchase. */
+        put: operations["set_item_doc"];
+        post?: never;
+        /** Remove an item from a draft purchase. */
+        delete: operations["remove_item_doc"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/purchases/{id}/supplier": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Attach or clear the supplier on a draft purchase. */
+        put: operations["set_purchase_supplier_doc"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sales": {
         parameters: {
             query?: never;
@@ -590,6 +727,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/suppliers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List suppliers alphabetically by name. */
+        get: operations["list_suppliers_doc"];
+        put?: never;
+        /**
+         * Register a supplier.
+         * @description `tax_id` is optional and unique when present; a duplicate returns 409.
+         */
+        post: operations["create_supplier_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/suppliers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Supplier details. */
+        get: operations["get_supplier_doc"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update only the fields sent. */
+        patch: operations["update_supplier_doc"];
+        trace?: never;
+    };
+    "/api/v1/suppliers/{id}/deactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Soft deactivation. Idempotent. Never deletes: purchases reference the supplier. */
+        post: operations["deactivate_supplier_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -729,6 +922,14 @@ export interface components {
             /** @example 2 */
             quantity: string;
         };
+        AddPurchaseItemRequest: {
+            /** Format: uuid */
+            product_id: string;
+            /** @example 10 */
+            quantity: string;
+            /** @example 125.50 */
+            unit_cost: string;
+        };
         /**
          * @description Direction of a manual debt adjustment.
          * @enum {string}
@@ -804,6 +1005,10 @@ export interface components {
             /** Format: uuid */
             payment_method_id: string;
         };
+        CompletePurchaseRequest: {
+            note?: string | null;
+            payments?: components["schemas"]["PurchasePaymentRequest"][];
+        };
         /**
          * @description How the sale is paid. Required: a sale never closes without saying where the
          *     money went.
@@ -819,6 +1024,16 @@ export interface components {
              */
             on_account?: string;
             payments: components["schemas"]["SalePaymentRequest"][];
+        };
+        CompletedPurchaseResponse: {
+            /** Format: date-time */
+            completed_at: string;
+            movement_ids: string[];
+            payment_movement_ids: string[];
+            /** Format: uuid */
+            purchase_id: string;
+            /** @example 1255.00 */
+            total: string;
         };
         CompletedSaleResponse: {
             /** Format: date-time */
@@ -883,6 +1098,13 @@ export interface components {
              */
             price?: string | null;
             sku?: string | null;
+        };
+        CreateSupplierRequest: {
+            email?: string | null;
+            name: string;
+            phone?: string | null;
+            /** @description Optional and unique when present. A blank string means "no document". */
+            tax_id?: string | null;
         };
         CreateUserRequest: {
             email: string;
@@ -1089,9 +1311,10 @@ export interface components {
             amount: string;
             /**
              * @description `expense`, `adjustment_in` or `adjustment_out`. `sale_payment`,
-             *     `sale_refund`, `account_payment` and `account_payment_refund` are
-             *     rejected: that money is recorded by charging or returning a sale, or
-             *     by collecting or refunding a customer's account, not by hand.
+             *     `sale_refund`, `account_payment`, `account_payment_refund` and
+             *     `purchase_payment` are rejected: that money is recorded by charging or
+             *     returning a sale, collecting or refunding a customer's account, or
+             *     completing a purchase, not by hand.
              */
             kind: components["schemas"]["WalletMovementKind"];
             note?: string | null;
@@ -1221,6 +1444,58 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        PurchaseDraftResponse: {
+            /** Format: uuid */
+            id: string;
+            /** @description `true` if the operator's existing open draft was reused. */
+            reused: boolean;
+        };
+        PurchaseItemResponse: {
+            /** Format: uuid */
+            product_id: string;
+            product_name: string;
+            /** @example 10 */
+            quantity: string;
+            /** @example 1255.00 */
+            subtotal: string;
+            /** @example 125.50 */
+            unit_cost: string;
+        };
+        PurchaseListResponse: {
+            items: components["schemas"]["PurchaseResponse"][];
+            /** Format: int64 */
+            limit: number;
+            /** Format: int64 */
+            offset: number;
+            /** Format: int64 */
+            total: number;
+        };
+        PurchasePaymentRequest: {
+            /** @example 1255.00 */
+            amount: string;
+            /** Format: uuid */
+            payment_method_id: string;
+        };
+        PurchaseResponse: {
+            /** Format: date-time */
+            completed_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: uuid */
+            id: string;
+            item_count: number;
+            items: components["schemas"]["PurchaseItemResponse"][];
+            note?: string | null;
+            status: components["schemas"]["PurchaseStatus"];
+            /** Format: uuid */
+            supplier_id?: string | null;
+            /** @description Live registry name while draft; frozen snapshot once completed. */
+            supplier_name?: string | null;
+            /** @example 1255.00 */
+            total: string;
+        };
+        /** @enum {string} */
+        PurchaseStatus: "draft" | "completed" | "cancelled";
         /** @description Which sale one slice of the collected money pays. */
         ReceiptAllocationRequest: {
             /** @example 150.00 */
@@ -1436,6 +1711,25 @@ export interface components {
         };
         /** @enum {string} */
         SaleStatus: "draft" | "completed" | "cancelled";
+        SetPurchaseItemRequest: {
+            /** @example 10 */
+            quantity: string;
+            /** @example 125.50 */
+            unit_cost: string;
+        };
+        /**
+         * @description Attaches a supplier to the draft, or clears it.
+         *
+         *     `supplier_id` must be present: clearing is an explicit `null`, and an
+         *     omitted field is rejected (`422`) instead of detaching the supplier silently.
+         */
+        SetPurchaseSupplierRequest: {
+            /**
+             * Format: uuid
+             * @description Supplier to attach to the draft, or `null` to clear it.
+             */
+            supplier_id?: string | null;
+        };
         SetQuantityRequest: {
             /** @example 3 */
             quantity: string;
@@ -1454,6 +1748,42 @@ export interface components {
              * @description The customer to attach, or `null` to leave the sale anonymous.
              */
             customer_id?: string | null;
+        };
+        SupplierIdResponse: {
+            /** Format: uuid */
+            id: string;
+        };
+        SupplierListResponse: {
+            items: components["schemas"]["SupplierResponse"][];
+            /**
+             * Format: int64
+             * @description Page size actually applied (defaults to 50, capped at 200).
+             */
+            limit: number;
+            /**
+             * Format: int64
+             * @description Offset of `items[0]` in the filtered set.
+             */
+            offset: number;
+            /**
+             * Format: int64
+             * @description Total matching suppliers across all pages.
+             */
+            total: number;
+        };
+        SupplierResponse: {
+            /** Format: date-time */
+            created_at: string;
+            email?: string | null;
+            /** Format: uuid */
+            id: string;
+            is_active: boolean;
+            name: string;
+            phone?: string | null;
+            /** @description `null` when the supplier was registered without a tax document. */
+            tax_id?: string | null;
+            /** Format: date-time */
+            updated_at: string;
         };
         UpdateCustomerRequest: {
             /**
@@ -1491,6 +1821,14 @@ export interface components {
             price?: string | null;
             sku?: string | null;
         };
+        UpdateSupplierRequest: {
+            email?: string | null;
+            is_active?: boolean | null;
+            name?: string | null;
+            phone?: string | null;
+            /** @description `null` means "leave the document as it is", never "clear it". */
+            tax_id?: string | null;
+        };
         UpdateWalletRequest: {
             is_active?: boolean | null;
             name?: string | null;
@@ -1509,7 +1847,7 @@ export interface components {
          *     always arrives with a writer, a validation and a screen — that is, with code.
          * @enum {string}
          */
-        WalletMovementKind: "sale_payment" | "sale_refund" | "account_payment" | "account_payment_refund" | "expense" | "adjustment_in" | "adjustment_out";
+        WalletMovementKind: "sale_payment" | "sale_refund" | "account_payment" | "account_payment_refund" | "purchase_payment" | "expense" | "adjustment_in" | "adjustment_out";
         WalletMovementResponse: {
             /** @description Always positive; the kind carries the sign. */
             amount: string;
@@ -1523,12 +1861,18 @@ export interface components {
             note?: string | null;
             /**
              * Format: uuid
-             * @description Set only for a `sale_payment`: which method was used.
+             * @description Set for `sale_payment`, `sale_refund`, `account_payment`, `account_payment_refund`,
+             *     or `purchase_payment`: which payment method was used.
              */
             payment_method_id?: string | null;
             /**
              * Format: uuid
-             * @description Set only for a `sale_payment`: which sale put this money here.
+             * @description Set only for a `purchase_payment`: which purchase paid out this money.
+             */
+            purchase_id?: string | null;
+            /**
+             * Format: uuid
+             * @description Set only for a `sale_payment` or `sale_refund`: which sale moved this money.
              */
             sale_id?: string | null;
             /**
@@ -2774,6 +3118,471 @@ export interface operations {
             };
         };
     };
+    list_purchases_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                status: components["schemas"]["PurchaseStatus"] | null;
+                supplier_id: string | null;
+                limit: number | null;
+                offset: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Purchase page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseListResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    open_draft_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing open draft reused */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseDraftResponse"];
+                };
+            };
+            /** @description New draft created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseDraftResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_purchase_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Purchase ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Purchase */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cancel_purchase_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Purchase ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Purchase cancelled */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase is already closed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    complete_purchase_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Purchase ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompletePurchaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Purchase completed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompletedPurchaseResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase, supplier or product not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase is closed, supplier is inactive, or product is a service */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing supplier, empty purchase, or invalid payments */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    add_item_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Purchase ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddPurchaseItemRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated draft */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase or product not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase is closed, product is inactive, or product is a service */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid quantity or unit cost */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_item_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Purchase ID */
+                id: string;
+                /** @description Product ID */
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPurchaseItemRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated draft */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase or item not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase is closed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid quantity or unit cost */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    remove_item_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Purchase ID */
+                id: string;
+                /** @description Product ID */
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Updated draft */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase or item not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase is closed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    set_purchase_supplier_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Purchase ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPurchaseSupplierRequest"];
+            };
+        };
+        responses: {
+            /** @description Supplier updated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase or supplier not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase is closed or supplier is inactive */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description supplier_id field omitted */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     list_sales_doc: {
         parameters: {
             query?: never;
@@ -3319,6 +4128,234 @@ export interface operations {
                 };
             };
             /** @description Sale or product not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_suppliers_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Include deactivated suppliers. Absent, only active suppliers are returned. */
+                include_inactive: boolean;
+                /** @description Matches name or document, case-insensitively. */
+                search: string | null;
+                limit: number | null;
+                offset: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Supplier page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierListResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_supplier_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSupplierRequest"];
+            };
+        };
+        responses: {
+            /** @description Supplier created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierIdResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Document is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_supplier_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Supplier ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Supplier */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupplierResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_supplier_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Supplier ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSupplierRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Document is already in use */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid input */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    deactivate_supplier_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Supplier ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deactivated */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
             404: {
                 headers: {
                     [name: string]: unknown;

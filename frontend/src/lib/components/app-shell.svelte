@@ -15,8 +15,10 @@
 	import ChangePasswordDialog from './change-password-dialog.svelte';
 	import CartIcon from '@lucide/svelte/icons/shopping-cart';
 	import ReceiptIcon from '@lucide/svelte/icons/receipt';
+	import PackagePlusIcon from '@lucide/svelte/icons/package-plus';
 	import ListIcon from '@lucide/svelte/icons/list';
 	import ContactIcon from '@lucide/svelte/icons/contact';
+	import TruckIcon from '@lucide/svelte/icons/truck';
 	import ScaleIcon from '@lucide/svelte/icons/scale';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import UsersIcon from '@lucide/svelte/icons/users';
@@ -56,6 +58,12 @@
 					label: 'Sales',
 					icon: ReceiptIcon,
 					current: (path) => path.startsWith('/operations/sales')
+				},
+				{
+					href: '/operations/purchases',
+					label: 'Purchases',
+					icon: PackagePlusIcon,
+					current: (path) => path.startsWith('/operations/purchases')
 				}
 			]
 		},
@@ -76,6 +84,13 @@
 					label: 'Customers',
 					icon: ContactIcon,
 					current: (path) => path.startsWith('/customers')
+				},
+				{
+					// Suppliers is registry work: purchases point at it.
+					href: '/suppliers',
+					label: 'Suppliers',
+					icon: TruckIcon,
+					current: (path) => path.startsWith('/suppliers')
 				},
 				{
 					href: '/receivables',

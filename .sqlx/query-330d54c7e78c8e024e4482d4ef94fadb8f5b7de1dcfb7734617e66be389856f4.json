@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id,\n               wallet_id,\n               kind AS \"kind: WalletMovementKind\",\n               amount,\n               sale_id,\n               payment_method_id,\n               note,\n               created_by,\n               created_at\n        FROM wallet_movements\n        WHERE wallet_id = $1\n        ORDER BY created_at DESC, id DESC\n        LIMIT $2\n        ",
+  "query": "\n        SELECT id,\n               wallet_id,\n               kind AS \"kind: WalletMovementKind\",\n               amount,\n               sale_id,\n               purchase_id,\n               payment_method_id,\n               note,\n               created_by,\n               created_at\n        FROM wallet_movements\n        WHERE wallet_id = $1\n        ORDER BY created_at DESC, id DESC\n        LIMIT $2\n        ",
   "describe": {
     "columns": [
       {
@@ -39,7 +39,8 @@
                 "adjustment_out",
                 "sale_refund",
                 "account_payment",
-                "account_payment_refund"
+                "account_payment_refund",
+                "purchase_payment"
               ]
             }
           }
@@ -75,6 +76,17 @@
       },
       {
         "ordinal": 5,
+        "name": "purchase_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "wallet_movements",
+            "name": "purchase_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "payment_method_id",
         "type_info": "Uuid",
         "origin": {
@@ -85,7 +97,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "note",
         "type_info": "Text",
         "origin": {
@@ -96,7 +108,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "created_by",
         "type_info": "Uuid",
         "origin": {
@@ -107,7 +119,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -133,8 +145,9 @@
       true,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "6c0160ca597f5df00151d0e1ee7ca6249eba606be6aafcfdbb4934eef8045889"
+  "hash": "330d54c7e78c8e024e4482d4ef94fadb8f5b7de1dcfb7734617e66be389856f4"
 }

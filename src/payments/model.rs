@@ -36,6 +36,9 @@ pub enum WalletMovementKind {
     /// only by the credit-refund endpoint (`POST /customers/{id}/credit-refunds`),
     /// never by hand.
     AccountPaymentRefund,
+    /// Money paid out to a supplier when completing a cash purchase, written
+    /// only by `POST /purchases/{id}/complete`, never by hand.
+    PurchasePayment,
     Expense,
     AdjustmentIn,
     AdjustmentOut,
@@ -48,6 +51,7 @@ impl WalletMovementKind {
             WalletMovementKind::SaleRefund => "sale_refund",
             WalletMovementKind::AccountPayment => "account_payment",
             WalletMovementKind::AccountPaymentRefund => "account_payment_refund",
+            WalletMovementKind::PurchasePayment => "purchase_payment",
             WalletMovementKind::Expense => "expense",
             WalletMovementKind::AdjustmentIn => "adjustment_in",
             WalletMovementKind::AdjustmentOut => "adjustment_out",
@@ -65,6 +69,7 @@ impl WalletMovementKind {
             | WalletMovementKind::AdjustmentIn => 1,
             WalletMovementKind::SaleRefund
             | WalletMovementKind::AccountPaymentRefund
+            | WalletMovementKind::PurchasePayment
             | WalletMovementKind::Expense
             | WalletMovementKind::AdjustmentOut => -1,
         }
@@ -86,6 +91,7 @@ impl WalletMovementKind {
                 | WalletMovementKind::SaleRefund
                 | WalletMovementKind::AccountPayment
                 | WalletMovementKind::AccountPaymentRefund
+                | WalletMovementKind::PurchasePayment
         )
     }
 }
@@ -105,11 +111,12 @@ impl FromStr for WalletMovementKind {
             "sale_refund" => Ok(WalletMovementKind::SaleRefund),
             "account_payment" => Ok(WalletMovementKind::AccountPayment),
             "account_payment_refund" => Ok(WalletMovementKind::AccountPaymentRefund),
+            "purchase_payment" => Ok(WalletMovementKind::PurchasePayment),
             "expense" | "gasto" => Ok(WalletMovementKind::Expense),
             "adjustment_in" | "ajuste_entrada" => Ok(WalletMovementKind::AdjustmentIn),
             "adjustment_out" | "ajuste_salida" => Ok(WalletMovementKind::AdjustmentOut),
             other => Err(format!(
-                "unknown kind: {other:?} (valid: sale_payment, sale_refund, account_payment, account_payment_refund, expense, adjustment_in, adjustment_out)"
+                "unknown kind: {other:?} (valid: sale_payment, sale_refund, account_payment, account_payment_refund, purchase_payment, expense, adjustment_in, adjustment_out)"
             )),
         }
     }
@@ -157,6 +164,7 @@ pub struct WalletMovement {
     /// Always positive. The sign lives in `kind`.
     pub amount: Decimal,
     pub sale_id: Option<Uuid>,
+    pub purchase_id: Option<Uuid>,
     pub payment_method_id: Option<Uuid>,
     pub note: Option<String>,
     pub created_by: Option<Uuid>,
@@ -205,6 +213,10 @@ mod tests {
             dec!(-100.00)
         );
         assert_eq!(
+            WalletMovementKind::PurchasePayment.signed_effect(dec!(100.00)),
+            dec!(-100.00)
+        );
+        assert_eq!(
             WalletMovementKind::AdjustmentOut.signed_effect(dec!(100.00)),
             dec!(-100.00)
         );
@@ -216,6 +228,7 @@ mod tests {
         assert!(!WalletMovementKind::SaleRefund.is_manual());
         assert!(!WalletMovementKind::AccountPayment.is_manual());
         assert!(!WalletMovementKind::AccountPaymentRefund.is_manual());
+        assert!(!WalletMovementKind::PurchasePayment.is_manual());
         assert!(WalletMovementKind::Expense.is_manual());
         assert!(WalletMovementKind::AdjustmentIn.is_manual());
         assert!(WalletMovementKind::AdjustmentOut.is_manual());
@@ -228,6 +241,7 @@ mod tests {
             WalletMovementKind::SaleRefund,
             WalletMovementKind::AccountPayment,
             WalletMovementKind::AccountPaymentRefund,
+            WalletMovementKind::PurchasePayment,
             WalletMovementKind::Expense,
             WalletMovementKind::AdjustmentIn,
             WalletMovementKind::AdjustmentOut,

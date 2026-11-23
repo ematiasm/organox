@@ -103,6 +103,17 @@ src/
     repository.rs sales SQL and transactional checkout (cash + on-account)
     service.rs    rules: one draft per cashier, non-saleable service, credit checkout
     handlers.rs   sales endpoints
+  suppliers/
+    model.rs      Supplier, is_active
+    validation.rs name, document, email, phone
+    repository.rs supplier SQL
+    service.rs    rules: unique document, soft deactivation, honest page totals
+    handlers.rs   supplier endpoints
+  purchases/
+    model.rs      Purchase, PurchaseItem, PurchaseStatus
+    repository.rs purchases SQL and transactional completion (stock + wallet)
+    service.rs    rules: one draft per operator, active goods/supplier, exact cash payments
+    handlers.rs   purchases endpoints
   credit_notes/
     model.rs      CreditNote, frozen lines, debt-first cash refund split
     repository.rs credit notes SQL and transactional writes
@@ -129,8 +140,10 @@ frontend/
       +layout.ts        session guard: api.me(), 401 -> /login
       products/         product list, search, stock, create/edit drawer
       customers/        customer registry: search, balance column, edit & account drawer
+      suppliers/        supplier registry: search, show-deactivated filter, create/edit drawer
       receivables/      receivables aging report (0–30, 31–60, 61–90, 90+ days)
       operations/pos/   point of sale with barcode scanner and on-account checkout
+      operations/purchases/  cash purchases draft workspace, split payments and history
       operations/movements/  stock ledger history
       settings/payments/     wallets, payment methods and wallet movements
       users/            users (owner only)
@@ -211,6 +224,20 @@ Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 | GET | `/sales` | session | Completed sales |
 | POST | `/sales/{id}/credit-notes` | session | Returns part or all of a charged sale; cancels debt first, then refunds cash |
 | GET | `/sales/{id}/credit-notes` | session | Credits of a sale, with what is still returnable |
+| GET | `/suppliers` | session | List (`?search=&include_inactive=&limit=&offset=`), ordered by name |
+| POST | `/suppliers` | session | Create a supplier |
+| GET | `/suppliers/{id}` | session | One supplier |
+| PATCH | `/suppliers/{id}` | session | Updates only the fields supplied |
+| POST | `/suppliers/{id}/deactivate` | session | Soft-deactivate, idempotent |
+| POST | `/purchases/draft` | session | Opens (or reuses) the operator's purchase draft |
+| GET | `/purchases` | session | Paginated purchases (`?status=&supplier_id=&limit=&offset=`) |
+| GET | `/purchases/{id}` | session | Purchase with items, supplier and server-calculated/frozen total |
+| PUT | `/purchases/{id}/supplier` | session | Attaches or clears the draft's supplier (`supplier_id` or `null`) |
+| POST | `/purchases/{id}/items` | session | Adds a line (`product_id`, `quantity`, `unit_cost`) |
+| PUT | `/purchases/{id}/items/{product_id}` | session | Sets `quantity` (`> 0`) and `unit_cost` |
+| DELETE | `/purchases/{id}/items/{product_id}` | session | Removes a line |
+| POST | `/purchases/{id}/complete` | session | Completes the purchase, writes stock entries and `purchase_payment` wallet outflows |
+| POST | `/purchases/{id}/cancel` | session | Cancels the draft |
 | GET | `/wallets` | session | Wallets with their balance |
 | POST | `/wallets` | session | Create a wallet |
 | GET | `/wallets/{id}` | session | One wallet |
@@ -233,7 +260,8 @@ curl -b jar.txt localhost:3000/api/v1/auth/me
 ## Current state
 
 The whole feature set as of this branch: skeleton, authentication, catalog,
-a stock ledger, sales, payments, credit notes, customers and customer accounts.
+a stock ledger, sales, payments, credit notes, customers, customer accounts,
+suppliers and cash purchases.
 
 - **Auth**: login/logout/`me`, revocable DB sessions, `HttpOnly`+`SameSite=Strict`
   cookie, argon2id. Binary RBAC (`owner`, `manager`).
@@ -250,8 +278,8 @@ a stock ledger, sales, payments, credit notes, customers and customer accounts.
   and only the remaining cash surplus is refunded proportionally across the
   tenders (till payments and allocated receipts) that collected it.
 - **Payments**: payment methods that point at a wallet, an append-only money
-  ledger (including `account_payment` and `account_payment_refund`), and a
-  balance read from it rather than stored.
+  ledger (including `account_payment`, `account_payment_refund` and
+  `purchase_payment`), and a balance read from it rather than stored.
 - **Customers**: a registry with an optional unique document, optional
   `credit_limit` (`NULL` unlimited, `0` cash only), soft deactivation guarded
   against open account positions, and search; a sale may point at one, and the
@@ -260,20 +288,26 @@ a stock ledger, sales, payments, credit notes, customers and customer accounts.
   derived balances and unapplied credit, idempotent collections and credit
   refunds, non-negative manual adjustments, per-customer statements and a
   portfolio receivables aging report (`0-30`, `31-60`, `61-90`, `90+`).
-- **372 tests** (unit + integration against real Postgres).
+- **Suppliers**: a registry with an optional unique case-insensitive `tax_id`,
+  search, and soft deactivation; completed purchases snapshot the supplier name.
+- **Purchases**: server-persisted draft-to-confirm cash purchases (one open
+  draft per operator) recording line `unit_cost` into `stock_movements` and
+  `purchase_payment` outflows into wallets in a single transaction.
+- **394 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
   navigation rail** (expandable, with groups and user menu), product list and
   drawer, stock movements, **point of sale with barcode scanner and on-account
-  checkout** at `/operations/pos`, wallets and payment methods at
-  `/settings/payments`, users, customers (balance column, credit limit, account
-  statement and receipt form) and `/receivables` aging report.
+  checkout** at `/operations/pos`, cash purchases draft workspace and history at
+  `/operations/purchases`, wallets and payment methods at `/settings/payments`,
+  users, customers (balance column, credit limit, account statement and receipt
+  form), suppliers at `/suppliers`, and `/receivables` aging report.
 - **OpenAPI 3.1** generated from code; frontend types are generated from that
   spec (`make fe-schema`).
 
 See `docs/auth.md`, `docs/catalog.md`, `docs/customers.md`,
-`docs/customer-accounts.md`, `docs/ratelimit.md`, `docs/sales.md`,
-`docs/credit-notes.md`, `docs/payments.md` and `docs/backup.md` for the
-reasoning and what is missing.
+`docs/customer-accounts.md`, `docs/suppliers.md`, `docs/purchases.md`,
+`docs/ratelimit.md`, `docs/sales.md`, `docs/credit-notes.md`,
+`docs/payments.md` and `docs/backup.md` for the reasoning and what is missing.
 
 ## Frontend
 

@@ -79,9 +79,12 @@ pub struct WalletMovementResponse {
     /// The wallet's effect of this movement, so the client does not replicate
     /// the sign rule.
     pub signed_amount: String,
-    /// Set only for a `sale_payment`: which sale put this money here.
+    /// Set only for a `sale_payment` or `sale_refund`: which sale moved this money.
     pub sale_id: Option<Uuid>,
-    /// Set only for a `sale_payment`: which method was used.
+    /// Set only for a `purchase_payment`: which purchase paid out this money.
+    pub purchase_id: Option<Uuid>,
+    /// Set for `sale_payment`, `sale_refund`, `account_payment`, `account_payment_refund`,
+    /// or `purchase_payment`: which payment method was used.
     pub payment_method_id: Option<Uuid>,
     pub note: Option<String>,
     pub created_by: Option<Uuid>,
@@ -135,9 +138,10 @@ pub struct UpdatePaymentMethodRequest {
 #[derive(Deserialize, ToSchema)]
 pub struct ManualMovementRequest {
     /// `expense`, `adjustment_in` or `adjustment_out`. `sale_payment`,
-    /// `sale_refund`, `account_payment` and `account_payment_refund` are
-    /// rejected: that money is recorded by charging or returning a sale, or
-    /// by collecting or refunding a customer's account, not by hand.
+    /// `sale_refund`, `account_payment`, `account_payment_refund` and
+    /// `purchase_payment` are rejected: that money is recorded by charging or
+    /// returning a sale, collecting or refunding a customer's account, or
+    /// completing a purchase, not by hand.
     pub kind: WalletMovementKind,
     #[schema(value_type = String, example = "1200.00")]
     pub amount: Decimal,
@@ -303,6 +307,7 @@ fn to_movement_response(row: WalletMovement) -> WalletMovementResponse {
         amount: format_money(row.amount),
         signed_amount: format_money(row.signed_amount()),
         sale_id: row.sale_id,
+        purchase_id: row.purchase_id,
         payment_method_id: row.payment_method_id,
         note: row.note,
         created_by: row.created_by,

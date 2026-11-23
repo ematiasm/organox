@@ -238,6 +238,7 @@ pub async fn record_manual_movement(
             kind: input.kind,
             amount,
             sale_id: None,
+            purchase_id: None,
             payment_method_id: None,
             credit_note_id: None,
             // Manual movements never belong to a customer's account: the

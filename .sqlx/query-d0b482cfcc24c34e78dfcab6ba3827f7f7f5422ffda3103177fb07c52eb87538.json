@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT kind AS \"kind: ProductKind\", is_active\n        FROM products\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind: ProductKind",
+        "type_info": {
+          "Custom": {
+            "name": "product_kind",
+            "kind": {
+              "Enum": [
+                "product",
+                "service"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "products",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "is_active",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "products",
+            "name": "is_active"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d0b482cfcc24c34e78dfcab6ba3827f7f7f5422ffda3103177fb07c52eb87538"
+}
