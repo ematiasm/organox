@@ -6191,6 +6191,8 @@
           "account_payment",
           "account_payment_refund",
           "purchase_payment",
+          "supplier_account_payment",
+          "supplier_account_refund",
           "expense",
           "adjustment_in",
           "adjustment_out"
@@ -6240,7 +6242,7 @@
               "null"
             ],
             "format": "uuid",
-            "description": "Set for `sale_payment`, `sale_refund`, `account_payment`, `account_payment_refund`,\nor `purchase_payment`: which payment method was used."
+            "description": "Set for `sale_payment`, `sale_refund`, `account_payment`, `account_payment_refund`,\n`purchase_payment`, `supplier_account_payment`, or `supplier_account_refund`:\nwhich payment method was used."
           },
           "purchase_id": {
             "type": [

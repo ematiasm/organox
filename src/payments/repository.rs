@@ -114,6 +114,8 @@ pub async fn list_wallets(
                        WHEN 'account_payment' THEN m.amount
                        WHEN 'account_payment_refund' THEN -m.amount
                        WHEN 'purchase_payment' THEN -m.amount
+                       WHEN 'supplier_account_payment' THEN -m.amount
+                       WHEN 'supplier_account_refund' THEN m.amount
                        WHEN 'adjustment_in' THEN m.amount
                        WHEN 'expense' THEN -m.amount
                        WHEN 'adjustment_out' THEN -m.amount
@@ -161,6 +163,8 @@ pub async fn get_wallet(pool: &PgPool, id: Uuid) -> Result<WalletWithBalance, Re
                        WHEN 'account_payment' THEN m.amount
                        WHEN 'account_payment_refund' THEN -m.amount
                        WHEN 'purchase_payment' THEN -m.amount
+                       WHEN 'supplier_account_payment' THEN -m.amount
+                       WHEN 'supplier_account_refund' THEN m.amount
                        WHEN 'adjustment_in' THEN m.amount
                        WHEN 'expense' THEN -m.amount
                        WHEN 'adjustment_out' THEN -m.amount
@@ -352,6 +356,10 @@ pub struct NewWalletMovement<'a> {
     /// `None` for every other kind, enforced by the
     /// `wallet_movements_customer_link_only_for_account_kinds` constraint.
     pub customer_id: Option<Uuid>,
+    /// The supplier a `supplier_account_payment` or `supplier_account_refund`
+    /// belongs to; `None` for every other kind, enforced by the
+    /// `wallet_movements_supplier_link_only_for_account_kinds` constraint.
+    pub supplier_id: Option<Uuid>,
     pub note: Option<&'a str>,
     pub created_by: Option<Uuid>,
 }
@@ -374,8 +382,8 @@ where
         r#"
         INSERT INTO wallet_movements
             (id, wallet_id, kind, amount, sale_id, purchase_id, payment_method_id, credit_note_id,
-             customer_id, note, created_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             customer_id, supplier_id, note, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         "#,
         id,
         new.wallet_id,
@@ -386,6 +394,7 @@ where
         new.payment_method_id,
         new.credit_note_id,
         new.customer_id,
+        new.supplier_id,
         new.note,
         new.created_by,
     )

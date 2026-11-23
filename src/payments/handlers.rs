@@ -84,7 +84,8 @@ pub struct WalletMovementResponse {
     /// Set only for a `purchase_payment`: which purchase paid out this money.
     pub purchase_id: Option<Uuid>,
     /// Set for `sale_payment`, `sale_refund`, `account_payment`, `account_payment_refund`,
-    /// or `purchase_payment`: which payment method was used.
+    /// `purchase_payment`, `supplier_account_payment`, or `supplier_account_refund`:
+    /// which payment method was used.
     pub payment_method_id: Option<Uuid>,
     pub note: Option<String>,
     pub created_by: Option<Uuid>,

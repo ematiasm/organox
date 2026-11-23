@@ -699,6 +699,7 @@ pub async fn complete(
                 payment_method_id: Some(charge.payment_method_id),
                 credit_note_id: None,
                 customer_id: None,
+                supplier_id: None,
                 note: Some(ledger_note.as_str()),
                 created_by: Some(actor),
             },
