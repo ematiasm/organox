@@ -9,6 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -37,6 +38,15 @@ pub struct SupplierResponse {
     pub email: Option<String>,
     pub phone: Option<String>,
     pub is_active: bool,
+    /// `null` means unlimited, `"0.00"` means cash only.
+    pub credit_limit: Option<String>,
+    /// Current account balance derived from `supplier_account_entries`.
+    /// Positive means we owe the supplier; negative means advance credit held.
+    #[schema(value_type = String, example = "120.00")]
+    pub balance: String,
+    /// Money paid to the supplier not yet allocated to a purchase or refunded (`U`).
+    #[schema(value_type = String, example = "0.00")]
+    pub available_credit: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -64,6 +74,10 @@ pub struct CreateSupplierRequest {
     pub tax_id: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
+    /// Optional credit limit: absent or `null` means unlimited, `0` means cash
+    /// only. Never negative, at most two decimals.
+    #[schema(value_type = Option<String>, example = "100.00")]
+    pub credit_limit: Option<Decimal>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -74,6 +88,18 @@ pub struct UpdateSupplierRequest {
     pub email: Option<String>,
     pub phone: Option<String>,
     pub is_active: Option<bool>,
+    /// Tri-state: omitted leaves the limit untouched, explicit `null` clears
+    /// it back to unlimited, and a value sets the cap.
+    #[serde(default, deserialize_with = "present_decimal_option")]
+    #[schema(value_type = Option<String>, example = "100.00")]
+    pub credit_limit: Option<Option<Decimal>>,
+}
+
+fn present_decimal_option<'de, D>(deserializer: D) -> Result<Option<Option<Decimal>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Decimal>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -126,6 +152,7 @@ async fn create_supplier(
             tax_id: body.tax_id,
             email: body.email,
             phone: body.phone,
+            credit_limit: body.credit_limit,
         },
     )
     .await?;
@@ -157,6 +184,7 @@ async fn update_supplier(
             email: body.email,
             phone: body.phone,
             is_active: body.is_active,
+            credit_limit: body.credit_limit,
         },
     )
     .await?;
@@ -175,6 +203,10 @@ async fn deactivate_supplier(
 
 // --- Conversions --------------------------------------------------------
 
+fn format_money(value: Decimal) -> String {
+    format!("{value:.2}")
+}
+
 fn to_response(supplier: Supplier) -> SupplierResponse {
     SupplierResponse {
         id: supplier.id,
@@ -183,6 +215,9 @@ fn to_response(supplier: Supplier) -> SupplierResponse {
         email: supplier.email,
         phone: supplier.phone,
         is_active: supplier.is_active,
+        credit_limit: supplier.credit_limit.map(format_money),
+        balance: format_money(supplier.balance),
+        available_credit: format_money(supplier.available_credit),
         created_at: supplier.created_at,
         updated_at: supplier.updated_at,
     }
@@ -196,6 +231,9 @@ impl From<SupplierError> for AppError {
             SupplierError::Validation(validation) => AppError::Validation(validation.to_string()),
             SupplierError::TaxIdTaken => {
                 AppError::Conflict("the document is already in use".to_string())
+            }
+            SupplierError::OpenAccountPosition { .. } | SupplierError::AccountBusy => {
+                AppError::Conflict(err.to_string())
             }
             SupplierError::NotFound => AppError::NotFound,
             SupplierError::Internal(repo) => AppError::Internal(repo.to_string()),
@@ -223,6 +261,7 @@ fn list_suppliers_doc() {}
 /// Register a supplier.
 ///
 /// `tax_id` is optional and unique when present; a duplicate returns 409.
+/// `credit_limit` is optional: absent or `null` means unlimited, `0` means cash only.
 #[utoipa::path(
     post,
     path = "/api/v1/suppliers",
@@ -241,7 +280,7 @@ fn list_suppliers_doc() {}
 #[allow(dead_code)]
 fn create_supplier_doc() {}
 
-/// Supplier details.
+/// Supplier details with derived account balance and available credit.
 #[utoipa::path(
     get,
     path = "/api/v1/suppliers/{id}",
@@ -259,6 +298,10 @@ fn create_supplier_doc() {}
 fn get_supplier_doc() {}
 
 /// Update only the fields sent.
+///
+/// `credit_limit` is tri-state: omitted leaves it unchanged, explicit `null`
+/// clears it back to unlimited, and a value sets the cap. Deactivating with
+/// `is_active: false` requires a zero account position (otherwise 409).
 #[utoipa::path(
     patch,
     path = "/api/v1/suppliers/{id}",
@@ -271,7 +314,7 @@ fn get_supplier_doc() {}
          content_type = "application/problem+json"),
         (status = 404, description = "Not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 409, description = "Document is already in use", body = crate::openapi::Problem,
+        (status = 409, description = "Document in use, open account position, or account busy", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 422, description = "Invalid input", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
@@ -280,7 +323,7 @@ fn get_supplier_doc() {}
 #[allow(dead_code)]
 fn update_supplier_doc() {}
 
-/// Soft deactivation. Idempotent. Never deletes: purchases reference the supplier.
+/// Soft deactivation. Idempotent. Requires a zero account position (409 otherwise).
 #[utoipa::path(
     post,
     path = "/api/v1/suppliers/{id}/deactivate",
@@ -291,6 +334,8 @@ fn update_supplier_doc() {}
         (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Open account position or account busy", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]

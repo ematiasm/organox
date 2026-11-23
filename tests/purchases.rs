@@ -19,11 +19,15 @@ use organox::auth::{password, validation};
 use organox::catalog::model::{MovementReason, ProductKind};
 use organox::catalog::service::{self as catalog, CreateProductInput};
 use organox::payments::model::WalletMovementKind;
+use organox::payments::repository::{self as wallet_repo, NewWalletMovement};
 use organox::payments::service::{self as payments, CreateMethodInput, CreateWalletInput};
 use organox::purchases::model::{PurchasePaymentInput, PurchaseStatus};
 use organox::purchases::service::{self as purchases, PurchaseError};
 use organox::routes::router;
+use organox::supplier_accounts::model::SupplierAccountEntryKind;
+use organox::supplier_accounts::repository::{self as supplier_accounts, NewSupplierPayment};
 use organox::suppliers::service::{self as suppliers, CreateSupplierInput, UpdateSupplierInput};
+use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -124,6 +128,14 @@ async fn seed_service_product(pool: &PgPool, name: &str) -> Uuid {
 }
 
 async fn seed_supplier(pool: &PgPool, name: &str) -> Uuid {
+    seed_supplier_with_limit(pool, name, None).await
+}
+
+async fn seed_supplier_with_limit(
+    pool: &PgPool,
+    name: &str,
+    credit_limit: Option<Decimal>,
+) -> Uuid {
     suppliers::create_supplier(
         pool,
         CreateSupplierInput {
@@ -131,6 +143,7 @@ async fn seed_supplier(pool: &PgPool, name: &str) -> Uuid {
             tax_id: None,
             email: None,
             phone: None,
+            credit_limit,
         },
     )
     .await
@@ -294,6 +307,7 @@ async fn completes_a_purchase_atomically_adding_stock_and_deducting_wallets(pool
                 amount: dec!(755.00),
             },
         ],
+        Decimal::ZERO,
         Some("Invoice #42"),
     )
     .await
@@ -303,6 +317,7 @@ async fn completes_a_purchase_atomically_adding_stock_and_deducting_wallets(pool
     assert_eq!(completed.total, dec!(1255.00));
     assert_eq!(completed.movement_ids.len(), 1);
     assert_eq!(completed.payment_movement_ids.len(), 2);
+    assert_eq!(completed.credit_applied, dec!(0.00));
 
     // Stock increased by 10 with reason=purchase and unit_cost=125.50.
     let product = catalog::get_product(&pool, flour).await.unwrap();
@@ -337,6 +352,7 @@ async fn completes_a_purchase_atomically_adding_stock_and_deducting_wallets(pool
             email: None,
             phone: None,
             is_active: None,
+            credit_limit: None,
         },
     )
     .await
@@ -386,6 +402,7 @@ async fn completion_guards_supplier_items_and_payment_sum_without_partial_writes
             payment_method_id: method_id,
             amount: dec!(200.00),
         }],
+        Decimal::ZERO,
         None,
     )
     .await
@@ -404,6 +421,7 @@ async fn completion_guards_supplier_items_and_payment_sum_without_partial_writes
             payment_method_id: method_id,
             amount: dec!(150.00),
         }],
+        Decimal::ZERO,
         None,
     )
     .await
@@ -433,6 +451,7 @@ async fn completion_guards_supplier_items_and_payment_sum_without_partial_writes
             payment_method_id: method_id,
             amount: dec!(200.00),
         }],
+        Decimal::ZERO,
         None,
     )
     .await
@@ -462,7 +481,7 @@ async fn zero_total_purchase_completes_with_empty_payments_and_cancel_closes_dra
         .await
         .unwrap();
 
-    let completed = purchases::complete(&pool, draft_id, actor, &[], None)
+    let completed = purchases::complete(&pool, draft_id, actor, &[], Decimal::ZERO, None)
         .await
         .unwrap();
     assert_eq!(completed.total, dec!(0.00));
@@ -610,6 +629,7 @@ async fn http_purchase_flow_and_paginated_list(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::OK);
     let done = json_body(res).await;
     assert_eq!(done["total"], "1000.00");
+    assert_eq!(done["credit_applied"], "0.00");
 
     // GET /purchases?status=completed -> 200 paginated
     let res = router
@@ -768,4 +788,727 @@ async fn inactive_product_returns_409_on_add_and_complete_and_omitted_supplier_r
         catalog::get_product(&pool, good2).await.unwrap().stock,
         Some(dec!(0))
     );
+}
+
+// --- On-account completion, credit limits, and auto-credit application ---
+
+async fn prepare_http_draft(
+    pool: &PgPool,
+    actor: Uuid,
+    supplier_id: Uuid,
+    product_id: Uuid,
+    quantity: Decimal,
+    unit_cost: Decimal,
+) -> Uuid {
+    let (draft_id, _) = purchases::open_draft(pool, actor).await.unwrap();
+    purchases::set_supplier(pool, draft_id, Some(supplier_id))
+        .await
+        .unwrap();
+    purchases::add_item(pool, draft_id, product_id, quantity, unit_cost)
+        .await
+        .unwrap();
+    draft_id
+}
+
+async fn prepay_supplier(
+    pool: &PgPool,
+    wallet_id: Uuid,
+    method_id: Uuid,
+    supplier_id: Uuid,
+    amount: Decimal,
+    actor: Uuid,
+) -> Uuid {
+    let mut tx = pool.begin().await.unwrap();
+    let mv_id = wallet_repo::insert_movement(
+        &mut *tx,
+        NewWalletMovement {
+            wallet_id,
+            kind: WalletMovementKind::SupplierAccountPayment,
+            amount,
+            sale_id: None,
+            purchase_id: None,
+            payment_method_id: Some(method_id),
+            credit_note_id: None,
+            customer_id: None,
+            supplier_id: Some(supplier_id),
+            note: Some("supplier advance"),
+            created_by: Some(actor),
+        },
+    )
+    .await
+    .unwrap();
+    let rec = supplier_accounts::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id,
+            wallet_movement_id: mv_id,
+            amount,
+            allocations: &[],
+            idempotency_key: None,
+            note: Some("supplier advance"),
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    rec.entry_id
+}
+
+#[sqlx::test]
+async fn pure_on_account_purchase_records_stock_and_payable_without_wallet_movement(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "acct-pure@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Credit Mill").await;
+    let flour = seed_good(&pool, "Flour").await;
+    let (wallet_id, _method_id) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+
+    let draft_id =
+        prepare_http_draft(&pool, actor, supplier_id, flour, dec!(4), dec!(100.00)).await;
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "acct-pure@organox.test", &password).await;
+
+    let res = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [],
+                        "on_account": "400.00",
+                        "note": "Net 30"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let done = json_body(res).await;
+    assert_eq!(done["purchase_id"], draft_id.to_string());
+    assert_eq!(done["total"], "400.00");
+    assert_eq!(done["movement_ids"].as_array().unwrap().len(), 1);
+    assert!(done["payment_movement_ids"].as_array().unwrap().is_empty());
+    assert_eq!(done["credit_applied"], "0.00");
+
+    // Stock inflow written.
+    let product = catalog::get_product(&pool, flour).await.unwrap();
+    assert_eq!(product.stock, Some(dec!(4)));
+    let stock_moves = catalog::list_movements(&pool, flour, 10).await.unwrap();
+    assert_eq!(stock_moves.len(), 1);
+    assert_eq!(stock_moves[0].reason, MovementReason::Purchase);
+    assert_eq!(stock_moves[0].unit_cost, Some(dec!(100.00)));
+
+    // Zero wallet movements.
+    assert_eq!(
+        payments::get_wallet(&pool, wallet_id)
+            .await
+            .unwrap()
+            .balance,
+        dec!(0.00)
+    );
+    assert!(
+        payments::list_movements(&pool, wallet_id, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // purchase_charge in supplier_account_entries and derived supplier balance == total.
+    let mut conn = pool.acquire().await.unwrap();
+    let entries = supplier_accounts::list_entries_in(&mut conn, supplier_id)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].kind, SupplierAccountEntryKind::PurchaseCharge);
+    assert_eq!(entries[0].amount, dec!(400.00));
+    assert_eq!(entries[0].purchase_id, Some(draft_id));
+
+    let supplier = suppliers::get_supplier(&pool, supplier_id).await.unwrap();
+    assert_eq!(supplier.balance, dec!(400.00));
+    assert_eq!(supplier.available_credit, dec!(0.00));
+}
+
+#[sqlx::test]
+async fn mixed_cash_and_on_account_purchase_writes_wallet_outflow_and_payable(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "acct-mixed@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Split Vendor").await;
+    let sugar = seed_good(&pool, "Sugar").await;
+    let (wallet_id, method_id) = seed_wallet_and_method(&pool, "Bank", "Transfer").await;
+
+    let draft_id =
+        prepare_http_draft(&pool, actor, supplier_id, sugar, dec!(10), dec!(100.00)).await;
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "acct-mixed@organox.test", &password).await;
+
+    let res = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [
+                            { "payment_method_id": method_id, "amount": "350.00" }
+                        ],
+                        "on_account": "650.00"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let done = json_body(res).await;
+    assert_eq!(done["total"], "1000.00");
+    assert_eq!(done["payment_movement_ids"].as_array().unwrap().len(), 1);
+    assert_eq!(done["credit_applied"], "0.00");
+
+    // Stock inflow recorded.
+    assert_eq!(
+        catalog::get_product(&pool, sugar).await.unwrap().stock,
+        Some(dec!(10))
+    );
+
+    // Wallet outflow for the cash portion only.
+    let wallet = payments::get_wallet(&pool, wallet_id).await.unwrap();
+    assert_eq!(wallet.balance, dec!(-350.00));
+    let moves = payments::list_movements(&pool, wallet_id, 10)
+        .await
+        .unwrap();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].kind, WalletMovementKind::PurchasePayment);
+    assert_eq!(moves[0].amount, dec!(350.00));
+    assert_eq!(moves[0].purchase_id, Some(draft_id));
+
+    // Ledger purchase_charge for the on_account portion only.
+    let mut conn = pool.acquire().await.unwrap();
+    let entries = supplier_accounts::list_entries_in(&mut conn, supplier_id)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].kind, SupplierAccountEntryKind::PurchaseCharge);
+    assert_eq!(entries[0].amount, dec!(650.00));
+    assert_eq!(entries[0].purchase_id, Some(draft_id));
+
+    let supplier = suppliers::get_supplier(&pool, supplier_id).await.unwrap();
+    assert_eq!(supplier.balance, dec!(650.00));
+    assert_eq!(supplier.available_credit, dec!(0.00));
+}
+
+#[sqlx::test]
+async fn on_account_purchase_enforces_credit_limit_atomically(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "acct-cap@organox.test", Role::Manager).await;
+    let cash_only_supplier =
+        seed_supplier_with_limit(&pool, "Cash Only Mill", Some(dec!(0.00))).await;
+    let capped_supplier = seed_supplier_with_limit(&pool, "Capped Mill", Some(dec!(500.00))).await;
+    let oats = seed_good(&pool, "Oats").await;
+    let wheat = seed_good(&pool, "Wheat").await;
+    let (wallet_id, method_id) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "acct-cap@organox.test", &password).await;
+
+    // 1. Cash-only supplier (credit_limit == 0): on_account > 0 rejected with 409 and zero writes.
+    let cash_draft = prepare_http_draft(
+        &pool,
+        actor,
+        cash_only_supplier,
+        oats,
+        dec!(1),
+        dec!(100.00),
+    )
+    .await;
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{cash_draft}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "payments": [], "on_account": "100.00" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/problem+json"
+    );
+    let problem = json_body(res).await;
+    assert!(problem["detail"].as_str().unwrap().contains("0.00"));
+
+    assert_eq!(
+        catalog::get_product(&pool, oats).await.unwrap().stock,
+        Some(dec!(0))
+    );
+    assert_eq!(
+        payments::get_wallet(&pool, wallet_id)
+            .await
+            .unwrap()
+            .balance,
+        dec!(0.00)
+    );
+    assert_eq!(
+        purchases::get_purchase(&pool, cash_draft)
+            .await
+            .unwrap()
+            .status,
+        PurchaseStatus::Draft
+    );
+    {
+        let mut conn = pool.acquire().await.unwrap();
+        assert!(
+            supplier_accounts::list_entries_in(&mut conn, cash_only_supplier)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    // Same cash-only supplier still completes normally when paid in full upfront.
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{cash_draft}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [{ "payment_method_id": method_id, "amount": "100.00" }],
+                        "on_account": "0.00"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        catalog::get_product(&pool, oats).await.unwrap().stock,
+        Some(dec!(1))
+    );
+    assert_eq!(
+        payments::get_wallet(&pool, wallet_id)
+            .await
+            .unwrap()
+            .balance,
+        dec!(-100.00)
+    );
+
+    // 2. Capped supplier (credit_limit == 500.00): 300.00 succeeds, then 200.01 fails (409),
+    // leaving stock/wallet/ledger untouched, and exact boundary 200.00 succeeds.
+    let p1 = prepare_http_draft(&pool, actor, capped_supplier, wheat, dec!(3), dec!(100.00)).await;
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{p1}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "payments": [], "on_account": "300.00" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        suppliers::get_supplier(&pool, capped_supplier)
+            .await
+            .unwrap()
+            .balance,
+        dec!(300.00)
+    );
+
+    let p2 = prepare_http_draft(
+        &pool,
+        actor,
+        capped_supplier,
+        wheat,
+        dec!(2.5),
+        dec!(100.00),
+    )
+    .await;
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{p2}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [{ "payment_method_id": method_id, "amount": "49.99" }],
+                        "on_account": "200.01"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/problem+json"
+    );
+    let problem = json_body(res).await;
+    assert!(problem["detail"].as_str().unwrap().contains("200.00"));
+
+    // Stock, wallet, ledger, and draft status untouched by rejected completion.
+    assert_eq!(
+        catalog::get_product(&pool, wheat).await.unwrap().stock,
+        Some(dec!(3))
+    );
+    assert_eq!(
+        payments::get_wallet(&pool, wallet_id)
+            .await
+            .unwrap()
+            .balance,
+        dec!(-100.00)
+    );
+    assert_eq!(
+        suppliers::get_supplier(&pool, capped_supplier)
+            .await
+            .unwrap()
+            .balance,
+        dec!(300.00)
+    );
+    assert_eq!(
+        purchases::get_purchase(&pool, p2).await.unwrap().status,
+        PurchaseStatus::Draft
+    );
+
+    // Exact boundary (300.00 + 200.00 == 500.00) succeeds.
+    let res = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{p2}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [{ "payment_method_id": method_id, "amount": "50.00" }],
+                        "on_account": "200.00"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        suppliers::get_supplier(&pool, capped_supplier)
+            .await
+            .unwrap()
+            .balance,
+        dec!(500.00)
+    );
+    assert_eq!(
+        payments::get_wallet(&pool, wallet_id)
+            .await
+            .unwrap()
+            .balance,
+        dec!(-150.00)
+    );
+    assert_eq!(
+        catalog::get_product(&pool, wheat).await.unwrap().stock,
+        Some(dec!(5.5))
+    );
+}
+
+#[sqlx::test]
+async fn on_account_validation_rejects_negative_precision_and_sum_mismatch(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "acct-val@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Validation Mill").await;
+    let corn = seed_good(&pool, "Corn").await;
+    let (wallet_id, method_id) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+
+    let draft_id = prepare_http_draft(&pool, actor, supplier_id, corn, dec!(2), dec!(100.00)).await;
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "acct-val@organox.test", &password).await;
+
+    let invalid_payloads = [
+        // Negative on_account.
+        json!({
+            "payments": [{ "payment_method_id": method_id, "amount": "210.00" }],
+            "on_account": "-10.00"
+        }),
+        // More than 2 decimal places.
+        json!({
+            "payments": [],
+            "on_account": "200.005"
+        }),
+        // Sum mismatch (underpaid).
+        json!({
+            "payments": [{ "payment_method_id": method_id, "amount": "100.00" }],
+            "on_account": "50.00"
+        }),
+        // Sum mismatch (overpaid).
+        json!({
+            "payments": [{ "payment_method_id": method_id, "amount": "100.00" }],
+            "on_account": "150.00"
+        }),
+    ];
+
+    for payload in invalid_payloads {
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/purchases/{draft_id}/complete"))
+                    .header("cookie", &cookie)
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "expected 422 for payload {payload}"
+        );
+        assert_eq!(
+            res.headers().get("content-type").unwrap(),
+            "application/problem+json"
+        );
+    }
+
+    // No side effects after rejected requests.
+    assert_eq!(
+        catalog::get_product(&pool, corn).await.unwrap().stock,
+        Some(dec!(0))
+    );
+    assert_eq!(
+        payments::get_wallet(&pool, wallet_id)
+            .await
+            .unwrap()
+            .balance,
+        dec!(0.00)
+    );
+    assert_eq!(
+        purchases::get_purchase(&pool, draft_id)
+            .await
+            .unwrap()
+            .status,
+        PurchaseStatus::Draft
+    );
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(
+        supplier_accounts::list_entries_in(&mut conn, supplier_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[sqlx::test]
+async fn on_account_purchase_auto_applies_prepaid_supplier_credit_oldest_first(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "acct-credit@organox.test", Role::Manager).await;
+    // Cap of 200.00 also verifies advance credit lowers exposure before authorization.
+    let supplier_id = seed_supplier_with_limit(&pool, "Advance Mill", Some(dec!(200.00))).await;
+    let flour = seed_good(&pool, "Flour").await;
+    let (wallet_id, method_id) = seed_wallet_and_method(&pool, "Bank", "Transfer").await;
+
+    // Two unallocated prepayments: 150.00 (older) and 200.00 (newer) -> balance -350.00, unapplied 350.00.
+    let pay1_entry = prepay_supplier(
+        &pool,
+        wallet_id,
+        method_id,
+        supplier_id,
+        dec!(150.00),
+        actor,
+    )
+    .await;
+    let pay2_entry = prepay_supplier(
+        &pool,
+        wallet_id,
+        method_id,
+        supplier_id,
+        dec!(200.00),
+        actor,
+    )
+    .await;
+
+    let pos_before = supplier_accounts::account_position(&pool, supplier_id)
+        .await
+        .unwrap();
+    assert_eq!(pos_before.balance, dec!(-350.00));
+    assert_eq!(pos_before.unapplied_credit, dec!(350.00));
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "acct-credit@organox.test", &password).await;
+
+    // Purchase 1: 250.00 on account -> fully covered by oldest-first credit (150.00 from pay1 + 100.00 from pay2).
+    let p1 = prepare_http_draft(&pool, actor, supplier_id, flour, dec!(5), dec!(50.00)).await;
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{p1}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "payments": [], "on_account": "250.00" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let done1 = json_body(res).await;
+    assert_eq!(done1["total"], "250.00");
+    assert_eq!(done1["credit_applied"], "250.00");
+
+    let allocs1: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT entry_id, amount FROM supplier_account_allocations WHERE purchase_id = $1 ORDER BY created_at ASC, id ASC",
+    )
+    .bind(p1)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        allocs1,
+        vec![(pay1_entry, dec!(150.00)), (pay2_entry, dec!(100.00))]
+    );
+
+    let pos_mid = supplier_accounts::account_position(&pool, supplier_id)
+        .await
+        .unwrap();
+    assert_eq!(pos_mid.balance, dec!(-100.00));
+    assert_eq!(pos_mid.unapplied_credit, dec!(100.00));
+    assert_eq!(pos_mid.outstanding_total, dec!(0.00));
+    assert!(pos_mid.is_consistent());
+
+    // Purchase 2: 300.00 on account (exposure -100 + 300 = 200 == credit_limit) -> applies remaining 100.00 from pay2.
+    let p2 = prepare_http_draft(&pool, actor, supplier_id, flour, dec!(6), dec!(50.00)).await;
+    let res = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{p2}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "payments": [], "on_account": "300.00" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let done2 = json_body(res).await;
+    assert_eq!(done2["total"], "300.00");
+    assert_eq!(done2["credit_applied"], "100.00");
+
+    let allocs2: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT entry_id, amount FROM supplier_account_allocations WHERE purchase_id = $1 ORDER BY created_at ASC, id ASC",
+    )
+    .bind(p2)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(allocs2, vec![(pay2_entry, dec!(100.00))]);
+
+    let pos_after = supplier_accounts::account_position(&pool, supplier_id)
+        .await
+        .unwrap();
+    assert_eq!(pos_after.balance, dec!(200.00));
+    assert_eq!(pos_after.unapplied_credit, dec!(0.00));
+    assert_eq!(pos_after.outstanding_total, dec!(200.00));
+    assert!(pos_after.is_consistent());
+
+    let supplier = suppliers::get_supplier(&pool, supplier_id).await.unwrap();
+    assert_eq!(supplier.balance, dec!(200.00));
+    assert_eq!(supplier.available_credit, dec!(0.00));
+}
+
+#[sqlx::test]
+async fn a_busy_supplier_account_answers_409_without_partial_writes(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "busy-supp@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Busy Mill").await;
+    let flour = seed_good(&pool, "Flour").await;
+    let draft_id = prepare_http_draft(&pool, actor, supplier_id, flour, dec!(2), dec!(50.00)).await;
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "busy-supp@organox.test", &password).await;
+
+    // Another connection holds the supplier advisory lock (seed 1).
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1))")
+        .bind(supplier_id.to_string())
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        router.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "payments": [], "on_account": "100.00" }).to_string(),
+                ))
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("completion never answered: the supplier lock wait is not bounded")
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/problem+json"
+    );
+    let body = json_body(response).await;
+    assert_eq!(body["detail"], "the supplier account is busy, retry");
+
+    holder.rollback().await.unwrap();
+
+    // Nothing was written: purchase stays draft, stock stays 0, balance stays 0.
+    assert_eq!(
+        purchases::get_purchase(&pool, draft_id)
+            .await
+            .unwrap()
+            .status,
+        PurchaseStatus::Draft
+    );
+    assert_eq!(
+        catalog::get_product(&pool, flour).await.unwrap().stock,
+        Some(dec!(0))
+    );
+    let pos = supplier_accounts::account_position(&pool, supplier_id)
+        .await
+        .unwrap();
+    assert_eq!(pos.balance, Decimal::ZERO);
+    assert_eq!(pos.unapplied_credit, Decimal::ZERO);
 }

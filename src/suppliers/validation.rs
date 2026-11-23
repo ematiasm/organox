@@ -3,6 +3,8 @@
 //! Mirrors `customers::validation` so both party registries share identical
 //! field bounds and actionable English error messages.
 
+use rust_decimal::Decimal;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
     #[error("the name cannot be blank")]
@@ -22,12 +24,26 @@ pub enum ValidationError {
 
     #[error("the phone exceeds {max} characters")]
     PhoneTooLong { max: usize },
+
+    #[error("the credit limit cannot be negative")]
+    CreditLimitNegative,
+
+    #[error("the credit limit {amount} carries more than two decimals")]
+    CreditLimitTooManyDecimals { amount: Decimal },
+
+    #[error("the credit limit cannot exceed {max}")]
+    CreditLimitTooLarge { max: Decimal },
 }
 
 pub const MAX_NAME_LEN: usize = 200;
 pub const MAX_TAX_ID_LEN: usize = 32;
 pub const MAX_EMAIL_LEN: usize = 254;
 pub const MAX_PHONE_LEN: usize = 40;
+
+/// Largest value `numeric(14, 2)` holds.
+pub fn max_credit_limit() -> Decimal {
+    Decimal::new(99_999_999_999_999, 2)
+}
 
 pub fn validate_name(raw: &str) -> Result<String, ValidationError> {
     let trimmed = raw.trim();
@@ -88,9 +104,24 @@ pub fn validate_phone(raw: Option<&str>) -> Result<Option<String>, ValidationErr
     Ok(Some(trimmed.to_string()))
 }
 
+pub fn validate_credit_limit(amount: Decimal) -> Result<Decimal, ValidationError> {
+    if amount.is_sign_negative() {
+        return Err(ValidationError::CreditLimitNegative);
+    }
+    if amount.round_dp(2) != amount {
+        return Err(ValidationError::CreditLimitTooManyDecimals { amount });
+    }
+    let max = max_credit_limit();
+    if amount > max {
+        return Err(ValidationError::CreditLimitTooLarge { max });
+    }
+    Ok(amount)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     #[test]
     fn name_is_trimmed_and_blank_rejected() {
@@ -144,6 +175,28 @@ mod tests {
         assert_eq!(
             validate_phone(Some(&long)).unwrap_err(),
             ValidationError::PhoneTooLong { max: MAX_PHONE_LEN }
+        );
+    }
+
+    #[test]
+    fn credit_limit_allows_zero_and_cents_and_rejects_invalid() {
+        assert_eq!(validate_credit_limit(dec!(0.00)).unwrap(), dec!(0.00));
+        assert_eq!(validate_credit_limit(dec!(250.50)).unwrap(), dec!(250.50));
+        assert_eq!(
+            validate_credit_limit(dec!(-0.01)).unwrap_err(),
+            ValidationError::CreditLimitNegative
+        );
+        assert_eq!(
+            validate_credit_limit(dec!(10.005)).unwrap_err(),
+            ValidationError::CreditLimitTooManyDecimals {
+                amount: dec!(10.005)
+            }
+        );
+        assert_eq!(
+            validate_credit_limit(max_credit_limit() + dec!(0.01)).unwrap_err(),
+            ValidationError::CreditLimitTooLarge {
+                max: max_credit_limit()
+            }
         );
     }
 }

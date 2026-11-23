@@ -740,6 +740,7 @@ export interface paths {
         /**
          * Register a supplier.
          * @description `tax_id` is optional and unique when present; a duplicate returns 409.
+         *     `credit_limit` is optional: absent or `null` means unlimited, `0` means cash only.
          */
         post: operations["create_supplier_doc"];
         delete?: never;
@@ -755,14 +756,19 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Supplier details. */
+        /** Supplier details with derived account balance and available credit. */
         get: operations["get_supplier_doc"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Update only the fields sent. */
+        /**
+         * Update only the fields sent.
+         * @description `credit_limit` is tri-state: omitted leaves it unchanged, explicit `null`
+         *     clears it back to unlimited, and a value sets the cap. Deactivating with
+         *     `is_active: false` requires a zero account position (otherwise 409).
+         */
         patch: operations["update_supplier_doc"];
         trace?: never;
     };
@@ -775,7 +781,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Soft deactivation. Idempotent. Never deletes: purchases reference the supplier. */
+        /** Soft deactivation. Idempotent. Requires a zero account position (409 otherwise). */
         post: operations["deactivate_supplier_doc"];
         delete?: never;
         options?: never;
@@ -1007,6 +1013,12 @@ export interface components {
         };
         CompletePurchaseRequest: {
             note?: string | null;
+            /**
+             * @description Portion of the purchase total charged to the supplier's account instead
+             *     of paid upfront from a wallet (defaults to `0.00`).
+             * @example 0.00
+             */
+            on_account?: string;
             payments?: components["schemas"]["PurchasePaymentRequest"][];
         };
         /**
@@ -1028,6 +1040,12 @@ export interface components {
         CompletedPurchaseResponse: {
             /** Format: date-time */
             completed_at: string;
+            /**
+             * @description Unapplied supplier advance credit automatically allocated to this
+             *     purchase upon completion (`"0.00"` when none applied).
+             * @example 0.00
+             */
+            credit_applied: string;
             movement_ids: string[];
             payment_movement_ids: string[];
             /** Format: uuid */
@@ -1100,6 +1118,12 @@ export interface components {
             sku?: string | null;
         };
         CreateSupplierRequest: {
+            /**
+             * @description Optional credit limit: absent or `null` means unlimited, `0` means cash
+             *     only. Never negative, at most two decimals.
+             * @example 100.00
+             */
+            credit_limit?: string | null;
             email?: string | null;
             name: string;
             phone?: string | null;
@@ -1772,8 +1796,21 @@ export interface components {
             total: number;
         };
         SupplierResponse: {
+            /**
+             * @description Money paid to the supplier not yet allocated to a purchase or refunded (`U`).
+             * @example 0.00
+             */
+            available_credit: string;
+            /**
+             * @description Current account balance derived from `supplier_account_entries`.
+             *     Positive means we owe the supplier; negative means advance credit held.
+             * @example 120.00
+             */
+            balance: string;
             /** Format: date-time */
             created_at: string;
+            /** @description `null` means unlimited, `"0.00"` means cash only. */
+            credit_limit?: string | null;
             email?: string | null;
             /** Format: uuid */
             id: string;
@@ -1822,6 +1859,12 @@ export interface components {
             sku?: string | null;
         };
         UpdateSupplierRequest: {
+            /**
+             * @description Tri-state: omitted leaves the limit untouched, explicit `null` clears
+             *     it back to unlimited, and a value sets the cap.
+             * @example 100.00
+             */
+            credit_limit?: string | null;
             email?: string | null;
             is_active?: boolean | null;
             name?: string | null;
@@ -4308,7 +4351,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Document is already in use */
+            /** @description Document in use, open account position, or account busy */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4358,6 +4401,15 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Open account position or account busy */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
