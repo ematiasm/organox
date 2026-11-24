@@ -1512,3 +1512,61 @@ async fn a_busy_supplier_account_answers_409_without_partial_writes(pool: PgPool
     assert_eq!(pos.balance, Decimal::ZERO);
     assert_eq!(pos.unapplied_credit, Decimal::ZERO);
 }
+
+#[sqlx::test]
+async fn on_account_purchase_rejects_deactivated_supplier_without_partial_writes(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "inactive-onacct@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Closed Mill").await;
+    let flour = seed_good(&pool, "Flour").await;
+    let draft_id = prepare_http_draft(&pool, actor, supplier_id, flour, dec!(2), dec!(50.00)).await;
+
+    suppliers::deactivate_supplier(&pool, supplier_id)
+        .await
+        .unwrap();
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "inactive-onacct@organox.test", &password).await;
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "payments": [], "on_account": "100.00" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "application/problem+json"
+    );
+    let body = json_body(response).await;
+    assert_eq!(
+        body["detail"],
+        "the supplier is deactivated and cannot be used for a purchase"
+    );
+
+    assert_eq!(
+        purchases::get_purchase(&pool, draft_id)
+            .await
+            .unwrap()
+            .status,
+        PurchaseStatus::Draft
+    );
+    assert_eq!(
+        catalog::get_product(&pool, flour).await.unwrap().stock,
+        Some(dec!(0))
+    );
+    let pos = supplier_accounts::account_position(&pool, supplier_id)
+        .await
+        .unwrap();
+    assert_eq!(pos.balance, Decimal::ZERO);
+    assert_eq!(pos.unapplied_credit, Decimal::ZERO);
+}
