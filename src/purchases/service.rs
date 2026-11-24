@@ -72,10 +72,26 @@ pub enum PurchaseError {
     PaymentAmountPrecision,
 
     #[error("the payments ({paid:.2}) do not add up to the purchase total ({total:.2})")]
-    PaymentMismatch { total: Decimal, paid: Decimal },
+    PaymentMismatch {
+        total: Decimal,
+        paid: Decimal,
+        on_account: Decimal,
+    },
 
     #[error("the payment method is unknown or inactive")]
     PaymentMethodUnavailable,
+
+    #[error("the on-account amount cannot be negative")]
+    OnAccountNegative,
+
+    #[error("the on-account amount has more than 2 decimal places")]
+    OnAccountPrecision,
+
+    #[error("the on-account amount exceeds the supplier's available credit ({available:.2})")]
+    OnAccountExceedsCreditLimit { available: Decimal },
+
+    #[error("the supplier account is busy, retry")]
+    SupplierAccountBusy,
 
     #[error("supplier lookup error: {0}")]
     SupplierLookup(#[from] SupplierError),
@@ -209,10 +225,11 @@ pub async fn complete(
     purchase_id: Uuid,
     actor: Uuid,
     payments: &[PurchasePaymentInput],
+    on_account: Decimal,
     note: Option<&str>,
 ) -> Result<CompletedPurchase, PurchaseError> {
     let clean_note = note.map(str::trim).filter(|s| !s.is_empty());
-    repository::complete(pool, purchase_id, actor, payments, clean_note)
+    repository::complete(pool, purchase_id, actor, payments, on_account, clean_note)
         .await
         .map_err(map_repo_error)
 }
@@ -236,10 +253,22 @@ fn map_repo_error(err: RepoError) -> PurchaseError {
         RepoError::SupplierInactive => PurchaseError::SupplierInactive,
         RepoError::PaymentAmountNotPositive => PurchaseError::PaymentAmountNotPositive,
         RepoError::PaymentAmountPrecision => PurchaseError::PaymentAmountPrecision,
-        RepoError::PaymentMismatch { total, paid } => {
-            PurchaseError::PaymentMismatch { total, paid }
-        }
+        RepoError::PaymentMismatch {
+            total,
+            paid,
+            on_account,
+        } => PurchaseError::PaymentMismatch {
+            total,
+            paid,
+            on_account,
+        },
         RepoError::PaymentMethodUnavailable => PurchaseError::PaymentMethodUnavailable,
+        RepoError::OnAccountNegative => PurchaseError::OnAccountNegative,
+        RepoError::OnAccountPrecision => PurchaseError::OnAccountPrecision,
+        RepoError::OnAccountExceedsCreditLimit { available } => {
+            PurchaseError::OnAccountExceedsCreditLimit { available }
+        }
+        RepoError::SupplierAccountBusy => PurchaseError::SupplierAccountBusy,
         other => PurchaseError::Internal(other),
     }
 }

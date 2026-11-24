@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT is_active,\n               credit_limit::numeric(14, 2) AS \"credit_limit?: Decimal\"\n        FROM suppliers\n        WHERE id = $1\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_active",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "suppliers",
+            "name": "is_active"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "credit_limit?: Decimal",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "suppliers",
+            "name": "credit_limit"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "50182bc3856f42dee95baaa92142c75950b8d4b10c7e6b9d4e2634d9ba411a9a"
+}

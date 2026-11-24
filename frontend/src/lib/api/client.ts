@@ -46,6 +46,26 @@ export type AdjustmentLog = components['schemas']['AdjustmentLogResponse'];
 export type Receivables = components['schemas']['ReceivablesResponse'];
 export type ReceivableCustomer = components['schemas']['ReceivableCustomerResponse'];
 export type AgingBuckets = components['schemas']['AgingBucketsResponse'];
+export type SupplierAccount = components['schemas']['SupplierAccountResponse'];
+export type SupplierAccountStatementEntry =
+	components['schemas']['SupplierAccountStatementEntryResponse'];
+export type SupplierAccountEntryKind = components['schemas']['SupplierAccountEntryKind'];
+export type OutstandingPurchase = components['schemas']['OutstandingPurchaseResponse'];
+export type RecordSupplierPaymentRequest = components['schemas']['RecordSupplierPaymentRequest'];
+export type SupplierPaymentAllocationRequest =
+	components['schemas']['SupplierPaymentAllocationRequest'];
+export type SupplierPayment = components['schemas']['SupplierPaymentResponse'];
+export type SupplierPaymentLog = components['schemas']['SupplierPaymentLogResponse'];
+export type RefundSupplierCreditRequest = components['schemas']['RefundSupplierCreditRequest'];
+export type SupplierCreditRefund = components['schemas']['SupplierCreditRefundResponse'];
+export type RecordSupplierAdjustmentRequest =
+	components['schemas']['RecordSupplierAdjustmentRequest'];
+export type SupplierAdjustmentDirection = components['schemas']['SupplierAdjustmentDirection'];
+export type SupplierAdjustment = components['schemas']['SupplierAdjustmentResponse'];
+export type SupplierAdjustmentLog = components['schemas']['SupplierAdjustmentLogResponse'];
+export type Payables = components['schemas']['PayablesResponse'];
+export type PayableSupplier = components['schemas']['PayableSupplierResponse'];
+export type PayablesAgingBuckets = components['schemas']['PayablesAgingBucketsResponse'];
 export type Movement = components['schemas']['MovementResponse'];
 export type MovementReason = components['schemas']['MovementReason'];
 export type Role = components['schemas']['Role'];
@@ -284,9 +304,10 @@ export const api = {
 
 	// --- Suppliers ---
 	//
-	// Registry mirrored from customers without credit limits: `tax_id`, `email`
-	// and `phone` are optional, blank inputs travel as `undefined`, and the
-	// server is the only validator.
+	// Registry mirrored from customers: `tax_id`, `email` and `phone` are
+	// optional, blank inputs travel as `undefined`, `credit_limit` is tri-state
+	// on PATCH (`undefined` = unchanged, `null` = unlimited), and the server is
+	// the only validator.
 
 	listSuppliers: (params: {
 		search?: string;
@@ -310,6 +331,7 @@ export const api = {
 		tax_id?: string;
 		email?: string;
 		phone?: string;
+		credit_limit?: string | null;
 	}) => request<SupplierId>('/api/v1/suppliers', { method: 'POST', body }),
 
 	updateSupplier: (
@@ -319,6 +341,7 @@ export const api = {
 			tax_id?: string;
 			email?: string;
 			phone?: string;
+			credit_limit?: string | null;
 			is_active?: boolean;
 		}
 	) => request<void>(`/api/v1/suppliers/${encodeURIComponent(id)}`, { method: 'PATCH', body }),
@@ -328,9 +351,9 @@ export const api = {
 
 	// --- Purchases ---
 	//
-	// Persisted draft-to-confirm cash purchases mirroring sales. Item mutations
-	// return the recalculated full purchase; completion records stock inflows
-	// and wallet outflows atomically on the server.
+	// Persisted draft-to-confirm purchases mirroring sales. Item mutations return
+	// the recalculated full purchase; completion records stock inflows, optional
+	// wallet outflows, and optional on-account payables atomically on the server.
 
 	openPurchaseDraft: () => request<PurchaseDraft>('/api/v1/purchases/draft', { method: 'POST' }),
 
@@ -378,11 +401,23 @@ export const api = {
 			{ method: 'DELETE' }
 		),
 
-	completePurchase: (purchaseId: string, payments: PurchasePayment[], note?: string) =>
-		request<CompletedPurchase>(`/api/v1/purchases/${encodeURIComponent(purchaseId)}/complete`, {
-			method: 'POST',
-			body: note ? { payments, note } : { payments }
-		}),
+	completePurchase: (
+		purchaseId: string,
+		payments: PurchasePayment[],
+		note?: string,
+		onAccount?: string
+	) => {
+		const body: { payments: PurchasePayment[]; note?: string; on_account?: string } = { payments };
+		if (note) body.note = note;
+		if (onAccount !== undefined) body.on_account = onAccount;
+		return request<CompletedPurchase>(
+			`/api/v1/purchases/${encodeURIComponent(purchaseId)}/complete`,
+			{
+				method: 'POST',
+				body
+			}
+		);
+	},
 
 	cancelPurchase: (purchaseId: string) =>
 		request<void>(`/api/v1/purchases/${encodeURIComponent(purchaseId)}/cancel`, {
@@ -426,6 +461,54 @@ export const api = {
 		}),
 
 	getReceivables: () => request<Receivables>('/api/v1/accounts/receivables'),
+
+	// --- Supplier accounts ---
+	//
+	// Payables ledger, supplier payments, credit refunds, manual adjustments and
+	// aging report. Amounts travel as decimal strings; the server owns every
+	// invariant.
+
+	getSupplierAccount: (supplierId: string) =>
+		request<SupplierAccount>(`/api/v1/suppliers/${encodeURIComponent(supplierId)}/account`),
+
+	listSupplierPayments: (supplierId: string, limit?: number) =>
+		request<SupplierPaymentLog[]>(`/api/v1/suppliers/${encodeURIComponent(supplierId)}/payments`, {
+			query: { limit }
+		}),
+
+	recordSupplierPayment: (supplierId: string, body: RecordSupplierPaymentRequest) =>
+		request<SupplierPayment>(`/api/v1/suppliers/${encodeURIComponent(supplierId)}/payments`, {
+			method: 'POST',
+			body
+		}),
+
+	refundSupplierCredit: (supplierId: string, body: RefundSupplierCreditRequest) =>
+		request<SupplierCreditRefund>(
+			`/api/v1/suppliers/${encodeURIComponent(supplierId)}/credit-refunds`,
+			{
+				method: 'POST',
+				body
+			}
+		),
+
+	listSupplierAdjustments: (supplierId: string, limit?: number) =>
+		request<SupplierAdjustmentLog[]>(
+			`/api/v1/suppliers/${encodeURIComponent(supplierId)}/adjustments`,
+			{
+				query: { limit }
+			}
+		),
+
+	recordSupplierAdjustment: (supplierId: string, body: RecordSupplierAdjustmentRequest) =>
+		request<SupplierAdjustment>(
+			`/api/v1/suppliers/${encodeURIComponent(supplierId)}/adjustments`,
+			{
+				method: 'POST',
+				body
+			}
+		),
+
+	getPayables: () => request<Payables>('/api/v1/accounts/payables'),
 
 	// --- Wallets and payment methods ---
 	//

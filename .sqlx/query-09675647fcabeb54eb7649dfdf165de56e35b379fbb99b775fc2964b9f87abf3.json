@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, note, created_by)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "supplier_account_entry_kind",
+            "kind": {
+              "Enum": [
+                "purchase_charge",
+                "payment",
+                "credit_refund",
+                "adjustment_in",
+                "adjustment_out"
+              ]
+            }
+          }
+        },
+        "Numeric",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "09675647fcabeb54eb7649dfdf165de56e35b379fbb99b775fc2964b9f87abf3"
+}

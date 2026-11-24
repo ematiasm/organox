@@ -6,9 +6,10 @@
 		ApiError,
 		type CompletedPurchase,
 		type Purchase,
-		type PurchasePayment
+		type PurchasePayment,
+		type Supplier
 	} from '$lib/api/client';
-	import { formatCents, parseCents } from '$lib/money';
+	import { formatCents, minCents, parseCents } from '$lib/money';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -28,13 +29,19 @@
 		TableHeader,
 		TableRow
 	} from '$lib/components/ui/table';
+	import { cn } from '$lib/utils';
 
 	let { data } = $props();
 
 	let draft = $state<Purchase>(untrack(() => data.draft));
+	let selectedSupplier = $state<Supplier | null>(untrack(() => data.selectedSupplier));
 	let busy = $state(false);
 	let error = $state<string | null>(null);
-	let completedBanner = $state<CompletedPurchase | null>(null);
+	let completedBanner = $state<{
+		result: CompletedPurchase;
+		onAccount: string | null;
+		creditApplied: string | null;
+	} | null>(null);
 
 	// Add-item inputs
 	let selectedProductId = $state('');
@@ -46,21 +53,74 @@
 	let editQuantity = $state('');
 	let editUnitCost = $state('');
 
-	// Payment legs for completion
+	// Payment legs and on-account input for completion
 	type PaymentRow = { key: number; paymentMethodId: string; amount: string };
 	let nextPaymentKey = 1;
 	let paymentRows = $state<PaymentRow[]>([{ key: 0, paymentMethodId: '', amount: '' }]);
+	let onAccountInput = $state('');
 	let completionNote = $state('');
 
 	// History detail drawer
 	let inspected = $state<Purchase | null>(null);
 
-	// Keep local draft synchronized when navigation/invalidation refreshes data.draft.
+	// Keep local draft and selected supplier synchronized when navigation/invalidation refreshes data.
 	$effect(() => {
 		draft = data.draft;
+		selectedSupplier = data.selectedSupplier;
 	});
 
+	// --- On-account & payment preview (exact integer cents) ---
+	//
+	// The server still validates every amount and ceiling on completion. These
+	// derivations exist only so the operator sees how much cash remains to pay,
+	// how much available credit applies automatically (S6), and what remains of
+	// the supplier's credit limit (S4) before completing.
 	const totalCents = $derived(parseCents(draft.total) ?? 0n);
+	const onAccountTrimmed = $derived(onAccountInput.trim());
+	const onAccountCents = $derived(
+		!draft.supplier_id || !selectedSupplier || onAccountTrimmed === ''
+			? 0n
+			: parseCents(onAccountTrimmed)
+	);
+	const onAccountError = $derived.by(() => {
+		if (!draft.supplier_id || !selectedSupplier || onAccountTrimmed === '') return null;
+		if (onAccountCents === null) return 'Enter an amount with up to two decimals.';
+		if (onAccountCents < 0n) return 'Amount cannot be negative.';
+		if (onAccountCents > totalCents) return 'Cannot exceed the purchase total.';
+		return null;
+	});
+	const activeOnAccountCents = $derived(
+		onAccountError === null && onAccountCents !== null ? onAccountCents : 0n
+	);
+	const cashTargetCents = $derived(totalCents - activeOnAccountCents);
+	const cashTargetDisplay = $derived(
+		onAccountError === null ? formatCents(cashTargetCents) : '—'
+	);
+	const availableCreditCents = $derived(
+		selectedSupplier ? (parseCents(selectedSupplier.available_credit) ?? 0n) : 0n
+	);
+	const creditAppliedPreviewCents = $derived(
+		activeOnAccountCents > 0n && availableCreditCents > 0n
+			? minCents(activeOnAccountCents, availableCreditCents)
+			: 0n
+	);
+	const debtAddedPreviewCents = $derived(activeOnAccountCents - creditAppliedPreviewCents);
+	const limitPreview = $derived.by(() => {
+		if (!selectedSupplier) return null;
+		if (selectedSupplier.credit_limit === null || selectedSupplier.credit_limit === undefined) {
+			return { unlimited: true as const };
+		}
+		const limit = parseCents(selectedSupplier.credit_limit) ?? 0n;
+		const balance = parseCents(selectedSupplier.balance) ?? 0n;
+		const remaining = limit - (balance + activeOnAccountCents);
+		return {
+			unlimited: false as const,
+			cashOnly: limit === 0n,
+			limitText: selectedSupplier.credit_limit,
+			remainingCents: remaining > 0n ? remaining : 0n,
+			exceedsByCents: remaining < 0n ? -remaining : 0n
+		};
+	});
 	const paidCents = $derived.by(() => {
 		let sum = 0n;
 		for (const row of paymentRows) {
@@ -69,7 +129,7 @@
 		}
 		return sum;
 	});
-	const remainingCents = $derived(totalCents - paidCents);
+	const remainingCents = $derived(cashTargetCents - paidCents);
 
 	function failure(err: unknown, fallback: string): string {
 		if (err instanceof ApiError) {
@@ -102,7 +162,13 @@
 		error = null;
 		try {
 			await api.setPurchaseSupplier(draft.id, value || null);
-			draft = await api.getPurchase(draft.id);
+			const [nextDraft, nextSupplier] = await Promise.all([
+				api.getPurchase(draft.id),
+				value ? api.getSupplier(value) : Promise.resolve(null)
+			]);
+			draft = nextDraft;
+			selectedSupplier = nextSupplier;
+			onAccountInput = '';
 		} catch (err) {
 			error = failure(err, 'Could not update the supplier.');
 		} finally {
@@ -189,21 +255,30 @@
 		}
 	}
 
-	function fillExactTotal() {
+	function fillRemainingCash() {
+		const target = formatCents(cashTargetCents);
 		const first = paymentRows[0];
 		if (!first) {
-			paymentRows = [{ key: nextPaymentKey++, paymentMethodId: '', amount: draft.total }];
+			paymentRows = [{ key: nextPaymentKey++, paymentMethodId: '', amount: target }];
 		} else {
-			paymentRows = [{ key: first.key, paymentMethodId: first.paymentMethodId, amount: draft.total }];
+			paymentRows = [{ key: first.key, paymentMethodId: first.paymentMethodId, amount: target }];
 		}
 	}
 
+	function setFullOnAccount() {
+		onAccountInput = draft.total;
+		paymentRows = [{ key: nextPaymentKey++, paymentMethodId: '', amount: '' }];
+	}
+
 	async function completePurchase() {
+		if (onAccountError !== null) return;
 		busy = true;
 		error = null;
 		try {
+			const hasOnAccount = activeOnAccountCents > 0n;
+			const onAccountParam = hasOnAccount ? formatCents(activeOnAccountCents) : undefined;
 			const payments: PurchasePayment[] =
-				totalCents === 0n
+				totalCents === 0n || cashTargetCents === 0n
 					? []
 					: paymentRows
 							.filter((row) => row.paymentMethodId !== '' || row.amount.trim() !== '')
@@ -215,9 +290,16 @@
 			const result = await api.completePurchase(
 				draft.id,
 				payments,
-				completionNote.trim() || undefined
+				completionNote.trim() || undefined,
+				onAccountParam
 			);
-			completedBanner = result;
+			const creditAppliedCents = parseCents(result.credit_applied) ?? 0n;
+			completedBanner = {
+				result,
+				onAccount: onAccountParam ?? null,
+				creditApplied: creditAppliedCents > 0n ? result.credit_applied : null
+			};
+			onAccountInput = '';
 			completionNote = '';
 			paymentRows = [{ key: nextPaymentKey++, paymentMethodId: '', amount: '' }];
 			editingProductId = null;
@@ -234,6 +316,7 @@
 		error = null;
 		try {
 			await api.cancelPurchase(draft.id);
+			onAccountInput = '';
 			completionNote = '';
 			paymentRows = [{ key: nextPaymentKey++, paymentMethodId: '', amount: '' }];
 			editingProductId = null;
@@ -258,21 +341,30 @@
 	<div>
 		<h1 class="text-xl font-semibold tracking-tight">Purchases</h1>
 		<p class="mt-1 text-sm text-muted-foreground">
-			Build a draft purchase from a supplier, then confirm to enter stock and deduct wallets.
+			Build a draft purchase from a supplier, then confirm to enter stock and pay from wallets or on
+			account.
 		</p>
 	</div>
 </div>
 
 {#if completedBanner}
-	<div class="mb-4 rounded-lg border border-primary/40 bg-primary/5 px-4 py-3 text-sm">
+	<div class="mb-4 rounded-lg border border-primary/40 bg-primary/5 px-4 py-3 text-sm" role="status">
 		<div class="font-medium">
-			Purchase {completedBanner.purchase_id.slice(0, 8)} completed — total {completedBanner.total}
+			Purchase {completedBanner.result.purchase_id.slice(0, 8)} completed — total
+			{completedBanner.result.total}
 		</div>
 		<div class="text-xs text-muted-foreground">
-			{completedBanner.movement_ids.length} stock
-			{completedBanner.movement_ids.length === 1 ? 'entry' : 'entries'} and
-			{completedBanner.payment_movement_ids.length} wallet
-			{completedBanner.payment_movement_ids.length === 1 ? 'payment' : 'payments'} recorded.
+			{completedBanner.result.movement_ids.length} stock
+			{completedBanner.result.movement_ids.length === 1 ? 'entry' : 'entries'} and
+			{completedBanner.result.payment_movement_ids.length} wallet
+			{completedBanner.result.payment_movement_ids.length === 1 ? 'payment' : 'payments'} recorded.
+			{#if completedBanner.onAccount}
+				On account: <span class="tabular-nums font-medium">{completedBanner.onAccount}</span>.
+			{/if}
+			{#if completedBanner.creditApplied}
+				Credit applied:
+				<span class="tabular-nums font-medium">{completedBanner.creditApplied}</span>.
+			{/if}
 		</div>
 	</div>
 {/if}
@@ -468,12 +560,126 @@
 
 	<!-- Payment & confirmation -->
 	<div class="border-t border-border pt-4">
+		{#if draft.supplier_id && selectedSupplier && totalCents > 0n}
+			<div class="mb-4 rounded-md border border-border bg-muted/20 p-3">
+				<div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+					<Label for="purchase-on-account" class="text-sm font-semibold">On account</Label>
+					<div class="flex flex-wrap items-center gap-1.5">
+						{#if availableCreditCents > 0n}
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={busy}
+								onclick={() =>
+									(onAccountInput = formatCents(minCents(totalCents, availableCreditCents)))}
+							>
+								Use credit
+							</Button>
+						{/if}
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							disabled={busy}
+							onclick={setFullOnAccount}
+						>
+							Full on account
+						</Button>
+						{#if onAccountTrimmed !== ''}
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								disabled={busy}
+								onclick={() => (onAccountInput = '')}
+							>
+								Clear
+							</Button>
+						{/if}
+					</div>
+				</div>
+
+				<div class="grid gap-3 sm:grid-cols-[12rem_1fr] sm:items-start">
+					<div>
+						<Input
+							id="purchase-on-account"
+							type="text"
+							inputmode="decimal"
+							placeholder="0.00"
+							bind:value={onAccountInput}
+							disabled={busy || draft.items.length === 0}
+							class="tabular-nums"
+						/>
+						{#if onAccountError}
+							<p class="mt-1 text-xs text-destructive" role="alert">{onAccountError}</p>
+						{/if}
+					</div>
+
+					<div class="grid gap-1 text-xs">
+						{#if activeOnAccountCents > 0n}
+							<div class="flex items-center justify-between gap-4 tabular-nums">
+								<span class="text-muted-foreground">Cash to pay now</span>
+								<span class="font-medium">{cashTargetDisplay}</span>
+							</div>
+						{/if}
+						{#if availableCreditCents > 0n}
+							<div class="flex items-center justify-between gap-4 tabular-nums text-primary">
+								<span>
+									{activeOnAccountCents > 0n ? 'Apply available credit' : 'Available credit'}
+								</span>
+								<span class="font-medium">
+									{activeOnAccountCents > 0n
+										? `−${formatCents(creditAppliedPreviewCents)}`
+										: selectedSupplier.available_credit}
+								</span>
+							</div>
+							{#if activeOnAccountCents > 0n}
+								<p class="text-muted-foreground">
+									{#if debtAddedPreviewCents > 0n}
+										Adds {formatCents(debtAddedPreviewCents)} to supplier payable.
+									{:else}
+										Fully covered by available credit with supplier.
+									{/if}
+								</p>
+							{/if}
+						{/if}
+						{#if limitPreview}
+							<div
+								class={cn(
+									'flex items-center justify-between gap-4 tabular-nums',
+									!limitPreview.unlimited && limitPreview.exceedsByCents > 0n
+										? 'font-medium text-destructive'
+										: 'text-muted-foreground'
+								)}
+							>
+								<span>Remaining limit</span>
+								<span>
+									{#if limitPreview.unlimited}
+										Unlimited
+									{:else if limitPreview.cashOnly && activeOnAccountCents === 0n}
+										0.00 (cash only)
+									{:else if limitPreview.exceedsByCents > 0n}
+										0.00 (exceeds by {formatCents(limitPreview.exceedsByCents)})
+									{:else}
+										{formatCents(limitPreview.remainingCents)}
+									{/if}
+								</span>
+							</div>
+						{/if}
+					</div>
+				</div>
+			</div>
+		{/if}
+
 		<div class="mb-2 flex items-center justify-between gap-2">
 			<h3 class="text-sm font-semibold">Cash payment</h3>
-			{#if totalCents > 0n}
+			{#if totalCents > 0n && cashTargetCents > 0n}
 				<div class="flex items-center gap-2">
-					<Button type="button" variant="ghost" size="sm" onclick={fillExactTotal}>
-						Fill exact total ({draft.total})
+					<Button type="button" variant="ghost" size="sm" onclick={fillRemainingCash}>
+						{activeOnAccountCents > 0n
+							? `Fill remaining cash (${cashTargetDisplay})`
+							: `Fill exact total (${draft.total})`}
 					</Button>
 					<Button type="button" variant="outline" size="sm" onclick={addPaymentRow}>
 						+ Split payment
@@ -485,6 +691,10 @@
 		{#if totalCents === 0n}
 			<p class="mb-3 text-xs text-muted-foreground">
 				Total is 0.00 — this purchase completes without writing wallet movements.
+			</p>
+		{:else if cashTargetCents === 0n && activeOnAccountCents > 0n}
+			<p class="mb-3 text-xs text-muted-foreground">
+				Covered by supplier account — no upfront wallet payment required.
 			</p>
 		{:else}
 			<div class="mb-3 grid gap-2">
@@ -524,8 +734,9 @@
 			</div>
 
 			<p class="mb-3 text-xs text-muted-foreground tabular-nums">
-				Covered: {formatCents(paidCents)} / {draft.total}
-				{#if remainingCents !== 0n}
+				{activeOnAccountCents > 0n ? 'Cash covered' : 'Covered'}: {formatCents(paidCents)} /
+				{cashTargetDisplay}
+				{#if onAccountError === null && remainingCents !== 0n}
 					· Remaining: {formatCents(remainingCents)}
 				{/if}
 			</p>
@@ -544,7 +755,7 @@
 
 			<Button
 				type="button"
-				disabled={busy || draft.items.length === 0 || !draft.supplier_id}
+				disabled={busy || draft.items.length === 0 || !draft.supplier_id || onAccountError !== null}
 				onclick={completePurchase}
 			>
 				{busy ? 'Processing…' : `Complete purchase (${draft.total})`}
@@ -552,7 +763,7 @@
 		</div>
 
 		{#if error}
-			<p class="mt-3 text-sm text-destructive">{error}</p>
+			<p class="mt-3 text-sm text-destructive" role="alert">{error}</p>
 		{/if}
 	</div>
 </section>

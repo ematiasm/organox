@@ -12,6 +12,7 @@
 		TableHeader,
 		TableRow
 	} from '$lib/components/ui/table';
+	import { cn } from '$lib/utils';
 
 	let { data } = $props();
 
@@ -124,6 +125,8 @@
 					<TableHead>Document</TableHead>
 					<TableHead>Email</TableHead>
 					<TableHead>Phone</TableHead>
+					<TableHead class="text-right">Balance</TableHead>
+					<TableHead class="text-right">Credit limit</TableHead>
 					<TableHead>Status</TableHead>
 				</TableRow>
 			</TableHeader>
@@ -136,6 +139,26 @@
 						<TableCell class="text-muted-foreground">{supplier.tax_id ?? '—'}</TableCell>
 						<TableCell class="text-muted-foreground">{supplier.email ?? '—'}</TableCell>
 						<TableCell class="text-muted-foreground">{supplier.phone ?? '—'}</TableCell>
+						<TableCell
+							class={cn(
+								'text-right tabular-nums',
+								supplier.balance === '0.00'
+									? 'text-muted-foreground'
+									: supplier.balance.startsWith('-')
+										? 'font-medium text-primary'
+										: 'font-medium'
+							)}
+						>
+							{supplier.balance}
+						</TableCell>
+						<TableCell
+							class={cn(
+								'text-right tabular-nums',
+								supplier.credit_limit == null && 'text-muted-foreground'
+							)}
+						>
+							{supplier.credit_limit ?? 'Unlimited'}
+						</TableCell>
 						<TableCell>
 							<Badge variant={supplier.is_active ? 'outline' : 'secondary'}>
 								{supplier.is_active ? 'Active' : 'Inactive'}

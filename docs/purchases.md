@@ -42,33 +42,46 @@ added to or completed in a purchase. Services (`kind = 'service'`) have no stock
 ledger and are rejected with `409`. Inactive products are rejected both when
 adding lines and again under a row lock at completion.
 
-## Completion: one transaction, stock and wallet together
+## Completion: one transaction, stock, wallet, and account together
 
 ```
 BEGIN
-  SELECT ... FROM purchases WHERE id = ? FOR UPDATE
+  SELECT status, supplier_id FROM purchases WHERE id = ? FOR UPDATE
   verify status = 'draft', supplier_id IS NOT NULL, items non-empty
-  SELECT name, is_active FROM suppliers WHERE id = ? FOR UPDATE
-  verify supplier is_active
   for each item (ordered by product_id):
-    SELECT id, kind, is_active FROM products WHERE id = ? FOR UPDATE
-    verify active product (not service)
+    SELECT kind, is_active FROM products WHERE id = ? FOR UPDATE
+    verify active product (not service); accumulate server-calculated total
+  verify Σ payments + on_account == total and active payment methods / wallets
+  if on_account > 0:
+    authorize_credit:
+      pg_advisory_xact_lock(hashtextextended(supplier_id::text, 1)) (5s lock_timeout -> 409)
+      SELECT is_active, credit_limit FROM suppliers WHERE id = ? FOR UPDATE
+      verify active supplier and balance + on_account <= credit_limit (409 otherwise)
+  else:
+    SELECT name, is_active FROM suppliers WHERE id = ? FOR UPDATE
+    verify supplier is_active
+  for each item:
     INSERT stock_movements (reason = 'purchase', quantity, unit_cost)
-  verify payments sum == server-calculated total (empty allowed only if total == 0)
   for each payment:
-    verify active payment_method pointing at active wallet
     INSERT wallet_movements (kind = 'purchase_payment', purchase_id, payment_method_id)
-  UPDATE purchases SET status = 'completed', supplier_name = ?, total = ?, completed_by = ?, completed_at = now()
+  UPDATE purchases SET status = 'completed', supplier_name = ?, total = ?, completed_by = ?, completed_at = now(), note = ?
+  if on_account > 0:
+    INSERT supplier_account_entries (kind = 'purchase_charge', amount = +on_account)
+    apply_available_credit oldest-first -> supplier_account_allocations (returns credit_applied)
 COMMIT
 ```
 
-Every item, stock entry, wallet outflow, and status flip commits atomically.
-If any check fails (missing or inactive supplier, deactivated product, payment
-sum mismatch, inactive method or wallet), the transaction rolls back and leaves
-the purchase as a `draft` with zero stock or wallet movements written.
+Every item, stock entry, wallet outflow, supplier-account charge, automatic
+advance allocation, and status flip commits atomically. If any check fails
+(missing or inactive supplier, deactivated product, payment sum mismatch,
+inactive method or wallet, credit limit exceeded, or busy supplier account),
+the transaction rolls back and leaves the purchase as a `draft` with zero
+stock, wallet, or supplier-account movements written.
 
-Because products are locked in deterministic `product_id` order, concurrent
-completions referencing overlapping products cannot deadlock.
+Because products are locked in deterministic `product_id` order and every
+on-account write takes the supplier advisory lock (seed `1`) before
+`suppliers FOR UPDATE`, concurrent completions and supplier-account operations
+cannot deadlock.
 
 ## Supplier snapshot at completion
 
@@ -84,24 +97,43 @@ The database enforces the invariant with two constraints:
 
 ## How a purchase is paid
 
-Every purchase in this version is **cash-only** through existing payment methods
-and wallets:
+Completion supports upfront wallet payments, buying on account, or a mix of
+both:
 
 ```json
 {
   "payments": [
-    { "payment_method_id": "…", "amount": "15000.00" }
+    { "payment_method_id": "…", "amount": "5000.00" }
   ],
+  "on_account": "10000.00",
   "note": "Invoice #1042"
 }
 ```
 
-Multiple payment rows are supported (for example, part cash box and part bank
-transfer). Each payment writes one `wallet_movements` row with
-`kind = 'purchase_payment'` (sign `-1`, outflow, non-manual), carrying both
-`purchase_id` and `payment_method_id` and copying the method's default
-`wallet_id` at write time (`docs/payments.md`). Wallet balances may go negative,
-matching `expense` movements.
+`on_account` is optional (defaults to `"0.00"`, `>= 0`, at most two decimals),
+and the completion invariant is `Σ payments + on_account == purchase.total`.
+
+- **Upfront payments (`payments`)**: multiple rows are supported (for example,
+  part cash box and part bank transfer). Each payment writes one
+  `wallet_movements` row with `kind = 'purchase_payment'` (sign `-1`, outflow,
+  non-manual), carrying both `purchase_id` and `payment_method_id` and copying
+  the method's default `wallet_id` at write time (`docs/payments.md`). Wallet
+  balances may go negative, matching `expense` movements.
+- **On account (`on_account > 0`)**: acquires the supplier advisory lock
+  (seed `1`) and locks `suppliers FOR UPDATE` via `authorize_credit`. The
+  supplier must be active and `balance + on_account` must fit
+  `suppliers.credit_limit` (`NULL` = unlimited, `0` = cash only, `> 0` = cap;
+  exceeding it returns `409` naming remaining available credit). In the same
+  transaction, completion writes one `purchase_charge` entry (`+on_account`) in
+  `supplier_account_entries` and runs `apply_available_credit` to allocate any
+  unapplied advance credit (`U`) oldest-first across open payments.
+  `CompletedPurchaseResponse.credit_applied` reports how much advance credit
+  covered automatically (`"0.00"` when none applied).
+- **Cash-only (`on_account == 0`)**: follows the cash path unchanged and writes
+  no supplier-account entry.
+
+See `docs/supplier-accounts.md` for the full payables ledger, supplier
+payments, credit refunds, adjustments, and payables aging.
 
 ## Why a completed purchase cannot be edited or cancelled
 
@@ -123,16 +155,13 @@ All routes require a session (`401` without a cookie). Errors use
 | POST | `/api/v1/purchases/{id}/items` | Adds a line (if already present, adds quantity and updates `unit_cost`) |
 | PUT | `/api/v1/purchases/{id}/items/{product_id}` | Sets `quantity` (`> 0`) and `unit_cost` |
 | DELETE | `/api/v1/purchases/{id}/items/{product_id}` | Removes the line |
-| POST | `/api/v1/purchases/{id}/complete` | Completes the purchase, writes `stock_movements` and `wallet_movements` |
+| POST | `/api/v1/purchases/{id}/complete` | Completes the purchase (`payments` + optional `on_account`), writes `stock_movements`, `wallet_movements`, and (when `on_account > 0`) `purchase_charge` + automatic `credit_applied` |
 | POST | `/api/v1/purchases/{id}/cancel` | Cancels a `draft` (`204`) |
 
 ## What is missing
 
 - **Product cost & markup pricing**: storing a current product cost and deriving
   sale price from `cost + %` is deferred to its own feature.
-- **Supplier credit / accounts payable**: buying on account from a supplier,
-  tracking unpaid supplier invoices, and partial payments are out of scope in
-  this version.
 - **Supplier returns / debit notes**: returning merchandise from a completed
   purchase currently requires manual stock and wallet adjustments until a
   dedicated return document is added.

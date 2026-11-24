@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api, ApiError, type Supplier } from '$lib/api/client';
+	import SupplierAccountPanel from '$lib/components/supplier-account-panel.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -35,6 +36,7 @@
 		tax_id: string;
 		email: string;
 		phone: string;
+		credit_limit: string;
 	};
 
 	let editing = $state(false);
@@ -45,7 +47,7 @@
 	let form = $state<Form>(emptyForm());
 
 	function emptyForm(): Form {
-		return { name: '', tax_id: '', email: '', phone: '' };
+		return { name: '', tax_id: '', email: '', phone: '', credit_limit: '' };
 	}
 
 	function seededForm(target: Supplier): Form {
@@ -53,7 +55,8 @@
 			name: target.name,
 			tax_id: target.tax_id ?? '',
 			email: target.email ?? '',
-			phone: target.phone ?? ''
+			phone: target.phone ?? '',
+			credit_limit: target.credit_limit ?? ''
 		};
 	}
 
@@ -91,11 +94,22 @@
 		saving = true;
 		formError = null;
 		try {
+			const trimmedLimit = form.credit_limit.trim();
+			// Tri-state PATCH contract (S4): explicit `null` clears an existing
+			// limit back to unlimited; omitting keeps it unchanged; a value sets it.
+			let creditLimit: string | null | undefined;
+			if (trimmedLimit !== '') {
+				creditLimit = trimmedLimit;
+			} else if (supplier.credit_limit !== null && supplier.credit_limit !== undefined) {
+				creditLimit = null;
+			}
+
 			await api.updateSupplier(supplier.id, {
 				name: form.name,
 				tax_id: form.tax_id || undefined,
 				email: form.email || undefined,
-				phone: form.phone || undefined
+				phone: form.phone || undefined,
+				credit_limit: creditLimit
 			});
 			editing = false;
 			await onSaved();
@@ -110,11 +124,13 @@
 		saving = true;
 		formError = null;
 		try {
+			const trimmedLimit = form.credit_limit.trim();
 			const { id } = await api.createSupplier({
 				name: form.name,
 				tax_id: form.tax_id || undefined,
 				email: form.email || undefined,
-				phone: form.phone || undefined
+				phone: form.phone || undefined,
+				credit_limit: trimmedLimit || undefined
 			});
 			onCreated(id);
 		} catch (error) {
@@ -149,6 +165,18 @@
 
 	function optionalPlaceholder(): string {
 		return creating ? 'Optional' : 'Unchanged when empty';
+	}
+
+	function creditLimitLabel(limit: string | null | undefined): string {
+		if (limit === null || limit === undefined) return 'Unlimited';
+		if (limit === '0.00' || limit === '0') return '0.00 (cash only)';
+		return limit;
+	}
+
+	function balanceHint(balance: string): string {
+		if (balance.startsWith('-')) return 'Credit with supplier';
+		if (balance === '0.00' || balance === '0') return 'Settled';
+		return 'We owe supplier';
 	}
 </script>
 
@@ -206,6 +234,21 @@
 					/>
 				</div>
 
+				<div class="grid gap-2">
+					<Label for="supplier-credit-limit">Credit limit</Label>
+					<Input
+						id="supplier-credit-limit"
+						type="text"
+						inputmode="decimal"
+						bind:value={form.credit_limit}
+						placeholder="Unlimited (leave empty)"
+						class="tabular-nums"
+					/>
+					<p class="text-xs text-muted-foreground">
+						Leave empty for no limit; enter 0 for cash only.
+					</p>
+				</div>
+
 				{#if formError}
 					<p class="text-sm text-destructive">{formError}</p>
 				{/if}
@@ -255,6 +298,28 @@
 				{/if}
 			</div>
 
+			<div class="grid grid-cols-3 gap-2 px-4">
+				<div class="rounded-md border border-border p-2.5">
+					<div class="text-xs text-muted-foreground">Balance</div>
+					<div class="mt-0.5 text-base font-semibold tabular-nums">{supplier.balance}</div>
+					<div class="text-[11px] text-muted-foreground">{balanceHint(supplier.balance)}</div>
+				</div>
+				<div class="rounded-md border border-border p-2.5">
+					<div class="text-xs text-muted-foreground">Available credit</div>
+					<div class="mt-0.5 text-base font-semibold tabular-nums">
+						{supplier.available_credit}
+					</div>
+					<div class="text-[11px] text-muted-foreground">Unapplied payments</div>
+				</div>
+				<div class="rounded-md border border-border p-2.5">
+					<div class="text-xs text-muted-foreground">Credit limit</div>
+					<div class="mt-0.5 text-base font-semibold tabular-nums">
+						{creditLimitLabel(supplier.credit_limit)}
+					</div>
+					<div class="text-[11px] text-muted-foreground">Max exposure</div>
+				</div>
+			</div>
+
 			<dl class="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-2 px-4 text-sm">
 				<dt class="text-muted-foreground">Document</dt>
 				<dd>{supplier.tax_id ?? '—'}</dd>
@@ -273,6 +338,8 @@
 				<dt class="text-muted-foreground">Updated</dt>
 				<dd class="text-muted-foreground">{when(supplier.updated_at)}</dd>
 			</dl>
+
+			<SupplierAccountPanel supplierId={supplier.id} onMutated={onSaved} />
 		{:else}
 			<SheetHeader>
 				<SheetTitle>Supplier not found</SheetTitle>

@@ -20,6 +20,7 @@
 	import ContactIcon from '@lucide/svelte/icons/contact';
 	import TruckIcon from '@lucide/svelte/icons/truck';
 	import ScaleIcon from '@lucide/svelte/icons/scale';
+	import BanknoteArrowUpIcon from '@lucide/svelte/icons/banknote-arrow-up';
 	import ArrowLeftRightIcon from '@lucide/svelte/icons/arrow-left-right';
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import WalletIcon from '@lucide/svelte/icons/wallet';
@@ -97,6 +98,12 @@
 					label: 'Receivables',
 					icon: ScaleIcon,
 					current: (path) => path.startsWith('/receivables')
+				},
+				{
+					href: '/payables',
+					label: 'Payables',
+					icon: BanknoteArrowUpIcon,
+					current: (path) => path.startsWith('/payables')
 				},
 				{
 					href: '/operations/movements',

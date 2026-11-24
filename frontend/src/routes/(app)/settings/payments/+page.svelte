@@ -30,7 +30,13 @@
 	// and the form does not offer them.
 	type ManualKind = Exclude<
 		WalletMovementKind,
-		'sale_payment' | 'sale_refund' | 'account_payment' | 'account_payment_refund' | 'purchase_payment'
+		| 'sale_payment'
+		| 'sale_refund'
+		| 'account_payment'
+		| 'account_payment_refund'
+		| 'purchase_payment'
+		| 'supplier_account_payment'
+		| 'supplier_account_refund'
 	>;
 	const MANUAL_KINDS: { value: ManualKind; label: string }[] = [
 		{ value: 'expense', label: 'Expense' },
@@ -43,6 +49,8 @@
 		account_payment: 'Account payment',
 		account_payment_refund: 'Credit refund',
 		purchase_payment: 'Purchase payment',
+		supplier_account_payment: 'Supplier account payment',
+		supplier_account_refund: 'Supplier credit refund',
 		expense: 'Expense',
 		adjustment_in: 'Adjustment in',
 		adjustment_out: 'Adjustment out'

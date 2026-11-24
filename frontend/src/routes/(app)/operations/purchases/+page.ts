@@ -1,5 +1,6 @@
 import {
 	api,
+	ApiError,
 	type PaymentMethod,
 	type Product,
 	type Purchase,
@@ -36,8 +37,21 @@ export async function load({ url }: { url: URL }) {
 	const draft = await api.getPurchase(draftRef.id);
 	const total = history.total ?? 0;
 
+	let selectedSupplier: Supplier | null = null;
+	if (draft.supplier_id) {
+		selectedSupplier = suppliersList.items.find((s) => s.id === draft.supplier_id) ?? null;
+		if (!selectedSupplier) {
+			try {
+				selectedSupplier = await api.getSupplier(draft.supplier_id);
+			} catch (error) {
+				if (!(error instanceof ApiError && error.status === 404)) throw error;
+			}
+		}
+	}
+
 	return {
 		draft,
+		selectedSupplier,
 		statusTab,
 		page,
 		historyItems: history.items ?? [],
@@ -50,6 +64,7 @@ export async function load({ url }: { url: URL }) {
 		methods
 	} satisfies {
 		draft: Purchase;
+		selectedSupplier: Supplier | null;
 		statusTab: string;
 		page: number;
 		historyItems: Purchase[];

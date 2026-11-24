@@ -715,6 +715,7 @@ pub async fn complete(
                 // Till money is never an account payment: the customer link
                 // belongs to the collection endpoint alone.
                 customer_id: None,
+                supplier_id: None,
                 note: Some(note.as_str()),
                 created_by: Some(actor),
             },

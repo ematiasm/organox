@@ -15,6 +15,7 @@ pub mod ratelimit;
 pub mod routes;
 pub mod sales;
 pub mod search;
+pub mod supplier_accounts;
 pub mod suppliers;
 pub mod telemetry;
 

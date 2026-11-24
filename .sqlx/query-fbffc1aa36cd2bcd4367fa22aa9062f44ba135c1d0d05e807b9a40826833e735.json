@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, purchase_id, created_by)\n        VALUES ($1, $2, 'purchase_charge', $3, $4, $5)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Numeric",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fbffc1aa36cd2bcd4367fa22aa9062f44ba135c1d0d05e807b9a40826833e735"
+}

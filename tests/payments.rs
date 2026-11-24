@@ -552,13 +552,15 @@ async fn an_amount_with_more_than_two_decimals_is_rejected(pool: PgPool) {
 /// time, which is the only way to notice that the SQL `CASE` needs it too.
 #[sqlx::test]
 async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
-    fn all_kinds() -> [WalletMovementKind; 8] {
+    fn all_kinds() -> [WalletMovementKind; 10] {
         let kinds = [
             WalletMovementKind::SalePayment,
             WalletMovementKind::SaleRefund,
             WalletMovementKind::AccountPayment,
             WalletMovementKind::AccountPaymentRefund,
             WalletMovementKind::PurchasePayment,
+            WalletMovementKind::SupplierAccountPayment,
+            WalletMovementKind::SupplierAccountRefund,
             WalletMovementKind::Expense,
             WalletMovementKind::AdjustmentIn,
             WalletMovementKind::AdjustmentOut,
@@ -570,6 +572,8 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 | WalletMovementKind::AccountPayment
                 | WalletMovementKind::AccountPaymentRefund
                 | WalletMovementKind::PurchasePayment
+                | WalletMovementKind::SupplierAccountPayment
+                | WalletMovementKind::SupplierAccountRefund
                 | WalletMovementKind::Expense
                 | WalletMovementKind::AdjustmentIn
                 | WalletMovementKind::AdjustmentOut => {}
@@ -634,55 +638,92 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
         .await
         .unwrap();
 
+    // A supplier account movement must name the supplier and the payment method.
+    let supplier: Uuid =
+        sqlx::query_scalar("INSERT INTO suppliers (id, name) VALUES ($1, 'Acme') RETURNING id")
+            .bind(Uuid::now_v7())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
     for (index, kind) in all_kinds().into_iter().enumerate() {
-        let (wallet, sale_id, purchase_id, payment_method_id, credit_note_id, customer_id) =
-            match kind {
-                WalletMovementKind::SalePayment => {
-                    (sale_wallet, Some(sale), None, Some(method), None, None)
-                }
-                WalletMovementKind::SaleRefund => (
-                    ledger::create_wallet(&pool, &format!("Wallet {index}"))
-                        .await
-                        .unwrap(),
-                    Some(sale),
-                    None,
-                    Some(method),
-                    Some(note),
-                    None,
-                ),
-                WalletMovementKind::AccountPayment | WalletMovementKind::AccountPaymentRefund => (
-                    ledger::create_wallet(&pool, &format!("Wallet {index}"))
-                        .await
-                        .unwrap(),
-                    None,
-                    None,
-                    Some(method),
-                    None,
-                    Some(customer),
-                ),
-                WalletMovementKind::PurchasePayment => (
-                    ledger::create_wallet(&pool, &format!("Wallet {index}"))
-                        .await
-                        .unwrap(),
-                    None,
-                    Some(purchase),
-                    Some(method),
-                    None,
-                    None,
-                ),
-                WalletMovementKind::Expense
-                | WalletMovementKind::AdjustmentIn
-                | WalletMovementKind::AdjustmentOut => (
-                    ledger::create_wallet(&pool, &format!("Wallet {index}"))
-                        .await
-                        .unwrap(),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-            };
+        let (
+            wallet,
+            sale_id,
+            purchase_id,
+            payment_method_id,
+            credit_note_id,
+            customer_id,
+            supplier_id,
+        ) = match kind {
+            WalletMovementKind::SalePayment => (
+                sale_wallet,
+                Some(sale),
+                None,
+                Some(method),
+                None,
+                None,
+                None,
+            ),
+            WalletMovementKind::SaleRefund => (
+                ledger::create_wallet(&pool, &format!("Wallet {index}"))
+                    .await
+                    .unwrap(),
+                Some(sale),
+                None,
+                Some(method),
+                Some(note),
+                None,
+                None,
+            ),
+            WalletMovementKind::AccountPayment | WalletMovementKind::AccountPaymentRefund => (
+                ledger::create_wallet(&pool, &format!("Wallet {index}"))
+                    .await
+                    .unwrap(),
+                None,
+                None,
+                Some(method),
+                None,
+                Some(customer),
+                None,
+            ),
+            WalletMovementKind::PurchasePayment => (
+                ledger::create_wallet(&pool, &format!("Wallet {index}"))
+                    .await
+                    .unwrap(),
+                None,
+                Some(purchase),
+                Some(method),
+                None,
+                None,
+                None,
+            ),
+            WalletMovementKind::SupplierAccountPayment
+            | WalletMovementKind::SupplierAccountRefund => (
+                ledger::create_wallet(&pool, &format!("Wallet {index}"))
+                    .await
+                    .unwrap(),
+                None,
+                None,
+                Some(method),
+                None,
+                None,
+                Some(supplier),
+            ),
+            WalletMovementKind::Expense
+            | WalletMovementKind::AdjustmentIn
+            | WalletMovementKind::AdjustmentOut => (
+                ledger::create_wallet(&pool, &format!("Wallet {index}"))
+                    .await
+                    .unwrap(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        };
 
         ledger::insert_movement(
             &pool,
@@ -695,6 +736,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 payment_method_id,
                 credit_note_id,
                 customer_id,
+                supplier_id,
                 note: None,
                 created_by: Some(owner),
             },
@@ -744,5 +786,25 @@ async fn a_purchase_payment_cannot_be_typed_by_hand(pool: PgPool) {
     .await;
 
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(movement_count(&pool, wallet).await, 0);
+}
+
+#[sqlx::test]
+async fn supplier_account_movements_cannot_be_typed_by_hand(pool: PgPool) {
+    let cookie = login(&pool).await;
+    let wallet = create_wallet(&pool, &cookie, "Cash").await;
+
+    for kind in ["supplier_account_payment", "supplier_account_refund"] {
+        let (status, _) = call(
+            &pool,
+            &cookie,
+            "POST",
+            &format!("/api/v1/wallets/{wallet}/movements"),
+            Some(json!({ "kind": kind, "amount": "25.00" })),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "kind={kind}");
+    }
     assert_eq!(movement_count(&pool, wallet).await, 0);
 }

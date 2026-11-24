@@ -52,10 +52,26 @@ pub enum RepoError {
     PaymentAmountPrecision,
 
     #[error("the payments do not add up to the purchase total")]
-    PaymentMismatch { total: Decimal, paid: Decimal },
+    PaymentMismatch {
+        total: Decimal,
+        paid: Decimal,
+        on_account: Decimal,
+    },
 
     #[error("the payment method is unknown or inactive")]
     PaymentMethodUnavailable,
+
+    #[error("the on-account amount cannot be negative")]
+    OnAccountNegative,
+
+    #[error("the on-account amount has more than 2 decimal places")]
+    OnAccountPrecision,
+
+    #[error("the on-account amount exceeds the supplier's available credit")]
+    OnAccountExceedsCreditLimit { available: Decimal },
+
+    #[error("the supplier account is busy, retry")]
+    SupplierAccountBusy,
 
     #[error(transparent)]
     Database(#[from] sqlx::Error),
@@ -515,6 +531,7 @@ pub struct CompletedPurchase {
     pub total: Decimal,
     pub movement_ids: Vec<Uuid>,
     pub payment_movement_ids: Vec<Uuid>,
+    pub credit_applied: Decimal,
     pub completed_at: DateTime<Utc>,
 }
 
@@ -527,9 +544,17 @@ struct ResolvedPayment {
 async fn resolve_payments(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     payments_input: &[PurchasePaymentInput],
+    on_account: Decimal,
     total: Decimal,
 ) -> Result<Vec<ResolvedPayment>, RepoError> {
-    let mut paid = Decimal::ZERO;
+    if on_account.is_sign_negative() {
+        return Err(RepoError::OnAccountNegative);
+    }
+    if on_account.round_dp(2) != on_account {
+        return Err(RepoError::OnAccountPrecision);
+    }
+
+    let mut wallet_paid = Decimal::ZERO;
     let mut resolved = Vec::with_capacity(payments_input.len());
 
     for payment in payments_input {
@@ -539,7 +564,7 @@ async fn resolve_payments(
         if payment.amount.round_dp(2) != payment.amount {
             return Err(RepoError::PaymentAmountPrecision);
         }
-        paid += payment.amount;
+        wallet_paid += payment.amount;
 
         let method = payments::find_method(&mut **tx, payment.payment_method_id)
             .await
@@ -557,8 +582,13 @@ async fn resolve_payments(
         });
     }
 
+    let paid = wallet_paid + on_account;
     if paid != total {
-        return Err(RepoError::PaymentMismatch { total, paid });
+        return Err(RepoError::PaymentMismatch {
+            total,
+            paid,
+            on_account,
+        });
     }
 
     Ok(resolved)
@@ -571,12 +601,40 @@ fn map_payment_error(err: payments::RepoError) -> RepoError {
     }
 }
 
+fn map_authorize_error(err: crate::supplier_accounts::repository::RepoError) -> RepoError {
+    use crate::supplier_accounts::repository::RepoError as AccountErr;
+    match err {
+        AccountErr::SupplierNotFound => RepoError::SupplierNotFound,
+        AccountErr::SupplierInactive => RepoError::SupplierInactive,
+        AccountErr::CreditLimitExceeded { available, .. } => {
+            RepoError::OnAccountExceedsCreditLimit { available }
+        }
+        AccountErr::SupplierBusy => RepoError::SupplierAccountBusy,
+        AccountErr::Database(sql) => RepoError::Database(sql),
+        other => RepoError::Database(sqlx::Error::Protocol(format!(
+            "supplier accounts authorize_credit: {other}"
+        ))),
+    }
+}
+
+fn map_account_write_error(err: crate::supplier_accounts::repository::RepoError) -> RepoError {
+    use crate::supplier_accounts::repository::RepoError as AccountErr;
+    match err {
+        AccountErr::SupplierBusy => RepoError::SupplierAccountBusy,
+        AccountErr::Database(sql) => RepoError::Database(sql),
+        other => RepoError::Database(sqlx::Error::Protocol(format!(
+            "supplier accounts ledger write: {other}"
+        ))),
+    }
+}
+
 /// Complete a draft purchase in one atomic transaction.
 pub async fn complete(
     pool: &PgPool,
     purchase_id: Uuid,
     actor: Uuid,
     payments_input: &[PurchasePaymentInput],
+    on_account: Decimal,
     note: Option<&str>,
 ) -> Result<CompletedPurchase, RepoError> {
     let mut tx = pool.begin().await?;
@@ -601,18 +659,6 @@ pub async fn complete(
     let supplier_id = purchase_row
         .supplier_id
         .ok_or(RepoError::SupplierRequired)?;
-
-    let supplier = sqlx::query!(
-        "SELECT name, is_active FROM suppliers WHERE id = $1 FOR UPDATE",
-        supplier_id
-    )
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or(RepoError::SupplierNotFound)?;
-
-    if !supplier.is_active {
-        return Err(RepoError::SupplierInactive);
-    }
 
     let items = sqlx::query!(
         r#"
@@ -658,8 +704,36 @@ pub async fn complete(
 
     let total = total.round_dp(2);
 
-    // Validate all payments before any write.
-    let charges = resolve_payments(&mut tx, payments_input, total).await?;
+    // Validate all payments + on_account before any write.
+    let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
+
+    // Lock and validate the supplier using one consistent lock order: when
+    // charging on account, `authorize_credit` acquires the supplier advisory
+    // lock FIRST and locks `suppliers FOR UPDATE` SECOND (matching deactivation
+    // and every ledger writer so locks can never invert).
+    let supplier_name = if on_account > Decimal::ZERO {
+        crate::supplier_accounts::repository::authorize_credit(&mut tx, supplier_id, on_account)
+            .await
+            .map_err(map_authorize_error)?;
+
+        sqlx::query_scalar!("SELECT name FROM suppliers WHERE id = $1", supplier_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(RepoError::SupplierNotFound)?
+    } else {
+        let supplier = sqlx::query!(
+            "SELECT name, is_active FROM suppliers WHERE id = $1 FOR UPDATE",
+            supplier_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RepoError::SupplierNotFound)?;
+
+        if !supplier.is_active {
+            return Err(RepoError::SupplierInactive);
+        }
+        supplier.name
+    };
 
     let ledger_note = format!("Purchase {}", &purchase_id.to_string()[..8]);
 
@@ -685,7 +759,7 @@ pub async fn complete(
         movement_ids.push(movement_id);
     }
 
-    // Pass 3: record wallet outflows.
+    // Pass 3: record wallet outflows for the upfront cash legs.
     let mut payment_movement_ids = Vec::with_capacity(charges.len());
     for charge in &charges {
         let movement_id = payments::insert_movement(
@@ -699,6 +773,7 @@ pub async fn complete(
                 payment_method_id: Some(charge.payment_method_id),
                 credit_note_id: None,
                 customer_id: None,
+                supplier_id: None,
                 note: Some(ledger_note.as_str()),
                 created_by: Some(actor),
             },
@@ -724,12 +799,36 @@ pub async fn complete(
         "#,
         purchase_id,
         total,
-        supplier.name,
+        supplier_name,
         actor,
         note,
     )
     .fetch_one(&mut *tx)
     .await?;
+
+    // Record the on-account payable and automatically apply any available
+    // unapplied supplier advance credit oldest-first inside the same commit.
+    let mut credit_applied = Decimal::ZERO;
+    if on_account > Decimal::ZERO {
+        crate::supplier_accounts::repository::record_charge(
+            &mut tx,
+            supplier_id,
+            purchase_id,
+            on_account,
+            actor,
+        )
+        .await
+        .map_err(map_account_write_error)?;
+
+        credit_applied = crate::supplier_accounts::repository::apply_available_credit(
+            &mut tx,
+            supplier_id,
+            purchase_id,
+            on_account,
+        )
+        .await
+        .map_err(map_account_write_error)?;
+    }
 
     tx.commit().await?;
 
@@ -738,6 +837,7 @@ pub async fn complete(
         total,
         movement_ids,
         payment_movement_ids,
+        credit_applied,
         completed_at,
     })
 }
