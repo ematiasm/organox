@@ -1,8 +1,8 @@
 /**
  * Exact integer-cent helpers for UI previews (amount to charge at the till,
- * remaining credit limit, oldest-first receipt allocation). The server remains
- * the only validator and source of truth; figures returned by the API are
- * rendered verbatim.
+ * remaining credit limit, oldest-first receipt and supplier payment allocation).
+ * The server remains the only validator and source of truth; figures returned
+ * by the API are rendered verbatim.
  */
 
 const MONEY_PATTERN = /^(-)?(\d+)(?:\.(\d{1,2}))?$/;
@@ -37,6 +37,31 @@ export function maxCents(a: bigint, b: bigint): bigint {
 	return a > b ? a : b;
 }
 
+function allocateByOldest<T extends { outstanding: string; completed_at: string }>(
+	amountCents: bigint,
+	items: ReadonlyArray<T>,
+	getId: (item: T) => string
+): Record<string, string> {
+	const result: Record<string, string> = {};
+	if (amountCents <= 0n) return result;
+
+	const ordered = [...items].sort((a, b) => a.completed_at.localeCompare(b.completed_at));
+	let remaining = amountCents;
+
+	for (const item of ordered) {
+		if (remaining <= 0n) break;
+		const due = parseCents(item.outstanding);
+		if (due === null || due <= 0n) continue;
+		const take = minCents(remaining, due);
+		if (take > 0n) {
+			result[getId(item)] = formatCents(take);
+			remaining -= take;
+		}
+	}
+
+	return result;
+}
+
 /**
  * Convenience oldest-first prefill for the receipt form (S6). The server never
  * invents allocations; this only populates the editable inputs in the browser.
@@ -45,22 +70,16 @@ export function allocateOldestFirst(
 	amountCents: bigint,
 	sales: ReadonlyArray<{ sale_id: string; outstanding: string; completed_at: string }>
 ): Record<string, string> {
-	const result: Record<string, string> = {};
-	if (amountCents <= 0n) return result;
+	return allocateByOldest(amountCents, sales, (sale) => sale.sale_id);
+}
 
-	const ordered = [...sales].sort((a, b) => a.completed_at.localeCompare(b.completed_at));
-	let remaining = amountCents;
-
-	for (const sale of ordered) {
-		if (remaining <= 0n) break;
-		const due = parseCents(sale.outstanding);
-		if (due === null || due <= 0n) continue;
-		const take = minCents(remaining, due);
-		if (take > 0n) {
-			result[sale.sale_id] = formatCents(take);
-			remaining -= take;
-		}
-	}
-
-	return result;
+/**
+ * Convenience oldest-first prefill for the supplier payment form (S8). The
+ * server never invents allocations; this only populates editable browser inputs.
+ */
+export function allocatePurchasesOldestFirst(
+	amountCents: bigint,
+	purchases: ReadonlyArray<{ purchase_id: string; outstanding: string; completed_at: string }>
+): Record<string, string> {
+	return allocateByOldest(amountCents, purchases, (purchase) => purchase.purchase_id);
 }
