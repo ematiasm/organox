@@ -1847,7 +1847,7 @@ export interface components {
          *     always arrives with a writer, a validation and a screen — that is, with code.
          * @enum {string}
          */
-        WalletMovementKind: "sale_payment" | "sale_refund" | "account_payment" | "account_payment_refund" | "purchase_payment" | "expense" | "adjustment_in" | "adjustment_out";
+        WalletMovementKind: "sale_payment" | "sale_refund" | "account_payment" | "account_payment_refund" | "purchase_payment" | "supplier_account_payment" | "supplier_account_refund" | "expense" | "adjustment_in" | "adjustment_out";
         WalletMovementResponse: {
             /** @description Always positive; the kind carries the sign. */
             amount: string;
@@ -1862,7 +1862,8 @@ export interface components {
             /**
              * Format: uuid
              * @description Set for `sale_payment`, `sale_refund`, `account_payment`, `account_payment_refund`,
-             *     or `purchase_payment`: which payment method was used.
+             *     `purchase_payment`, `supplier_account_payment`, or `supplier_account_refund`:
+             *     which payment method was used.
              */
             payment_method_id?: string | null;
             /**

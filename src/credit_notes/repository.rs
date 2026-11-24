@@ -867,6 +867,7 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
                     // Refund money leaves through the sale's own tenders, never
                     // through a customer's account.
                     customer_id: None,
+                    supplier_id: None,
                     note: Some(&label),
                     created_by: Some(new.created_by),
                 },

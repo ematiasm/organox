@@ -39,6 +39,12 @@ pub enum WalletMovementKind {
     /// Money paid out to a supplier when completing a cash purchase, written
     /// only by `POST /purchases/{id}/complete`, never by hand.
     PurchasePayment,
+    /// Money paid out against a supplier's account, written only by
+    /// `POST /suppliers/{id}/payments`, never by hand.
+    SupplierAccountPayment,
+    /// Money received back from a supplier against unapplied advance/credit,
+    /// written only by `POST /suppliers/{id}/credit-refunds`, never by hand.
+    SupplierAccountRefund,
     Expense,
     AdjustmentIn,
     AdjustmentOut,
@@ -52,6 +58,8 @@ impl WalletMovementKind {
             WalletMovementKind::AccountPayment => "account_payment",
             WalletMovementKind::AccountPaymentRefund => "account_payment_refund",
             WalletMovementKind::PurchasePayment => "purchase_payment",
+            WalletMovementKind::SupplierAccountPayment => "supplier_account_payment",
+            WalletMovementKind::SupplierAccountRefund => "supplier_account_refund",
             WalletMovementKind::Expense => "expense",
             WalletMovementKind::AdjustmentIn => "adjustment_in",
             WalletMovementKind::AdjustmentOut => "adjustment_out",
@@ -66,10 +74,12 @@ impl WalletMovementKind {
         match self {
             WalletMovementKind::SalePayment
             | WalletMovementKind::AccountPayment
+            | WalletMovementKind::SupplierAccountRefund
             | WalletMovementKind::AdjustmentIn => 1,
             WalletMovementKind::SaleRefund
             | WalletMovementKind::AccountPaymentRefund
             | WalletMovementKind::PurchasePayment
+            | WalletMovementKind::SupplierAccountPayment
             | WalletMovementKind::Expense
             | WalletMovementKind::AdjustmentOut => -1,
         }
@@ -81,9 +91,11 @@ impl WalletMovementKind {
 
     /// Kinds an operator records by hand. A sale payment is only ever produced
     /// by charging a sale, a sale refund only by a credit note, an account
-    /// payment only by collecting against a customer's account, and an account
-    /// payment refund only by refunding customer credit: none of them is ever
-    /// typed into a form.
+    /// payment only by collecting against a customer's account, an account
+    /// payment refund only by refunding customer credit, a purchase payment
+    /// only by completing a purchase, and supplier account movements only by
+    /// supplier account payment/refund endpoints: none of them is ever typed
+    /// into a form.
     pub fn is_manual(self) -> bool {
         !matches!(
             self,
@@ -92,6 +104,8 @@ impl WalletMovementKind {
                 | WalletMovementKind::AccountPayment
                 | WalletMovementKind::AccountPaymentRefund
                 | WalletMovementKind::PurchasePayment
+                | WalletMovementKind::SupplierAccountPayment
+                | WalletMovementKind::SupplierAccountRefund
         )
     }
 }
@@ -112,11 +126,13 @@ impl FromStr for WalletMovementKind {
             "account_payment" => Ok(WalletMovementKind::AccountPayment),
             "account_payment_refund" => Ok(WalletMovementKind::AccountPaymentRefund),
             "purchase_payment" => Ok(WalletMovementKind::PurchasePayment),
+            "supplier_account_payment" => Ok(WalletMovementKind::SupplierAccountPayment),
+            "supplier_account_refund" => Ok(WalletMovementKind::SupplierAccountRefund),
             "expense" | "gasto" => Ok(WalletMovementKind::Expense),
             "adjustment_in" | "ajuste_entrada" => Ok(WalletMovementKind::AdjustmentIn),
             "adjustment_out" | "ajuste_salida" => Ok(WalletMovementKind::AdjustmentOut),
             other => Err(format!(
-                "unknown kind: {other:?} (valid: sale_payment, sale_refund, account_payment, account_payment_refund, purchase_payment, expense, adjustment_in, adjustment_out)"
+                "unknown kind: {other:?} (valid: sale_payment, sale_refund, account_payment, account_payment_refund, purchase_payment, supplier_account_payment, supplier_account_refund, expense, adjustment_in, adjustment_out)"
             )),
         }
     }
@@ -196,6 +212,10 @@ mod tests {
             WalletMovementKind::AccountPayment.signed_effect(dec!(100.00)),
             dec!(100.00)
         );
+        assert_eq!(
+            WalletMovementKind::SupplierAccountRefund.signed_effect(dec!(100.00)),
+            dec!(100.00)
+        );
     }
 
     #[test]
@@ -217,6 +237,10 @@ mod tests {
             dec!(-100.00)
         );
         assert_eq!(
+            WalletMovementKind::SupplierAccountPayment.signed_effect(dec!(100.00)),
+            dec!(-100.00)
+        );
+        assert_eq!(
             WalletMovementKind::AdjustmentOut.signed_effect(dec!(100.00)),
             dec!(-100.00)
         );
@@ -229,6 +253,8 @@ mod tests {
         assert!(!WalletMovementKind::AccountPayment.is_manual());
         assert!(!WalletMovementKind::AccountPaymentRefund.is_manual());
         assert!(!WalletMovementKind::PurchasePayment.is_manual());
+        assert!(!WalletMovementKind::SupplierAccountPayment.is_manual());
+        assert!(!WalletMovementKind::SupplierAccountRefund.is_manual());
         assert!(WalletMovementKind::Expense.is_manual());
         assert!(WalletMovementKind::AdjustmentIn.is_manual());
         assert!(WalletMovementKind::AdjustmentOut.is_manual());
@@ -242,6 +268,8 @@ mod tests {
             WalletMovementKind::AccountPayment,
             WalletMovementKind::AccountPaymentRefund,
             WalletMovementKind::PurchasePayment,
+            WalletMovementKind::SupplierAccountPayment,
+            WalletMovementKind::SupplierAccountRefund,
             WalletMovementKind::Expense,
             WalletMovementKind::AdjustmentIn,
             WalletMovementKind::AdjustmentOut,

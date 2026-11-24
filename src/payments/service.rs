@@ -246,6 +246,7 @@ pub async fn record_manual_movement(
             // `account_payment` and `account_payment_refund`, which this route
             // must keep rejecting.
             customer_id: None,
+            supplier_id: None,
             note: note.as_deref(),
             created_by: Some(input.actor_id),
         },

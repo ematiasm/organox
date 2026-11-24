@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT w.id,\n               w.name,\n               w.is_active,\n               w.created_at,\n               w.updated_at,\n               COALESCE(SUM(\n                   CASE m.kind\n                       WHEN 'sale_payment' THEN m.amount\n                       WHEN 'sale_refund'  THEN -m.amount\n                       WHEN 'account_payment' THEN m.amount\n                       WHEN 'account_payment_refund' THEN -m.amount\n                       WHEN 'purchase_payment' THEN -m.amount\n                       WHEN 'adjustment_in' THEN m.amount\n                       WHEN 'expense' THEN -m.amount\n                       WHEN 'adjustment_out' THEN -m.amount\n                       ELSE 0\n                   END\n               ), 0)::numeric(14, 2) AS \"balance!: Decimal\"\n        FROM wallets w\n        LEFT JOIN wallet_movements m ON m.wallet_id = w.id\n        WHERE w.id = $1\n        GROUP BY w.id, w.name, w.is_active, w.created_at, w.updated_at\n        ",
+  "query": "\n        SELECT w.id,\n               w.name,\n               w.is_active,\n               w.created_at,\n               w.updated_at,\n               COALESCE(SUM(\n                   CASE m.kind\n                       WHEN 'sale_payment' THEN m.amount\n                       WHEN 'sale_refund'  THEN -m.amount\n                       WHEN 'account_payment' THEN m.amount\n                       WHEN 'account_payment_refund' THEN -m.amount\n                       WHEN 'purchase_payment' THEN -m.amount\n                       WHEN 'supplier_account_payment' THEN -m.amount\n                       WHEN 'supplier_account_refund' THEN m.amount\n                       WHEN 'adjustment_in' THEN m.amount\n                       WHEN 'expense' THEN -m.amount\n                       WHEN 'adjustment_out' THEN -m.amount\n                       ELSE 0\n                   END\n               ), 0)::numeric(14, 2) AS \"balance!: Decimal\"\n        FROM wallets w\n        LEFT JOIN wallet_movements m ON m.wallet_id = w.id\n        WHERE $1 OR w.is_active\n        GROUP BY w.id, w.name, w.is_active, w.created_at, w.updated_at\n        ORDER BY lower(w.name)\n        ",
   "describe": {
     "columns": [
       {
@@ -67,7 +67,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Bool"
       ]
     },
     "nullable": [
@@ -79,5 +79,5 @@
       null
     ]
   },
-  "hash": "65960d5fa5c0b28c8fb6e4f6f8bce9daa2e032ad4d4640dae1562beb4b7ee841"
+  "hash": "e63b63e991a9e633ca00a6f70038f86490e0ff2b161454a6aa0d97a836f1d98a"
 }
