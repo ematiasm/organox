@@ -51,8 +51,8 @@ BEGIN
   for each item (ordered by product_id):
     SELECT kind, is_active FROM products WHERE id = ? FOR UPDATE
     verify active product (not service); accumulate server-calculated total
-  verify Σ payments + on_account == total and active payment methods / wallets
   if on_account > 0:
+    verify Σ payments + on_account == total and active payment methods / wallets
     authorize_credit:
       pg_advisory_xact_lock(hashtextextended(supplier_id::text, 1)) (5s lock_timeout -> 409)
       SELECT is_active, credit_limit FROM suppliers WHERE id = ? FOR UPDATE
@@ -60,6 +60,7 @@ BEGIN
   else:
     SELECT name, is_active FROM suppliers WHERE id = ? FOR UPDATE
     verify supplier is_active
+    verify Σ payments == total and active payment methods / wallets
   for each item:
     INSERT stock_movements (reason = 'purchase', quantity, unit_cost)
   for each payment:
@@ -78,10 +79,14 @@ inactive method or wallet, credit limit exceeded, or busy supplier account),
 the transaction rolls back and leaves the purchase as a `draft` with zero
 stock, wallet, or supplier-account movements written.
 
-Because products are locked in deterministic `product_id` order and every
-on-account write takes the supplier advisory lock (seed `1`) before
-`suppliers FOR UPDATE`, concurrent completions and supplier-account operations
-cannot deadlock.
+Lock ordering is consistent across every writer: purchase completion always
+acquires `purchases` → `products` (in deterministic `product_id` order) →
+optional supplier advisory lock (seed `1`) → `suppliers FOR UPDATE`, while
+standalone `supplier_accounts` writers and supplier deactivation only acquire
+the supplier advisory lock (seed `1`) → `suppliers FOR UPDATE` and never lock
+`purchases` or `products`. Because no transaction inverts any pair in that
+hierarchy, concurrent completions, account payments/refunds/adjustments, and
+deactivations cannot deadlock.
 
 ## Supplier snapshot at completion
 

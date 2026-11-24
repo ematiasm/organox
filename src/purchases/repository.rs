@@ -704,22 +704,29 @@ pub async fn complete(
 
     let total = total.round_dp(2);
 
-    // Validate all payments + on_account before any write.
-    let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
+    // Lock and validate the supplier and payments before any write.
+    //
+    // On the cash path (`on_account == 0`), lock `suppliers FOR UPDATE` and
+    // verify `is_active` before resolving payments so an inactive supplier
+    // keeps its baseline `409 SupplierInactive` precedence over `422` payment
+    // errors. On the on-account path (`on_account > 0`), validate payment
+    // arithmetic and methods first so malformed sums do not acquire the
+    // supplier advisory lock, then run `authorize_credit` (advisory lock
+    // seed `1` -> `suppliers FOR UPDATE`). Both paths preserve the global lock
+    // order `purchases` -> `products` -> [advisory lock] -> `suppliers`.
+    let (charges, supplier_name) = if on_account > Decimal::ZERO {
+        let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
 
-    // Lock and validate the supplier using one consistent lock order: when
-    // charging on account, `authorize_credit` acquires the supplier advisory
-    // lock FIRST and locks `suppliers FOR UPDATE` SECOND (matching deactivation
-    // and every ledger writer so locks can never invert).
-    let supplier_name = if on_account > Decimal::ZERO {
         crate::supplier_accounts::repository::authorize_credit(&mut tx, supplier_id, on_account)
             .await
             .map_err(map_authorize_error)?;
 
-        sqlx::query_scalar!("SELECT name FROM suppliers WHERE id = $1", supplier_id)
+        let name = sqlx::query_scalar!("SELECT name FROM suppliers WHERE id = $1", supplier_id)
             .fetch_optional(&mut *tx)
             .await?
-            .ok_or(RepoError::SupplierNotFound)?
+            .ok_or(RepoError::SupplierNotFound)?;
+
+        (charges, name)
     } else {
         let supplier = sqlx::query!(
             "SELECT name, is_active FROM suppliers WHERE id = $1 FOR UPDATE",
@@ -732,7 +739,9 @@ pub async fn complete(
         if !supplier.is_active {
             return Err(RepoError::SupplierInactive);
         }
-        supplier.name
+
+        let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
+        (charges, supplier.name)
     };
 
     let ledger_note = format!("Purchase {}", &purchase_id.to_string()[..8]);

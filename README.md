@@ -316,7 +316,7 @@ suppliers, supplier accounts and purchases.
   outflows), optional `on_account` charges, hard credit-limit enforcement and
   automatic FIFO application of available supplier advance credit, recording
   line `unit_cost` into `stock_movements` in a single transaction.
-- **430 tests** (unit + integration against real Postgres).
+- **433 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
   navigation rail** (expandable, with groups and user menu), product list and
   drawer, stock movements, **point of sale with barcode scanner and on-account

@@ -141,8 +141,10 @@ clamped to 1–200. `total` uses `COUNT(*) OVER ()` with a fallback count when
 `SupplierResponse` fields: `id`, `name`, `tax_id`, `email`, `phone`,
 `is_active`, `credit_limit` (`null` = unlimited, `"0.00"` = cash only),
 `balance` (derived signed balance; positive = we owe the supplier, negative =
-advance credit), `available_credit` (derived unapplied credit `U`),
-`created_at`, `updated_at`.
+advance credit), `available_credit` (derived unapplied advance credit `U` —
+prepaid overpayment not yet allocated to purchases, matching
+`CustomerResponse.available_credit`, and distinct from remaining credit-limit
+headroom `credit_limit - balance`), `created_at`, `updated_at`.
 
 ## Validation rules
 

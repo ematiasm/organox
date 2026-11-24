@@ -1331,3 +1331,45 @@ async fn deactivation_routes_answer_409_when_supplier_account_is_busy(pool: PgPo
             .is_active
     );
 }
+
+#[sqlx::test]
+async fn credit_limit_check_constraint_rejects_negative_values_at_database_layer(pool: PgPool) {
+    let insert_err = sqlx::query(
+        "INSERT INTO suppliers (id, name, credit_limit) VALUES ($1, 'Negative Limit', -0.01)",
+    )
+    .bind(Uuid::now_v7())
+    .execute(&pool)
+    .await
+    .unwrap_err();
+
+    match insert_err {
+        sqlx::Error::Database(db) => {
+            assert_eq!(db.code().as_deref(), Some("23514"));
+            assert_eq!(db.constraint(), Some("suppliers_credit_limit_not_negative"));
+        }
+        other => panic!("expected DB CHECK violation on INSERT, got {other:?}"),
+    }
+
+    let supplier_id = seed_supplier(&pool, "Valid Limit", None).await;
+    let update_err = sqlx::query("UPDATE suppliers SET credit_limit = -1.00 WHERE id = $1")
+        .bind(supplier_id)
+        .execute(&pool)
+        .await
+        .unwrap_err();
+
+    match update_err {
+        sqlx::Error::Database(db) => {
+            assert_eq!(db.code().as_deref(), Some("23514"));
+            assert_eq!(db.constraint(), Some("suppliers_credit_limit_not_negative"));
+        }
+        other => panic!("expected DB CHECK violation on UPDATE, got {other:?}"),
+    }
+
+    assert_eq!(
+        service::get_supplier(&pool, supplier_id)
+            .await
+            .unwrap()
+            .credit_limit,
+        None
+    );
+}
