@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id,\n            reason AS \"reason: MovementReason\",\n            quantity,\n            CASE reason\n                WHEN 'purchase'   THEN quantity\n                WHEN 'return'     THEN quantity\n                WHEN 'adjustment' THEN quantity\n                WHEN 'sale'       THEN -quantity\n                WHEN 'loss'       THEN -quantity\n            END AS \"signed_quantity!\",\n            unit_cost,\n            note,\n            created_by,\n            created_at\n        FROM stock_movements\n        WHERE product_id = $1\n        ORDER BY created_at DESC, id DESC\n        LIMIT $2\n        ",
+  "query": "\n        SELECT\n            id,\n            reason AS \"reason: MovementReason\",\n            quantity,\n            CASE reason\n                WHEN 'purchase'        THEN quantity\n                WHEN 'return'          THEN quantity\n                WHEN 'adjustment'      THEN quantity\n                WHEN 'sale'            THEN -quantity\n                WHEN 'purchase_return' THEN -quantity\n                WHEN 'loss'            THEN -quantity\n            END AS \"signed_quantity!\",\n            unit_cost,\n            note,\n            created_by,\n            created_at\n        FROM stock_movements\n        WHERE product_id = $1\n        ORDER BY created_at DESC, id DESC\n        LIMIT $2\n        ",
   "describe": {
     "columns": [
       {
@@ -26,7 +26,8 @@
                 "sale",
                 "adjustment",
                 "loss",
-                "return"
+                "return",
+                "purchase_return"
               ]
             }
           }
@@ -117,5 +118,5 @@
       false
     ]
   },
-  "hash": "34e0a6a52910e3f098849a626ad2e89fa7befaff559940427ce6d4ba8ac9f117"
+  "hash": "c83692b7b4703c7471308bd945b1a80aad845284e54774f940a00e9264e76977"
 }

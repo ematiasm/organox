@@ -114,6 +114,7 @@ pub async fn list_wallets(
                        WHEN 'account_payment' THEN m.amount
                        WHEN 'account_payment_refund' THEN -m.amount
                        WHEN 'purchase_payment' THEN -m.amount
+                       WHEN 'purchase_refund'  THEN m.amount
                        WHEN 'supplier_account_payment' THEN -m.amount
                        WHEN 'supplier_account_refund' THEN m.amount
                        WHEN 'adjustment_in' THEN m.amount
@@ -163,6 +164,7 @@ pub async fn get_wallet(pool: &PgPool, id: Uuid) -> Result<WalletWithBalance, Re
                        WHEN 'account_payment' THEN m.amount
                        WHEN 'account_payment_refund' THEN -m.amount
                        WHEN 'purchase_payment' THEN -m.amount
+                       WHEN 'purchase_refund'  THEN m.amount
                        WHEN 'supplier_account_payment' THEN -m.amount
                        WHEN 'supplier_account_refund' THEN m.amount
                        WHEN 'adjustment_in' THEN m.amount
@@ -347,11 +349,15 @@ pub struct NewWalletMovement<'a> {
     pub kind: WalletMovementKind,
     pub amount: Decimal,
     pub sale_id: Option<Uuid>,
-    /// The purchase paid by a `purchase_payment`; `None` for every other kind.
+    /// The purchase paid by a `purchase_payment` or refunded by a
+    /// `purchase_refund`; `None` for every other kind.
     pub purchase_id: Option<Uuid>,
     pub payment_method_id: Option<Uuid>,
     /// The credit note that caused a `sale_refund`; `None` for every other kind.
     pub credit_note_id: Option<Uuid>,
+    /// The purchase return that caused a `purchase_refund`; `None` for every
+    /// other kind.
+    pub purchase_return_id: Option<Uuid>,
     /// The customer an `account_payment` or `account_payment_refund` belongs to;
     /// `None` for every other kind, enforced by the
     /// `wallet_movements_customer_link_only_for_account_kinds` constraint.
@@ -382,8 +388,8 @@ where
         r#"
         INSERT INTO wallet_movements
             (id, wallet_id, kind, amount, sale_id, purchase_id, payment_method_id, credit_note_id,
-             customer_id, supplier_id, note, created_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             purchase_return_id, customer_id, supplier_id, note, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         "#,
         id,
         new.wallet_id,
@@ -393,6 +399,7 @@ where
         new.purchase_id,
         new.payment_method_id,
         new.credit_note_id,
+        new.purchase_return_id,
         new.customer_id,
         new.supplier_id,
         new.note,

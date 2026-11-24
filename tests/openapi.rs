@@ -18,6 +18,7 @@ fn supplier_accounts_paths_and_tag_are_documented() {
         ("/api/v1/suppliers/{id}/credit-refunds", &["post"][..]),
         ("/api/v1/suppliers/{id}/adjustments", &["get", "post"][..]),
         ("/api/v1/accounts/payables", &["get"][..]),
+        ("/api/v1/purchases/{id}/returns", &["get", "post"][..]),
     ] {
         let entry = paths
             .get(path)
@@ -34,6 +35,10 @@ fn supplier_accounts_paths_and_tag_are_documented() {
     assert!(
         tags.iter().any(|t| t["name"] == "supplier_accounts"),
         "missing supplier_accounts tag"
+    );
+    assert!(
+        tags.iter().any(|t| t["name"] == "purchase_returns"),
+        "missing purchase_returns tag"
     );
 }
 
@@ -74,6 +79,10 @@ fn supplier_accounts_suppliers_purchases_and_wallet_schemas_are_complete() {
         .as_array()
         .expect("WalletMovementKind enum");
     assert!(
+        kinds.iter().any(|v| v == "purchase_refund"),
+        "missing purchase_refund in WalletMovementKind"
+    );
+    assert!(
         kinds.iter().any(|v| v == "supplier_account_payment"),
         "missing supplier_account_payment in WalletMovementKind"
     );
@@ -94,7 +103,7 @@ fn supplier_accounts_suppliers_purchases_and_wallet_schemas_are_complete() {
         ),
         (
             "OutstandingPurchaseResponse",
-            &["charged", "allocated", "outstanding"],
+            &["charged", "cancelled", "allocated", "outstanding"],
         ),
         ("RecordSupplierPaymentRequest", &["amount"]),
         ("SupplierPaymentAllocationRequest", &["amount"]),

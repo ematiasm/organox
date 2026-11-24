@@ -117,7 +117,7 @@ pub async fn list_suppliers(
         LEFT JOIN LATERAL (
             SELECT
                 SUM(amount) AS balance,
-                SUM(CASE WHEN kind = 'payment' THEN -amount ELSE 0 END) AS paid,
+                SUM(CASE WHEN kind IN ('payment', 'purchase_return_credit') THEN -amount ELSE 0 END) AS paid,
                 SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END) AS refunded
             FROM supplier_account_entries
             WHERE supplier_id = p.id
@@ -204,7 +204,7 @@ pub async fn find_supplier(pool: &PgPool, id: Uuid) -> Result<Option<Supplier>, 
         LEFT JOIN LATERAL (
             SELECT
                 SUM(amount) AS balance,
-                SUM(CASE WHEN kind = 'payment' THEN -amount ELSE 0 END) AS paid,
+                SUM(CASE WHEN kind IN ('payment', 'purchase_return_credit') THEN -amount ELSE 0 END) AS paid,
                 SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END) AS refunded
             FROM supplier_account_entries
             WHERE supplier_id = s.id

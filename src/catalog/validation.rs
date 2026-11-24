@@ -41,6 +41,9 @@ pub enum ValidationError {
     #[error("a service does not track stock")]
     ServiceHasNoStock,
 
+    #[error("purchase_return stock movements can only be written through a purchase return")]
+    NonManualReason,
+
     #[error("the quantity was cancelled and insufficient stock remained")]
     InsufficientStock,
 

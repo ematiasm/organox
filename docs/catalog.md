@@ -7,10 +7,12 @@
 
 ```sql
 SELECT SUM(CASE reason
-    WHEN 'purchase'   THEN quantity
-    WHEN 'adjustment' THEN quantity
-    WHEN 'sale'       THEN -quantity
-    WHEN 'loss'       THEN -quantity
+    WHEN 'purchase'        THEN quantity
+    WHEN 'return'          THEN quantity
+    WHEN 'adjustment'      THEN quantity
+    WHEN 'sale'            THEN -quantity
+    WHEN 'purchase_return' THEN -quantity
+    WHEN 'loss'            THEN -quantity
 END)
 FROM stock_movements WHERE product_id = $1;
 ```
@@ -49,8 +51,10 @@ place (`MovementReason::sign`):
 | Reason | Effect | Purpose |
 |---|---|---|
 | `purchase` | `+` | Purchase from a supplier |
+| `return` | `+` | Customer return (credit note) |
 | `adjustment` | `+` | Inventory correction |
 | `sale` | `−` | Sale to a customer |
+| `purchase_return` | `−` | Return of purchased goods to a supplier |
 | `loss` | `−` | Breakage, expiry, theft |
 
 Storing negative quantities allows "a sale of -5" that adds stock: a sign error

@@ -829,6 +829,7 @@ async fn prepay_supplier(
             purchase_id: None,
             payment_method_id: Some(method_id),
             credit_note_id: None,
+            purchase_return_id: None,
             customer_id: None,
             supplier_id: Some(supplier_id),
             note: Some("supplier advance"),

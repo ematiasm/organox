@@ -86,6 +86,7 @@ async fn insert_supplier_movement(
             purchase_id: None,
             payment_method_id: Some(method_id),
             credit_note_id: None,
+            purchase_return_id: None,
             customer_id: None,
             supplier_id: Some(supplier_id),
             note: Some("ledger test"),
@@ -432,6 +433,7 @@ async fn write_guards_reject_invalid_backing_charges_payments_allocations_and_ad
             purchase_id: Some(p_partial),
             payment_method_id: Some(method),
             credit_note_id: None,
+            purchase_return_id: None,
             customer_id: None,
             supplier_id: None,
             note: Some("upfront cash"),
@@ -905,4 +907,174 @@ async fn lock_supplier_maps_lock_timeout_to_supplier_busy_and_aborts_tx(pool: Pg
 
     waiter.rollback().await.unwrap();
     holder.rollback().await.unwrap();
+}
+
+#[sqlx::test]
+async fn purchase_return_and_return_credit_preserve_invariants_and_apply_to_future_purchases(
+    pool: PgPool,
+) {
+    let actor = setup_actor();
+    let supplier = setup_supplier(&pool, "ReturnLedgerCo", None).await;
+    let p1 = setup_completed_purchase(&pool, supplier, "ReturnLedgerCo", dec!(200.00), actor).await;
+    let p2 = setup_completed_purchase(&pool, supplier, "ReturnLedgerCo", dec!(100.00), actor).await;
+    let (wallet, method) = setup_method(&pool, "Bank").await;
+
+    // Charge p1 (200) on account.
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, p1, dec!(200.00), actor)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Insert a purchase_return document for 120 (80 debt cancel + 40 return credit
+    // in separate steps, proving both ledger entry kinds and append-only triggers).
+    let ret1 = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchase_returns (id, purchase_id, total, surplus_mode, reason, created_by)
+         VALUES ($1, $2, 120.00, 'supplier_credit', 'Damaged batch', $3)",
+    )
+    .bind(ret1)
+    .bind(p1)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Append-only trigger blocks UPDATE and DELETE on purchase_returns.
+    assert!(
+        sqlx::query("UPDATE purchase_returns SET reason = 'edited' WHERE id = $1")
+            .bind(ret1)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("DELETE FROM purchase_returns WHERE id = $1")
+            .bind(ret1)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+
+    // Cancel 80 of p1's 200 debt and grant 40 as supplier return credit.
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_purchase_return(
+        &mut tx,
+        supplier,
+        p1,
+        ret1,
+        dec!(80.00),
+        Some("ret1"),
+        actor,
+    )
+    .await
+    .unwrap();
+    ledger::record_purchase_return_credit(
+        &mut tx,
+        supplier,
+        ret1,
+        dec!(40.00),
+        Some("ret1 credit"),
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Position: balance = 200 - 80 - 40 = 80, U = 40, outstanding(p1) = 120.
+    // Identity: 80 + 40 == 120 + 0.
+    let pos = ledger::account_position(&pool, supplier).await.unwrap();
+    assert_eq!(pos.balance, dec!(80.00));
+    assert_eq!(pos.unapplied_credit, dec!(40.00));
+    assert_eq!(pos.outstanding_total, dec!(120.00));
+    assert!(pos.is_consistent());
+
+    let open = ledger::outstanding_by_purchase(&pool, supplier)
+        .await
+        .unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].purchase_id, p1);
+    assert_eq!(open[0].charged, dec!(200.00));
+    assert_eq!(open[0].cancelled, dec!(80.00));
+    assert_eq!(open[0].allocated, dec!(0.00));
+    assert_eq!(open[0].outstanding, dec!(120.00));
+
+    // Trying to allocate 120.01 to p1 fails both in Rust and at the DB ceiling.
+    let pay_mv = insert_supplier_movement(
+        &pool,
+        wallet,
+        method,
+        supplier,
+        WalletMovementKind::SupplierAccountPayment,
+        dec!(150.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: pay_mv,
+            amount: dec!(150.00),
+            allocations: &[(p1, dec!(120.01))],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .err()
+    .expect("over-allocation past return cancellation must fail");
+    assert!(matches!(
+        err,
+        RepoError::OutstandingExceeded { requested, outstanding }
+            if requested == dec!(120.01) && outstanding == dec!(120.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    // Charge p2 (100) on account and apply available credit -> consumes the 40 return credit!
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, p2, dec!(100.00), actor)
+        .await
+        .unwrap();
+    let applied = ledger::apply_available_credit(&mut tx, supplier, p2, dec!(100.00))
+        .await
+        .unwrap();
+    assert_eq!(applied, dec!(40.00));
+    tx.commit().await.unwrap();
+
+    let pos = ledger::account_position(&pool, supplier).await.unwrap();
+    assert_eq!(pos.balance, dec!(180.00));
+    assert_eq!(pos.unapplied_credit, dec!(0.00));
+    assert_eq!(pos.outstanding_total, dec!(180.00));
+    assert!(pos.is_consistent());
+
+    // Raw DB deferred trigger refuses a purchase_return entry exceeding charged - allocated.
+    let ret2 = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchase_returns (id, purchase_id, total, surplus_mode, reason, created_by)
+         VALUES ($1, $2, 70.00, 'supplier_credit', 'Over-cancel trigger test', $3)",
+    )
+    .bind(ret2)
+    .bind(p2)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO supplier_account_entries
+            (id, supplier_id, kind, amount, purchase_id, purchase_return_id, created_by)
+         VALUES ($1, $2, 'purchase_return', -60.01, $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(supplier)
+    .bind(p2)
+    .bind(ret2)
+    .bind(actor)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    assert!(tx.commit().await.is_err());
 }

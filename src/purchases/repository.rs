@@ -781,6 +781,7 @@ pub async fn complete(
                 purchase_id: Some(purchase_id),
                 payment_method_id: Some(charge.payment_method_id),
                 credit_note_id: None,
+                purchase_return_id: None,
                 customer_id: None,
                 supplier_id: None,
                 note: Some(ledger_note.as_str()),

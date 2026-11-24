@@ -36,6 +36,8 @@
 	const ENTRY_LABELS: Record<SupplierAccountEntryKind, string> = {
 		purchase_charge: 'Purchase charge',
 		payment: 'Payment',
+		purchase_return: 'Purchase return',
+		purchase_return_credit: 'Return credit',
 		credit_refund: 'Credit refund',
 		adjustment_in: 'Adjustment (+)',
 		adjustment_out: 'Adjustment (−)'

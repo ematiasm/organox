@@ -31,14 +31,17 @@ sign), `amount` here is **signed**, and the sign is its effect on what we owe:
 
 | kind | sign | meaning | required link | forbidden links |
 |---|---|---|---|---|
-| `purchase_charge` | `+` | a purchase left part of its total on account | `purchase_id` (unique per purchase) | `wallet_movement_id` |
-| `adjustment_in` | `+` | manual increase of payable (e.g. opening balance) | non-blank `note` | `purchase_id`, `wallet_movement_id` |
-| `credit_refund` | `+` | unapplied advance credit refunded back by the supplier | `wallet_movement_id` (unique per movement), non-blank `note` | `purchase_id` |
-| `payment` | `−` | money paid against the supplier's account | `wallet_movement_id` (unique per movement) | `purchase_id` |
-| `adjustment_out` | `−` | manual decrease of payable | non-blank `note` | `purchase_id`, `wallet_movement_id` |
+| `purchase_charge` | `+` | a purchase left part of its total on account | `purchase_id` (unique per purchase) | `wallet_movement_id`, `purchase_return_id` |
+| `adjustment_in` | `+` | manual increase of payable (e.g. opening balance) | non-blank `note` | `purchase_id`, `wallet_movement_id`, `purchase_return_id` |
+| `credit_refund` | `+` | unapplied advance credit refunded back by the supplier | `wallet_movement_id` (unique per movement), non-blank `note` | `purchase_id`, `purchase_return_id` |
+| `payment` | `−` | money paid against the supplier's account | `wallet_movement_id` (unique per movement) | `purchase_id`, `purchase_return_id` |
+| `purchase_return` | `−` | returned merchandise cancelled open payable on a purchase | `purchase_id`, `purchase_return_id` (unique per return) | `wallet_movement_id` |
+| `purchase_return_credit` | `−` | paid surplus from a purchase return kept as unapplied supplier credit | `purchase_return_id` (unique per return) | `purchase_id`, `wallet_movement_id` |
+| `adjustment_out` | `−` | manual decrease of payable | non-blank `note` | `purchase_id`, `wallet_movement_id`, `purchase_return_id` |
 
-There is deliberately **no supplier credit-note kind**: supplier returns and
-debit notes are out of scope in this delivery.
+Purchase returns and return credits (`0030_purchase_return_enums.sql` and
+`0031_purchase_returns.sql`) are written exclusively by
+`POST /api/v1/purchases/{id}/returns` (see `docs/purchase-returns.md`).
 
 Database constraints in `0025_supplier_accounts.sql` enforce these invariants:
 `supplier_account_entries_amount_not_zero`,
@@ -60,17 +63,21 @@ purchase outstanding is derived from the ledger.
 
 ## Two derived quantities and one invariant
 
-Let `C` = sum of `purchase_charge`, `Adj` = signed sum of `adjustment_in` +
-`adjustment_out`, `P` = sum of `|payment|`, `F` = sum of `credit_refund`, and
-`A` = sum of allocations in `supplier_account_allocations`.
+Let `C` = sum of `purchase_charge`, `R` = sum of `|purchase_return|`, `Adj` =
+signed sum of `adjustment_in` + `adjustment_out`, `P` = sum of `|payment| +
+|purchase_return_credit|`, `F` = sum of `credit_refund`, and `A` = sum of
+allocations in `supplier_account_allocations`.
 
 - **Balance**: `COALESCE(SUM(amount), 0)::numeric(14,2)`. Positive means the
   business owes the supplier; negative means the business holds advance credit
   with the supplier.
-- **Unapplied credit (`U`)**: `P − A − F`, never negative. Money paid to the
-  supplier that has neither been allocated to a purchase nor refunded back.
-- **Outstanding of a purchase**: `charge(purchase) − allocations(purchase)`,
-  never negative.
+- **Unapplied credit (`U`)**: `P − A − F`, never negative. Advance payments and
+  `purchase_return_credit` balances that have neither been allocated to a
+  purchase nor refunded back.
+- **Outstanding of a purchase**: `charge(purchase) − cancelled(purchase) −
+  allocations(purchase)`, never negative (backed by deferred triggers
+  `supplier_account_allocations_fit_the_purchase` and
+  `supplier_account_return_fits_the_purchase`).
 
 Because debt and advance credit share one signed balance, the business can owe
 on one purchase while holding unallocated advance money at the same time; `U`
@@ -247,9 +254,6 @@ are summarized in `docs/purchases.md` and `docs/suppliers.md`.
 - **Due dates and payment terms**: aging buckets count elapsed days from
   `purchases.completed_at`; there is no per-supplier term or per-purchase due
   date.
-- **Supplier credit notes / returns**: returning merchandise from a completed
-  purchase or applying a supplier debit note against an open payable is out of
-  scope in this delivery.
 - **Interest or late fees**: balances do not accrue interest automatically.
 - **Credit refund and adjustment UI forms**: the frontend covers on-account
   purchase completion (`/operations/purchases`), supplier list balances and

@@ -16,7 +16,8 @@
                 "sale",
                 "adjustment",
                 "loss",
-                "return"
+                "return",
+                "purchase_return"
               ]
             }
           }

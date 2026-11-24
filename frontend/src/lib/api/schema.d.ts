@@ -539,6 +539,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/purchases/{id}/returns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Returnable lines, open payable, wallet refund capacity, and issued returns
+         *     for one purchase.
+         */
+        get: operations["get_purchase_returns_doc"];
+        put?: never;
+        /**
+         * Return part or all of a completed purchase to its supplier.
+         * @description Deducts returned goods from stock (rejecting with 409 when stock is
+         *     insufficient), cancels open payable debt on the purchase first, and settles
+         *     any already-paid surplus according to `surplus_mode`: either refunding into
+         *     the wallets that paid for the purchase (`wallet_refund`) or leaving it as
+         *     unapplied supplier credit (`supplier_credit`).
+         */
+        post: operations["create_purchase_return_doc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/purchases/{id}/supplier": {
         parameters: {
             query?: never;
@@ -1237,6 +1265,24 @@ export interface components {
             price?: string | null;
             sku?: string | null;
         };
+        /** @description Request body for `POST /api/v1/purchases/{id}/returns`. */
+        CreatePurchaseReturnRequest: {
+            /**
+             * @description Optional retry key unique per purchase. Repeating a request with the
+             *     same key returns the original return with `200` instead of writing a
+             *     duplicate.
+             */
+            idempotency_key?: string | null;
+            items: components["schemas"]["PurchaseReturnLineRequest"][];
+            /** @description Why the goods are being returned. Required and stored on the document. */
+            reason: string;
+            /**
+             * @description How any already-paid surplus above the purchase's open payable should
+             *     be handled (`wallet_refund` or `supplier_credit`). Defaults to
+             *     `wallet_refund`.
+             */
+            surplus_mode?: components["schemas"]["SurplusMode"];
+        };
         CreateSupplierRequest: {
             /**
              * @description Optional credit limit: absent or `null` means unlimited, `0` means cash
@@ -1467,7 +1513,7 @@ export interface components {
          * @description Why stock was moved.
          * @enum {string}
          */
-        MovementReason: "purchase" | "sale" | "return" | "adjustment" | "loss";
+        MovementReason: "purchase" | "sale" | "return" | "purchase_return" | "adjustment" | "loss";
         MovementResponse: {
             /** Format: date-time */
             created_at: string;
@@ -1492,11 +1538,13 @@ export interface components {
         OutstandingPurchaseResponse: {
             /** @example 80.00 */
             allocated: string;
+            /** @example 20.00 */
+            cancelled: string;
             /** @example 200.00 */
             charged: string;
             /** Format: date-time */
             completed_at: string;
-            /** @example 120.00 */
+            /** @example 100.00 */
             outstanding: string;
             /** Format: uuid */
             purchase_id: string;
@@ -1704,6 +1752,70 @@ export interface components {
             /** @example 1255.00 */
             total: string;
         };
+        PurchaseReturnItemResponse: {
+            /** Format: uuid */
+            product_id: string;
+            product_name: string;
+            quantity: string;
+            subtotal: string;
+            unit_cost: string;
+        };
+        /**
+         * @description One line to return to the supplier. Unit cost is never sent by the client:
+         *     the server uses the frozen cost from the linked purchase line.
+         */
+        PurchaseReturnLineRequest: {
+            /** Format: uuid */
+            product_id: string;
+            /** @example 2 */
+            quantity: string;
+        };
+        /** @description One wallet inflow written when `surplus_mode = wallet_refund`. */
+        PurchaseReturnRefundResponse: {
+            amount: string;
+            /** Format: uuid */
+            payment_method_id: string;
+            payment_method_name: string;
+            /** Format: uuid */
+            wallet_id: string;
+            wallet_name: string;
+        };
+        PurchaseReturnResponse: {
+            /** Format: date-time */
+            created_at: string;
+            /** @description Portion of `total` left as unapplied supplier credit (`surplus_mode = supplier_credit`). */
+            credit_granted: string;
+            /** @description Portion of `total` that cancelled open payable debt on the purchase. */
+            debt_cancelled: string;
+            /** Format: uuid */
+            id: string;
+            items: components["schemas"]["PurchaseReturnItemResponse"][];
+            /** Format: uuid */
+            purchase_id: string;
+            reason: string;
+            refunds: components["schemas"]["PurchaseReturnRefundResponse"][];
+            surplus_mode: components["schemas"]["SurplusMode"];
+            /** @description Server-calculated total from the returned quantities and frozen unit costs. */
+            total: string;
+        };
+        /** @description Returnable state and issued returns for one purchase. */
+        PurchaseReturnsSummaryResponse: {
+            items: components["schemas"]["ReturnablePurchaseLineResponse"][];
+            /** Format: uuid */
+            purchase_id: string;
+            /** @description Current open payable on this purchase (cancelled first by any new return). */
+            purchase_outstanding: string;
+            purchase_status: components["schemas"]["PurchaseStatus"];
+            purchase_total: string;
+            returnable_total: string;
+            returned_total: string;
+            returns: components["schemas"]["PurchaseReturnResponse"][];
+            /** Format: uuid */
+            supplier_id?: string | null;
+            supplier_name?: string | null;
+            /** @description Maximum paid surplus that can still be refunded to wallets for this purchase. */
+            wallet_refundable_capacity: string;
+        };
         /** @enum {string} */
         PurchaseStatus: "draft" | "completed" | "cancelled";
         /** @description Which sale one slice of the collected money pays. */
@@ -1898,6 +2010,16 @@ export interface components {
         ResetPasswordRequest: {
             new_password: string;
         };
+        /** @description One purchased line with cumulative returned and remaining returnable quantities. */
+        ReturnablePurchaseLineResponse: {
+            /** Format: uuid */
+            product_id: string;
+            product_name: string;
+            quantity: string;
+            returnable_quantity: string;
+            returned_quantity: string;
+            unit_cost: string;
+        };
         /** @enum {string} */
         Role: "owner" | "manager";
         /**
@@ -2008,7 +2130,7 @@ export interface components {
          * @description Why the supplier's account moved.
          * @enum {string}
          */
-        SupplierAccountEntryKind: "purchase_charge" | "payment" | "credit_refund" | "adjustment_in" | "adjustment_out";
+        SupplierAccountEntryKind: "purchase_charge" | "payment" | "purchase_return" | "purchase_return_credit" | "credit_refund" | "adjustment_in" | "adjustment_out";
         /**
          * @description Complete account statement for one supplier: entries oldest first with a
          *     running balance, current position, and every purchase with open payable.
@@ -2058,6 +2180,8 @@ export interface components {
             note?: string | null;
             /** Format: uuid */
             purchase_id?: string | null;
+            /** Format: uuid */
+            purchase_return_id?: string | null;
             /**
              * @description Supplier's running balance immediately after this entry.
              * @example 150.00
@@ -2253,6 +2377,12 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /**
+         * @description How an already-paid surplus (the portion of a return that exceeds the
+         *     purchase's open payable debt) should be settled.
+         * @enum {string}
+         */
+        SurplusMode: "wallet_refund" | "supplier_credit";
         UpdateCustomerRequest: {
             /**
              * @description The one clearable field: absent leaves the limit untouched, an explicit
@@ -2321,7 +2451,7 @@ export interface components {
          *     always arrives with a writer, a validation and a screen — that is, with code.
          * @enum {string}
          */
-        WalletMovementKind: "sale_payment" | "sale_refund" | "account_payment" | "account_payment_refund" | "purchase_payment" | "supplier_account_payment" | "supplier_account_refund" | "expense" | "adjustment_in" | "adjustment_out";
+        WalletMovementKind: "sale_payment" | "sale_refund" | "account_payment" | "account_payment_refund" | "purchase_payment" | "purchase_refund" | "supplier_account_payment" | "supplier_account_refund" | "expense" | "adjustment_in" | "adjustment_out";
         WalletMovementResponse: {
             /** @description Always positive; the kind carries the sign. */
             amount: string;
@@ -4017,6 +4147,119 @@ export interface operations {
             };
             /** @description Purchase is closed */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_purchase_returns_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Purchase ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Return summary for the purchase */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseReturnsSummaryResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_purchase_return_doc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Purchase ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePurchaseReturnRequest"];
+            };
+        };
+        responses: {
+            /** @description Existing purchase return returned for a repeated idempotency key */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseReturnResponse"];
+                };
+            };
+            /** @description Purchase return issued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseReturnResponse"];
+                };
+            };
+            /** @description No session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Purchase not completed, quantity or total exceeds purchase, insufficient stock, insufficient wallet refund capacity, inactive supplier for credit, or busy supplier account */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid reason, idempotency key, product not in purchase, duplicate product, or invalid quantity */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

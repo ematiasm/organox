@@ -3,8 +3,8 @@
 //! Mirrors [`crate::customer_accounts::model`]: neither `suppliers` nor
 //! `purchases` stores a balance or paid flag. Every balance is the signed sum
 //! of `supplier_account_entries`, and every purchase's outstanding payable is
-//! its `purchase_charge` minus the `supplier_account_allocations` pointing at
-//! it.
+//! its `purchase_charge` minus `purchase_return` cancellations and the
+//! `supplier_account_allocations` pointing at it.
 //!
 //! Two quantities describe a supplier account:
 //!
@@ -34,6 +34,10 @@ pub enum SupplierAccountEntryKind {
     PurchaseCharge,
     /// Money paid against the supplier account.
     Payment,
+    /// Returned merchandise cancelled part or all of an open purchase payable.
+    PurchaseReturn,
+    /// Paid surplus from a purchase return kept as unapplied supplier credit.
+    PurchaseReturnCredit,
     /// Unapplied advance/credit refunded back by the supplier.
     CreditRefund,
     /// Manual increase of payable (e.g. opening balance or correction).
@@ -47,6 +51,8 @@ impl SupplierAccountEntryKind {
         match self {
             SupplierAccountEntryKind::PurchaseCharge => "purchase_charge",
             SupplierAccountEntryKind::Payment => "payment",
+            SupplierAccountEntryKind::PurchaseReturn => "purchase_return",
+            SupplierAccountEntryKind::PurchaseReturnCredit => "purchase_return_credit",
             SupplierAccountEntryKind::CreditRefund => "credit_refund",
             SupplierAccountEntryKind::AdjustmentIn => "adjustment_in",
             SupplierAccountEntryKind::AdjustmentOut => "adjustment_out",
@@ -59,7 +65,10 @@ impl SupplierAccountEntryKind {
             SupplierAccountEntryKind::PurchaseCharge
             | SupplierAccountEntryKind::CreditRefund
             | SupplierAccountEntryKind::AdjustmentIn => 1,
-            SupplierAccountEntryKind::Payment | SupplierAccountEntryKind::AdjustmentOut => -1,
+            SupplierAccountEntryKind::Payment
+            | SupplierAccountEntryKind::PurchaseReturn
+            | SupplierAccountEntryKind::PurchaseReturnCredit
+            | SupplierAccountEntryKind::AdjustmentOut => -1,
         }
     }
 
@@ -86,11 +95,13 @@ impl FromStr for SupplierAccountEntryKind {
         match s.to_ascii_lowercase().as_str() {
             "purchase_charge" => Ok(SupplierAccountEntryKind::PurchaseCharge),
             "payment" => Ok(SupplierAccountEntryKind::Payment),
+            "purchase_return" => Ok(SupplierAccountEntryKind::PurchaseReturn),
+            "purchase_return_credit" => Ok(SupplierAccountEntryKind::PurchaseReturnCredit),
             "credit_refund" => Ok(SupplierAccountEntryKind::CreditRefund),
             "adjustment_in" => Ok(SupplierAccountEntryKind::AdjustmentIn),
             "adjustment_out" => Ok(SupplierAccountEntryKind::AdjustmentOut),
             other => Err(format!(
-                "unknown kind: {other:?} (valid: purchase_charge, payment, credit_refund, adjustment_in, adjustment_out)"
+                "unknown kind: {other:?} (valid: purchase_charge, payment, purchase_return, purchase_return_credit, credit_refund, adjustment_in, adjustment_out)"
             )),
         }
     }
@@ -105,6 +116,7 @@ pub struct SupplierAccountEntry {
     /// Signed: positive grows what we owe, negative shrinks it.
     pub amount: Decimal,
     pub purchase_id: Option<Uuid>,
+    pub purchase_return_id: Option<Uuid>,
     pub wallet_movement_id: Option<Uuid>,
     pub note: Option<String>,
     pub created_by: Uuid,
@@ -127,6 +139,7 @@ pub struct PurchaseOutstanding {
     pub purchase_id: Uuid,
     pub completed_at: DateTime<Utc>,
     pub charged: Decimal,
+    pub cancelled: Decimal,
     pub allocated: Decimal,
     pub outstanding: Decimal,
 }
@@ -269,10 +282,14 @@ mod tests {
         assert_eq!(SupplierAccountEntryKind::CreditRefund.sign(), 1);
         assert_eq!(SupplierAccountEntryKind::AdjustmentIn.sign(), 1);
         assert_eq!(SupplierAccountEntryKind::Payment.sign(), -1);
+        assert_eq!(SupplierAccountEntryKind::PurchaseReturn.sign(), -1);
+        assert_eq!(SupplierAccountEntryKind::PurchaseReturnCredit.sign(), -1);
         assert_eq!(SupplierAccountEntryKind::AdjustmentOut.sign(), -1);
 
         assert!(!SupplierAccountEntryKind::PurchaseCharge.is_manual());
         assert!(!SupplierAccountEntryKind::Payment.is_manual());
+        assert!(!SupplierAccountEntryKind::PurchaseReturn.is_manual());
+        assert!(!SupplierAccountEntryKind::PurchaseReturnCredit.is_manual());
         assert!(!SupplierAccountEntryKind::CreditRefund.is_manual());
         assert!(SupplierAccountEntryKind::AdjustmentIn.is_manual());
         assert!(SupplierAccountEntryKind::AdjustmentOut.is_manual());
@@ -283,6 +300,8 @@ mod tests {
         for kind in [
             SupplierAccountEntryKind::PurchaseCharge,
             SupplierAccountEntryKind::Payment,
+            SupplierAccountEntryKind::PurchaseReturn,
+            SupplierAccountEntryKind::PurchaseReturnCredit,
             SupplierAccountEntryKind::CreditRefund,
             SupplierAccountEntryKind::AdjustmentIn,
             SupplierAccountEntryKind::AdjustmentOut,

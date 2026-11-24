@@ -552,13 +552,14 @@ async fn an_amount_with_more_than_two_decimals_is_rejected(pool: PgPool) {
 /// time, which is the only way to notice that the SQL `CASE` needs it too.
 #[sqlx::test]
 async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
-    fn all_kinds() -> [WalletMovementKind; 10] {
+    fn all_kinds() -> [WalletMovementKind; 11] {
         let kinds = [
             WalletMovementKind::SalePayment,
             WalletMovementKind::SaleRefund,
             WalletMovementKind::AccountPayment,
             WalletMovementKind::AccountPaymentRefund,
             WalletMovementKind::PurchasePayment,
+            WalletMovementKind::PurchaseRefund,
             WalletMovementKind::SupplierAccountPayment,
             WalletMovementKind::SupplierAccountRefund,
             WalletMovementKind::Expense,
@@ -572,6 +573,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 | WalletMovementKind::AccountPayment
                 | WalletMovementKind::AccountPaymentRefund
                 | WalletMovementKind::PurchasePayment
+                | WalletMovementKind::PurchaseRefund
                 | WalletMovementKind::SupplierAccountPayment
                 | WalletMovementKind::SupplierAccountRefund
                 | WalletMovementKind::Expense
@@ -637,6 +639,17 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
+    // A purchase refund must name the purchase return that caused it.
+    let purchase_return: Uuid = sqlx::query_scalar(
+        "INSERT INTO purchase_returns (id, purchase_id, total, surplus_mode, reason, created_by)
+         VALUES ($1, $2, 10.00, 'wallet_refund', 'Refund proof', $3) RETURNING id",
+    )
+    .bind(Uuid::now_v7())
+    .bind(purchase)
+    .bind(owner)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
 
     // A supplier account movement must name the supplier and the payment method.
     let supplier: Uuid =
@@ -653,6 +666,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
             purchase_id,
             payment_method_id,
             credit_note_id,
+            purchase_return_id,
             customer_id,
             supplier_id,
         ) = match kind {
@@ -661,6 +675,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 Some(sale),
                 None,
                 Some(method),
+                None,
                 None,
                 None,
                 None,
@@ -675,6 +690,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 Some(note),
                 None,
                 None,
+                None,
             ),
             WalletMovementKind::AccountPayment | WalletMovementKind::AccountPaymentRefund => (
                 ledger::create_wallet(&pool, &format!("Wallet {index}"))
@@ -683,6 +699,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 None,
                 None,
                 Some(method),
+                None,
                 None,
                 Some(customer),
                 None,
@@ -697,6 +714,19 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 None,
                 None,
                 None,
+                None,
+            ),
+            WalletMovementKind::PurchaseRefund => (
+                ledger::create_wallet(&pool, &format!("Wallet {index}"))
+                    .await
+                    .unwrap(),
+                None,
+                Some(purchase),
+                Some(method),
+                None,
+                Some(purchase_return),
+                None,
+                None,
             ),
             WalletMovementKind::SupplierAccountPayment
             | WalletMovementKind::SupplierAccountRefund => (
@@ -708,6 +738,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 Some(method),
                 None,
                 None,
+                None,
                 Some(supplier),
             ),
             WalletMovementKind::Expense
@@ -716,6 +747,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 ledger::create_wallet(&pool, &format!("Wallet {index}"))
                     .await
                     .unwrap(),
+                None,
                 None,
                 None,
                 None,
@@ -735,6 +767,7 @@ async fn every_kind_is_counted_with_its_own_sign(pool: PgPool) {
                 purchase_id,
                 payment_method_id,
                 credit_note_id,
+                purchase_return_id,
                 customer_id,
                 supplier_id,
                 note: None,
@@ -794,7 +827,11 @@ async fn supplier_account_movements_cannot_be_typed_by_hand(pool: PgPool) {
     let cookie = login(&pool).await;
     let wallet = create_wallet(&pool, &cookie, "Cash").await;
 
-    for kind in ["supplier_account_payment", "supplier_account_refund"] {
+    for kind in [
+        "purchase_refund",
+        "supplier_account_payment",
+        "supplier_account_refund",
+    ] {
         let (status, _) = call(
             &pool,
             &cookie,
@@ -881,6 +918,7 @@ async fn supplier_account_wallet_link_constraints_reject_invalid_combinations(po
             purchase_id: None,
             payment_method_id: None,
             credit_note_id: None,
+            purchase_return_id: None,
             customer_id: None,
             supplier_id: Some(supplier),
             note: None,
@@ -910,6 +948,7 @@ async fn supplier_account_wallet_link_constraints_reject_invalid_combinations(po
                 purchase_id: None,
                 payment_method_id: Some(method),
                 credit_note_id: None,
+                purchase_return_id: None,
                 customer_id: None,
                 supplier_id: None,
                 note: None,
@@ -934,6 +973,7 @@ async fn supplier_account_wallet_link_constraints_reject_invalid_combinations(po
                 purchase_id: None,
                 payment_method_id: None,
                 credit_note_id: None,
+                purchase_return_id: None,
                 customer_id: None,
                 supplier_id: Some(supplier),
                 note: None,
@@ -960,6 +1000,7 @@ async fn supplier_account_wallet_link_constraints_reject_invalid_combinations(po
             purchase_id: None,
             payment_method_id: Some(method),
             credit_note_id: None,
+            purchase_return_id: None,
             customer_id: Some(customer),
             supplier_id: Some(supplier),
             note: None,
@@ -980,6 +1021,7 @@ async fn supplier_account_wallet_link_constraints_reject_invalid_combinations(po
             purchase_id: Some(purchase),
             payment_method_id: Some(method),
             credit_note_id: None,
+            purchase_return_id: None,
             customer_id: None,
             supplier_id: Some(supplier),
             note: None,

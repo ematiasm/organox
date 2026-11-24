@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH paid_legs AS (\n            SELECT m.wallet_id,\n                   m.payment_method_id,\n                   m.amount,\n                   0 AS source_rank,\n                   m.created_at\n            FROM wallet_movements m\n            WHERE m.purchase_id = $1 AND m.kind = 'purchase_payment'\n            UNION ALL\n            SELECT m.wallet_id,\n                   m.payment_method_id,\n                   a.amount,\n                   1 AS source_rank,\n                   e.created_at\n            FROM supplier_account_allocations a\n            JOIN supplier_account_entries e ON e.id = a.entry_id\n            JOIN wallet_movements m ON m.id = e.wallet_movement_id\n            WHERE a.purchase_id = $1 AND e.kind = 'payment'\n        ),\n        paid_by_tender AS (\n            SELECT wallet_id,\n                   payment_method_id,\n                   SUM(amount) AS paid,\n                   MIN(source_rank) AS min_rank,\n                   MIN(created_at) AS first_at\n            FROM paid_legs\n            GROUP BY wallet_id, payment_method_id\n        ),\n        refunded_by_tender AS (\n            SELECT wallet_id,\n                   payment_method_id,\n                   SUM(amount) AS refunded\n            FROM wallet_movements\n            WHERE purchase_id = $1 AND kind = 'purchase_refund'\n            GROUP BY wallet_id, payment_method_id\n        )\n        SELECT p.wallet_id AS \"wallet_id!: Uuid\",\n               w.name AS \"wallet_name!\",\n               p.payment_method_id AS \"payment_method_id!: Uuid\",\n               pm.name AS \"payment_method_name!\",\n               GREATEST(p.paid - COALESCE(r.refunded, 0), 0)::numeric(14, 2)\n                   AS \"remaining!: Decimal\"\n        FROM paid_by_tender p\n        JOIN wallets w ON w.id = p.wallet_id\n        JOIN payment_methods pm ON pm.id = p.payment_method_id\n        LEFT JOIN refunded_by_tender r\n               ON r.wallet_id = p.wallet_id AND r.payment_method_id = p.payment_method_id\n        WHERE p.paid - COALESCE(r.refunded, 0) > 0\n        ORDER BY p.min_rank, p.first_at, p.wallet_id, p.payment_method_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "wallet_id!: Uuid",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "wallet_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "wallets",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "payment_method_id!: Uuid",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "payment_method_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "payment_methods",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "remaining!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "52600b06392338120e470e964fe4dcf5614882766b3c3f6df68185ff58707b2c"
+}

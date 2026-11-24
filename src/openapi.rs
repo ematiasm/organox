@@ -128,6 +128,8 @@ pub struct Problem {
         crate::purchases::handlers::remove_item_doc,
         crate::purchases::handlers::complete_purchase_doc,
         crate::purchases::handlers::cancel_purchase_doc,
+        crate::purchase_returns::handlers::create_purchase_return_doc,
+        crate::purchase_returns::handlers::get_purchase_returns_doc,
     ),
     components(schemas(
         Problem,
@@ -233,6 +235,14 @@ pub struct Problem {
         crate::purchases::handlers::PurchasePaymentRequest,
         crate::purchases::handlers::CompletePurchaseRequest,
         crate::purchases::model::PurchaseStatus,
+        crate::purchase_returns::handlers::CreatePurchaseReturnRequest,
+        crate::purchase_returns::handlers::PurchaseReturnLineRequest,
+        crate::purchase_returns::handlers::PurchaseReturnItemResponse,
+        crate::purchase_returns::handlers::PurchaseReturnRefundResponse,
+        crate::purchase_returns::handlers::PurchaseReturnResponse,
+        crate::purchase_returns::handlers::ReturnablePurchaseLineResponse,
+        crate::purchase_returns::handlers::PurchaseReturnsSummaryResponse,
+        crate::purchase_returns::model::SurplusMode,
     )),
     tags(
         (name = "auth", description = "Sessions and users"),
@@ -245,6 +255,7 @@ pub struct Problem {
         (name = "suppliers", description = "Suppliers and their documents"),
         (name = "supplier_accounts", description = "Supplier accounts: payables and payments"),
         (name = "purchases", description = "Persisted purchase drafts and cash supplier purchases"),
+        (name = "purchase_returns", description = "Returns of a completed purchase to its supplier"),
     )
 )]
 pub struct ApiDoc;
@@ -343,6 +354,7 @@ mod tests {
             "/api/v1/purchases/{id}/items/{product_id}",
             "/api/v1/purchases/{id}/complete",
             "/api/v1/purchases/{id}/cancel",
+            "/api/v1/purchases/{id}/returns",
         ] {
             assert!(
                 paths.contains_key(expected),
@@ -422,7 +434,7 @@ mod tests {
             ),
             (
                 "OutstandingPurchaseResponse",
-                &["charged", "allocated", "outstanding"],
+                &["charged", "cancelled", "allocated", "outstanding"],
             ),
             ("RecordSupplierPaymentRequest", &["amount"]),
             ("SupplierPaymentAllocationRequest", &["amount"]),
@@ -444,6 +456,35 @@ mod tests {
             (
                 "PayablesAgingBucketsResponse",
                 &["days_0_30", "days_31_60", "days_61_90", "days_90_plus"],
+            ),
+            ("PurchaseReturnLineRequest", &["quantity"]),
+            (
+                "PurchaseReturnItemResponse",
+                &["quantity", "unit_cost", "subtotal"],
+            ),
+            ("PurchaseReturnRefundResponse", &["amount"]),
+            (
+                "PurchaseReturnResponse",
+                &["total", "debt_cancelled", "credit_granted"],
+            ),
+            (
+                "ReturnablePurchaseLineResponse",
+                &[
+                    "quantity",
+                    "unit_cost",
+                    "returned_quantity",
+                    "returnable_quantity",
+                ],
+            ),
+            (
+                "PurchaseReturnsSummaryResponse",
+                &[
+                    "purchase_total",
+                    "returned_total",
+                    "returnable_total",
+                    "purchase_outstanding",
+                    "wallet_refundable_capacity",
+                ],
             ),
             (
                 "PayableSupplierResponse",

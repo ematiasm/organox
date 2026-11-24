@@ -201,6 +201,9 @@ pub async fn record_movement(
     pool: &PgPool,
     input: RecordMovementInput,
 ) -> Result<Uuid, CatalogError> {
+    if input.reason == MovementReason::PurchaseReturn {
+        return Err(ValidationError::NonManualReason.into());
+    }
     let quantity = validation::validate_quantity(input.quantity)?;
     let unit_cost = validation::validate_unit_cost(input.unit_cost)?;
     let note = validation::validate_note(input.note.as_deref())?;
@@ -229,11 +232,12 @@ pub async fn record_movement(
             r#"
             SELECT COALESCE(SUM(
                 CASE reason
-                    WHEN 'purchase'   THEN quantity
-                    WHEN 'return'     THEN quantity
-                    WHEN 'adjustment' THEN quantity
-                    WHEN 'sale'       THEN -quantity
-                    WHEN 'loss'       THEN -quantity
+                    WHEN 'purchase'        THEN quantity
+                    WHEN 'return'          THEN quantity
+                    WHEN 'adjustment'      THEN quantity
+                    WHEN 'sale'            THEN -quantity
+                    WHEN 'purchase_return' THEN -quantity
+                    WHEN 'loss'            THEN -quantity
                 END
             ), 0) AS "stock!"
             FROM stock_movements

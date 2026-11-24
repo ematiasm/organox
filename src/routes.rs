@@ -81,6 +81,7 @@ fn api_v1(state: AppState) -> Router<AppState> {
         .merge(crate::sales::handlers::router())
         .merge(crate::suppliers::handlers::router())
         .merge(crate::supplier_accounts::handlers::router())
+        .merge(crate::purchase_returns::handlers::router())
         .merge(crate::purchases::handlers::router())
 }
 

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO wallet_movements\n            (id, wallet_id, kind, amount, sale_id, purchase_id, payment_method_id, credit_note_id,\n             customer_id, supplier_id, note, created_by)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)\n        ",
+  "query": "\n        INSERT INTO wallet_movements\n            (id, wallet_id, kind, amount, sale_id, purchase_id, payment_method_id, credit_note_id,\n             purchase_return_id, customer_id, supplier_id, note, created_by)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n        ",
   "describe": {
     "columns": [],
     "parameters": {
@@ -21,12 +21,14 @@
                 "account_payment_refund",
                 "purchase_payment",
                 "supplier_account_payment",
-                "supplier_account_refund"
+                "supplier_account_refund",
+                "purchase_refund"
               ]
             }
           }
         },
         "Numeric",
+        "Uuid",
         "Uuid",
         "Uuid",
         "Uuid",
@@ -39,5 +41,5 @@
     },
     "nullable": []
   },
-  "hash": "454f9996debb33fcb263e8882dc565bd9bc21e4f700cb772ab06987b7f92f3e3"
+  "hash": "0c92437caf381b32e6df46d3c2581f6df94c2a6796b2ce7095677e0204dc9524"
 }

@@ -119,6 +119,11 @@ src/
     repository.rs purchases SQL and transactional completion (stock + wallet + on-account)
     service.rs    rules: one draft per operator, active goods/supplier, cash + on-account completion
     handlers.rs   purchases endpoints
+  purchase_returns/
+    model.rs      PurchaseReturn, SurplusMode, frozen lines, remaining-capacity refund split
+    repository.rs purchase returns SQL, stock check, debt cancellation, credit/wallet settlement
+    service.rs    rules: linked-purchase ceiling, stock availability, idempotency
+    handlers.rs   purchase-return endpoints
   credit_notes/
     model.rs      CreditNote, frozen lines, debt-first cash refund split
     repository.rs credit notes SQL and transactional writes
@@ -251,6 +256,8 @@ Base: `/api/v1`. Errors use `application/problem+json` (RFC 7807).
 | DELETE | `/purchases/{id}/items/{product_id}` | session | Removes a line |
 | POST | `/purchases/{id}/complete` | session | Completes the purchase (payments + optional `on_account`), writes stock/wallet/payable entries, applies advance credit |
 | POST | `/purchases/{id}/cancel` | session | Cancels the draft |
+| GET | `/purchases/{id}/returns` | session | Returnable lines, open payable, wallet refund capacity and issued returns for a purchase |
+| POST | `/purchases/{id}/returns` | session | Returns goods from a completed purchase; cancels debt first, then refunds wallets or grants supplier credit |
 | GET | `/wallets` | session | Wallets with their balance |
 | POST | `/wallets` | session | Create a wallet |
 | GET | `/wallets/{id}` | session | One wallet |
@@ -316,7 +323,13 @@ suppliers, supplier accounts and purchases.
   outflows), optional `on_account` charges, hard credit-limit enforcement and
   automatic FIFO application of available supplier advance credit, recording
   line `unit_cost` into `stock_movements` in a single transaction.
-- **433 tests** (unit + integration against real Postgres).
+- **Purchase returns**: partial and full merchandise returns against completed
+  purchases using frozen line `unit_cost`, verifying available stock before
+  writing `purchase_return` outflows, cancelling open purchase payable debt
+  first, and settling any already-paid surplus as either proportional
+  `purchase_refund` wallet inflows or `purchase_return_credit` unapplied
+  supplier advance credit.
+- **445 tests** (unit + integration against real Postgres).
 - **UI**: SvelteKit (SPA) served by the same Axum server. Login, **a single
   navigation rail** (expandable, with groups and user menu), product list and
   drawer, stock movements, **point of sale with barcode scanner and on-account
@@ -331,9 +344,9 @@ suppliers, supplier accounts and purchases.
 
 See `docs/auth.md`, `docs/catalog.md`, `docs/customers.md`,
 `docs/customer-accounts.md`, `docs/suppliers.md`, `docs/supplier-accounts.md`,
-`docs/purchases.md`, `docs/ratelimit.md`, `docs/sales.md`,
-`docs/credit-notes.md`, `docs/payments.md` and `docs/backup.md` for the
-reasoning and what is missing.
+`docs/purchases.md`, `docs/purchase-returns.md`, `docs/ratelimit.md`,
+`docs/sales.md`, `docs/credit-notes.md`, `docs/payments.md` and `docs/backup.md`
+for the reasoning and what is missing.
 
 ## Frontend
 
@@ -396,9 +409,9 @@ lives in the Rust integration tests, and the behavior only a browser can prove
 lives in manual Playwright probes under `frontend/e2e/` — `nav-shell.cjs` for
 navigation, `drawer.cjs` for the product drawer, `payments.cjs` for wallets and
 methods, `sales.cjs` for the checkout and its credit notes, `pos-customer.cjs`
-for the customer at the counter, `customers.cjs` for the registry screen and
-`users.cjs` for users and credential rotation. They are not part of
-`make check`.
+for the customer at the counter, `customers.cjs` for the registry screen,
+`users.cjs` for users and credential rotation and `purchase-returns.cjs` for
+supplier returns. They are not part of `make check`.
 
 `playwright` is a dev dependency, so `npm ci` provides the module. The browser
 binary is a separate one-time download that `npm` does not run:

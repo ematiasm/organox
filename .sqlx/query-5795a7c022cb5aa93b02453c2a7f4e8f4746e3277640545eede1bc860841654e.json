@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pi.product_id,\n               p.name AS \"product_name!\",\n               pi.quantity,\n               pi.unit_cost,\n               COALESCE((\n                   SELECT SUM(pri.quantity)\n                   FROM purchase_return_items pri\n                   JOIN purchase_returns pr ON pr.id = pri.purchase_return_id\n                   WHERE pr.purchase_id = pi.purchase_id AND pri.product_id = pi.product_id\n               ), 0) AS \"returned_quantity!: Decimal\"\n        FROM purchase_items pi\n        JOIN products p ON p.id = pi.product_id\n        WHERE pi.purchase_id = $1\n        ORDER BY pi.created_at, pi.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "product_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchase_items",
+            "name": "product_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "product_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "products",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "quantity",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "purchase_items",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "unit_cost",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "purchase_items",
+            "name": "unit_cost"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "returned_quantity!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "5795a7c022cb5aa93b02453c2a7f4e8f4746e3277640545eede1bc860841654e"
+}
