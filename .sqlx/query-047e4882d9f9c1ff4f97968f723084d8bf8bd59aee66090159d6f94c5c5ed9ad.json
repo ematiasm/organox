@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT pri.id,\n               pri.purchase_return_id,\n               pri.product_id,\n               p.name AS \"product_name!\",\n               pri.quantity,\n               pri.unit_cost\n        FROM purchase_return_items pri\n        JOIN products p ON p.id = pri.product_id\n        WHERE pri.purchase_return_id = ANY($1)\n        ORDER BY p.name, pri.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchase_return_items",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "purchase_return_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchase_return_items",
+            "name": "purchase_return_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "product_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchase_return_items",
+            "name": "product_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "product_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "products",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "quantity",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "purchase_return_items",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "unit_cost",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "purchase_return_items",
+            "name": "unit_cost"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "047e4882d9f9c1ff4f97968f723084d8bf8bd59aee66090159d6f94c5c5ed9ad"
+}

@@ -1,0 +1,63 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT status AS \"status: PurchaseStatus\", total, supplier_id\n        FROM purchases\n        WHERE id = $1\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status: PurchaseStatus",
+        "type_info": {
+          "Custom": {
+            "name": "purchase_status",
+            "kind": {
+              "Enum": [
+                "draft",
+                "completed",
+                "cancelled"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "purchases",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "total",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "purchases",
+            "name": "total"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "supplier_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchases",
+            "name": "supplier_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "b34ca98e03faa8ef2387ba0f2828b62c08fef4e57073db98286d908d9a15635b"
+}

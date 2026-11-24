@@ -2234,6 +2234,151 @@
         }
       }
     },
+    "/api/v1/purchases/{id}/returns": {
+      "get": {
+        "tags": [
+          "purchase_returns"
+        ],
+        "summary": "Returnable lines, open payable, wallet refund capacity, and issued returns\nfor one purchase.",
+        "operationId": "get_purchase_returns_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Purchase ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Return summary for the purchase",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseReturnsSummaryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Purchase not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "purchase_returns"
+        ],
+        "summary": "Return part or all of a completed purchase to its supplier.",
+        "description": "Deducts returned goods from stock (rejecting with 409 when stock is\ninsufficient), cancels open payable debt on the purchase first, and settles\nany already-paid surplus according to `surplus_mode`: either refunding into\nthe wallets that paid for the purchase (`wallet_refund`) or leaving it as\nunapplied supplier credit (`supplier_credit`).",
+        "operationId": "create_purchase_return_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Purchase ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePurchaseReturnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Existing purchase return returned for a repeated idempotency key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseReturnResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Purchase return issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseReturnResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Purchase not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Purchase not completed, quantity or total exceeds purchase, insufficient stock, insufficient wallet refund capacity, inactive supplier for credit, or busy supplier account",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid reason, idempotency key, product not in purchase, duplicate product, or invalid quantity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/purchases/{id}/supplier": {
       "put": {
         "tags": [
@@ -4888,6 +5033,38 @@
           }
         }
       },
+      "CreatePurchaseReturnRequest": {
+        "type": "object",
+        "description": "Request body for `POST /api/v1/purchases/{id}/returns`.",
+        "required": [
+          "reason",
+          "items"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional retry key unique per purchase. Repeating a request with the\nsame key returns the original return with `200` instead of writing a\nduplicate.",
+            "maxLength": 100
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchaseReturnLineRequest"
+            }
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the goods are being returned. Required and stored on the document."
+          },
+          "surplus_mode": {
+            "$ref": "#/components/schemas/SurplusMode",
+            "description": "How any already-paid surplus above the purchase's open payable should\nbe handled (`wallet_refund` or `supplier_credit`). Defaults to\n`wallet_refund`."
+          }
+        }
+      },
       "CreateSupplierRequest": {
         "type": "object",
         "required": [
@@ -5415,6 +5592,7 @@
           "purchase",
           "sale",
           "return",
+          "purchase_return",
           "adjustment",
           "loss"
         ]
@@ -5475,6 +5653,7 @@
           "purchase_id",
           "completed_at",
           "charged",
+          "cancelled",
           "allocated",
           "outstanding"
         ],
@@ -5482,6 +5661,10 @@
           "allocated": {
             "type": "string",
             "example": "80.00"
+          },
+          "cancelled": {
+            "type": "string",
+            "example": "20.00"
           },
           "charged": {
             "type": "string",
@@ -5493,7 +5676,7 @@
           },
           "outstanding": {
             "type": "string",
-            "example": "120.00"
+            "example": "100.00"
           },
           "purchase_id": {
             "type": "string",
@@ -6003,6 +6186,207 @@
           }
         }
       },
+      "PurchaseReturnItemResponse": {
+        "type": "object",
+        "required": [
+          "product_id",
+          "product_name",
+          "quantity",
+          "unit_cost",
+          "subtotal"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_name": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "string"
+          },
+          "subtotal": {
+            "type": "string"
+          },
+          "unit_cost": {
+            "type": "string"
+          }
+        }
+      },
+      "PurchaseReturnLineRequest": {
+        "type": "object",
+        "description": "One line to return to the supplier. Unit cost is never sent by the client:\nthe server uses the frozen cost from the linked purchase line.",
+        "required": [
+          "product_id",
+          "quantity"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "quantity": {
+            "type": "string",
+            "example": "2"
+          }
+        }
+      },
+      "PurchaseReturnRefundResponse": {
+        "type": "object",
+        "description": "One wallet inflow written when `surplus_mode = wallet_refund`.",
+        "required": [
+          "wallet_id",
+          "wallet_name",
+          "payment_method_id",
+          "payment_method_name",
+          "amount"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string"
+          },
+          "payment_method_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payment_method_name": {
+            "type": "string"
+          },
+          "wallet_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "wallet_name": {
+            "type": "string"
+          }
+        }
+      },
+      "PurchaseReturnResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "purchase_id",
+          "surplus_mode",
+          "reason",
+          "total",
+          "debt_cancelled",
+          "credit_granted",
+          "items",
+          "refunds",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "credit_granted": {
+            "type": "string",
+            "description": "Portion of `total` left as unapplied supplier credit (`surplus_mode = supplier_credit`)."
+          },
+          "debt_cancelled": {
+            "type": "string",
+            "description": "Portion of `total` that cancelled open payable debt on the purchase."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchaseReturnItemResponse"
+            }
+          },
+          "purchase_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "refunds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchaseReturnRefundResponse"
+            }
+          },
+          "surplus_mode": {
+            "$ref": "#/components/schemas/SurplusMode"
+          },
+          "total": {
+            "type": "string",
+            "description": "Server-calculated total from the returned quantities and frozen unit costs."
+          }
+        }
+      },
+      "PurchaseReturnsSummaryResponse": {
+        "type": "object",
+        "description": "Returnable state and issued returns for one purchase.",
+        "required": [
+          "purchase_id",
+          "purchase_status",
+          "purchase_total",
+          "returned_total",
+          "returnable_total",
+          "purchase_outstanding",
+          "wallet_refundable_capacity",
+          "items",
+          "returns"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReturnablePurchaseLineResponse"
+            }
+          },
+          "purchase_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "purchase_outstanding": {
+            "type": "string",
+            "description": "Current open payable on this purchase (cancelled first by any new return)."
+          },
+          "purchase_status": {
+            "$ref": "#/components/schemas/PurchaseStatus"
+          },
+          "purchase_total": {
+            "type": "string"
+          },
+          "returnable_total": {
+            "type": "string"
+          },
+          "returned_total": {
+            "type": "string"
+          },
+          "returns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PurchaseReturnResponse"
+            }
+          },
+          "supplier_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "supplier_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wallet_refundable_capacity": {
+            "type": "string",
+            "description": "Maximum paid surplus that can still be refunded to wallets for this purchase."
+          }
+        }
+      },
       "PurchaseStatus": {
         "type": "string",
         "enum": [
@@ -6449,6 +6833,39 @@
           }
         }
       },
+      "ReturnablePurchaseLineResponse": {
+        "type": "object",
+        "description": "One purchased line with cumulative returned and remaining returnable quantities.",
+        "required": [
+          "product_id",
+          "product_name",
+          "quantity",
+          "unit_cost",
+          "returned_quantity",
+          "returnable_quantity"
+        ],
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "product_name": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "string"
+          },
+          "returnable_quantity": {
+            "type": "string"
+          },
+          "returned_quantity": {
+            "type": "string"
+          },
+          "unit_cost": {
+            "type": "string"
+          }
+        }
+      },
       "Role": {
         "type": "string",
         "enum": [
@@ -6675,6 +7092,8 @@
         "enum": [
           "purchase_charge",
           "payment",
+          "purchase_return",
+          "purchase_return_credit",
           "credit_refund",
           "adjustment_in",
           "adjustment_out"
@@ -6766,6 +7185,13 @@
             ]
           },
           "purchase_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "purchase_return_id": {
             "type": [
               "string",
               "null"
@@ -7165,6 +7591,14 @@
           }
         }
       },
+      "SurplusMode": {
+        "type": "string",
+        "description": "How an already-paid surplus (the portion of a return that exceeds the\npurchase's open payable debt) should be settled.",
+        "enum": [
+          "wallet_refund",
+          "supplier_credit"
+        ]
+      },
       "UpdateCustomerRequest": {
         "type": "object",
         "properties": {
@@ -7367,6 +7801,7 @@
           "account_payment",
           "account_payment_refund",
           "purchase_payment",
+          "purchase_refund",
           "supplier_account_payment",
           "supplier_account_refund",
           "expense",
@@ -7519,6 +7954,10 @@
     {
       "name": "purchases",
       "description": "Persisted purchase drafts and cash supplier purchases"
+    },
+    {
+      "name": "purchase_returns",
+      "description": "Returns of a completed purchase to its supplier"
     }
   ]
 }

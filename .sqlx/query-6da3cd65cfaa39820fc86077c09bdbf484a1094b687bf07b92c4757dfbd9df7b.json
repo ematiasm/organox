@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COALESCE(SUM(total), 0) AS \"already_returned!: Decimal\"\n        FROM purchase_returns\n        WHERE purchase_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "already_returned!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6da3cd65cfaa39820fc86077c09bdbf484a1094b687bf07b92c4757dfbd9df7b"
+}

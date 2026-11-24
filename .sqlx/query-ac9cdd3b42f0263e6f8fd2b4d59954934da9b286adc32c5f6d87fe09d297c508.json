@@ -1,0 +1,110 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT pr.id,\n                   pr.purchase_id,\n                   pr.total,\n                   pr.surplus_mode AS \"surplus_mode: SurplusMode\",\n                   pr.reason,\n                   pr.created_by,\n                   pr.created_at AS \"created_at!\"\n            FROM purchase_returns pr\n            WHERE pr.purchase_id = $1\n            ORDER BY pr.created_at, pr.id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchase_returns",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "purchase_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchase_returns",
+            "name": "purchase_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "total",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "purchase_returns",
+            "name": "total"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "surplus_mode: SurplusMode",
+        "type_info": {
+          "Custom": {
+            "name": "purchase_return_surplus_mode",
+            "kind": {
+              "Enum": [
+                "wallet_refund",
+                "supplier_credit"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "purchase_returns",
+            "name": "surplus_mode"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "purchase_returns",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "purchase_returns",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "purchase_returns",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ac9cdd3b42f0263e6f8fd2b4d59954934da9b286adc32c5f6d87fe09d297c508"
+}
