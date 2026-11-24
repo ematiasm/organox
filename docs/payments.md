@@ -38,9 +38,10 @@ money actually went, at the moment it went. Re-pointing a method changes where
 
 ```sql
 SELECT SUM(CASE kind
-    WHEN 'sale_payment'   THEN amount
-    WHEN 'account_payment' THEN amount
-    WHEN 'adjustment_in'  THEN amount
+    WHEN 'sale_payment'            THEN amount
+    WHEN 'account_payment'         THEN amount
+    WHEN 'supplier_account_refund' THEN amount
+    WHEN 'adjustment_in'           THEN amount
     ELSE -amount
 END)
 FROM wallet_movements WHERE wallet_id = $1;
@@ -65,7 +66,9 @@ matching the drawer.
 | `sale_refund` | outflow | issuing a credit note, never by hand |
 | `account_payment` | inflow | collecting against a customer's account (`POST /customers/{id}/receipts`), never by hand |
 | `account_payment_refund` | outflow | handing back a customer's credit balance (`POST /customers/{id}/credit-refunds`), never by hand |
-| `purchase_payment` | outflow | completing a cash purchase (`POST /purchases/{id}/complete`), never by hand |
+| `purchase_payment` | outflow | completing a purchase's upfront payment leg (`POST /purchases/{id}/complete`), never by hand |
+| `supplier_account_payment` | outflow | paying against a supplier's account (`POST /suppliers/{id}/payments`), never by hand |
+| `supplier_account_refund` | inflow | receiving refunded advance credit back from a supplier (`POST /suppliers/{id}/credit-refunds`), never by hand |
 | `expense` | outflow | the operator, from the wallet |
 | `adjustment_in` | inflow | the operator, correcting a mistake |
 | `adjustment_out` | outflow | the operator, correcting a mistake |
@@ -86,11 +89,23 @@ no wallet-balance floor (a wallet balance may go negative), and never carry a
 movement and its ledger entry (`receipt` or `credit_refund`), so the wallet and
 the debt ledger never disagree.
 
-A `purchase_payment` is the wallet side of a cash purchase
+A `purchase_payment` is the wallet side of a purchase's upfront cash leg
 (`POST /purchases/{id}/complete`, see `docs/purchases.md`): an outflow carrying
 `purchase_id` and `payment_method_id`, copying the method's default `wallet_id`
 at write time, written in the same transaction as the inbound `stock_movements`
 and with no wallet-balance floor.
+
+A `supplier_account_payment` (`0027_wallet_supplier_account_payment_kind.sql`)
+is the wallet outflow written when paying down a supplier's account
+(`POST /suppliers/{id}/payments`, see `docs/supplier-accounts.md`), and
+`supplier_account_refund` (`0028_wallet_supplier_account_refund_kind.sql`) is
+the wallet inflow written when a supplier refunds unapplied advance credit
+(`POST /suppliers/{id}/credit-refunds`). Both movements carry `supplier_id`
+(`0029_wallet_supplier_account_links.sql`, `ON DELETE RESTRICT`, partial index
+`wallet_movements_supplier_idx`) and `payment_method_id`, copy the method's
+default `wallet_id` at write time, impose no wallet-balance floor, and commit
+in the same transaction as their supplier ledger entry (`payment` or
+`credit_refund`).
 
 The database keeps the attribution honest: only `account_payment` and
 `account_payment_refund` may carry a customer
@@ -100,10 +115,19 @@ without its customer or its method is refused
 `purchase_payment` may carry a `purchase_id`
 (`wallet_movements_purchase_link_only_for_purchase_kinds`), and a
 `purchase_payment` without both `purchase_id` and `payment_method_id` is
-refused (`wallet_movements_purchase_payment_is_complete`). None of these are
-manual kinds: `POST /wallets/{id}/movements` refuses all three with `422`,
+refused (`wallet_movements_purchase_payment_is_complete`). For supplier
+accounts (`0029_wallet_supplier_account_links.sql`), only
+`supplier_account_payment` and `supplier_account_refund` may carry a
+`supplier_id` (`wallet_movements_supplier_link_only_for_account_kinds`), both
+require `supplier_id` and `payment_method_id`
+(`wallet_movements_supplier_account_is_complete`), and
+`wallet_movements_at_most_one_entity_link` enforces cross-column exclusivity
+across `(sale_id, purchase_id, customer_id, supplier_id)` so a movement never
+attributes money to more than one domain entity at once. None of these are
+manual kinds: `POST /wallets/{id}/movements` refuses all non-manual kinds
+(including `supplier_account_payment` and `supplier_account_refund`) with `422`,
 because writing them by hand would move wallet money without its ledger or
-purchase counterpart.
+source document counterpart.
 
 ## The ledger is append-only
 

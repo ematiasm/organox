@@ -5,7 +5,8 @@ balances, handles returns on credit sales, and reports receivables.
 
 Related docs: `docs/sales.md` (checkout), `docs/payments.md` (wallets and
 money movements), `docs/credit-notes.md` (returns), `docs/customers.md` (the
-customer registry and `credit_limit`).
+customer registry and `credit_limit`), `docs/supplier-accounts.md` (the
+payables mirror for suppliers).
 
 ## The central decision: debt is its own append-only ledger
 
