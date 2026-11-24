@@ -804,6 +804,7 @@
 						<TableHead>Items</TableHead>
 						<TableHead>Status</TableHead>
 						<TableHead class="text-right">Total</TableHead>
+						<TableHead class="text-right">Actions</TableHead>
 					</TableRow>
 				</TableHeader>
 				<TableBody>
@@ -829,6 +830,18 @@
 							</TableCell>
 							<TableCell class="text-right font-medium tabular-nums">
 								{purchase.total}
+							</TableCell>
+							<TableCell class="text-right">
+								{#if purchase.status === 'completed'}
+									<Button
+										variant="outline"
+										size="sm"
+										href={`/operations/purchases/${purchase.id}/return`}
+										onclick={(event: MouseEvent) => event.stopPropagation()}
+									>
+										Return
+									</Button>
+								{/if}
 							</TableCell>
 						</TableRow>
 					{/each}
@@ -893,7 +906,18 @@
 			</dl>
 
 			<div class="px-4 pt-2">
-				<h3 class="mb-2 text-sm font-semibold">Items</h3>
+				<div class="mb-2 flex items-center justify-between gap-2">
+					<h3 class="text-sm font-semibold">Items</h3>
+					{#if inspected.status === 'completed'}
+						<Button
+							variant="outline"
+							size="sm"
+							href={`/operations/purchases/${inspected.id}/return`}
+						>
+							Return goods
+						</Button>
+					{/if}
+				</div>
 				{#if inspected.items.length === 0}
 					<p class="text-sm text-muted-foreground">No items.</p>
 				{:else}

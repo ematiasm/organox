@@ -29,6 +29,13 @@ export type PurchaseStatus = components['schemas']['PurchaseStatus'];
 export type PurchaseDraft = components['schemas']['PurchaseDraftResponse'];
 export type CompletedPurchase = components['schemas']['CompletedPurchaseResponse'];
 export type PurchasePayment = components['schemas']['PurchasePaymentRequest'];
+export type PurchaseReturnsSummary = components['schemas']['PurchaseReturnsSummaryResponse'];
+export type PurchaseReturn = components['schemas']['PurchaseReturnResponse'];
+export type ReturnablePurchaseLine = components['schemas']['ReturnablePurchaseLineResponse'];
+export type PurchaseReturnItem = components['schemas']['PurchaseReturnItemResponse'];
+export type PurchaseReturnRefund = components['schemas']['PurchaseReturnRefundResponse'];
+export type CreatePurchaseReturnRequest = components['schemas']['CreatePurchaseReturnRequest'];
+export type SurplusMode = components['schemas']['SurplusMode'];
 export type CustomerAccount = components['schemas']['CustomerAccountResponse'];
 export type AccountStatementEntry = components['schemas']['AccountStatementEntryResponse'];
 export type AccountEntryKind = components['schemas']['CustomerAccountEntryKind'];
@@ -613,6 +620,17 @@ export const api = {
 
 	createCreditNote: (saleId: string, body: CreateCreditNoteRequest) =>
 		request<CreditNote>(`/api/v1/sales/${encodeURIComponent(saleId)}/credit-notes`, {
+			method: 'POST',
+			body
+		}),
+
+	// --- Purchase returns ---
+
+	purchaseReturns: (purchaseId: string) =>
+		request<PurchaseReturnsSummary>(`/api/v1/purchases/${encodeURIComponent(purchaseId)}/returns`),
+
+	createPurchaseReturn: (purchaseId: string, body: CreatePurchaseReturnRequest) =>
+		request<PurchaseReturn>(`/api/v1/purchases/${encodeURIComponent(purchaseId)}/returns`, {
 			method: 'POST',
 			body
 		})

@@ -19,6 +19,7 @@
 		purchase: 'Purchase',
 		sale: 'Sale',
 		return: 'Return',
+		purchase_return: 'Purchase return',
 		adjustment: 'Adjustment',
 		loss: 'Loss'
 	};
