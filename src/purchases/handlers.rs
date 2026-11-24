@@ -88,6 +88,10 @@ pub struct CompletedPurchaseResponse {
     pub total: String,
     pub movement_ids: Vec<Uuid>,
     pub payment_movement_ids: Vec<Uuid>,
+    /// Unapplied supplier advance credit automatically allocated to this
+    /// purchase upon completion (`"0.00"` when none applied).
+    #[schema(value_type = String, example = "0.00")]
+    pub credit_applied: String,
     pub completed_at: DateTime<Utc>,
 }
 
@@ -139,6 +143,11 @@ pub struct PurchasePaymentRequest {
 pub struct CompletePurchaseRequest {
     #[serde(default)]
     pub payments: Vec<PurchasePaymentRequest>,
+    /// Portion of the purchase total charged to the supplier's account instead
+    /// of paid upfront from a wallet (defaults to `0.00`).
+    #[serde(default)]
+    #[schema(value_type = String, example = "0.00")]
+    pub on_account: Decimal,
     pub note: Option<String>,
 }
 
@@ -261,14 +270,22 @@ async fn complete_purchase(
         })
         .collect();
 
-    let completed =
-        service::complete(&state.pool, id, user.id(), &payments, body.note.as_deref()).await?;
+    let completed = service::complete(
+        &state.pool,
+        id,
+        user.id(),
+        &payments,
+        body.on_account,
+        body.note.as_deref(),
+    )
+    .await?;
 
     Ok(Json(CompletedPurchaseResponse {
         purchase_id: completed.purchase_id,
         total: format_money(completed.total),
         movement_ids: completed.movement_ids,
         payment_movement_ids: completed.payment_movement_ids,
+        credit_applied: format_money(completed.credit_applied),
         completed_at: completed.completed_at,
     }))
 }
@@ -326,7 +343,34 @@ impl From<PurchaseError> for AppError {
             PurchaseError::ProductInactive
             | PurchaseError::ServiceNotPurchasable
             | PurchaseError::NotEditable
-            | PurchaseError::SupplierInactive => AppError::Conflict(err.to_string()),
+            | PurchaseError::SupplierInactive
+            | PurchaseError::SupplierAccountBusy => AppError::Conflict(err.to_string()),
+            PurchaseError::OnAccountExceedsCreditLimit { available } => {
+                AppError::Conflict(format!(
+                    "the on-account amount exceeds the {} the supplier still has available",
+                    format_money(available)
+                ))
+            }
+            PurchaseError::PaymentMismatch {
+                total,
+                paid,
+                on_account,
+            } => {
+                let detail = if on_account > Decimal::ZERO {
+                    format!(
+                        "the payments and the on-account amount add up to {}, but the purchase total is {}",
+                        format_money(paid),
+                        format_money(total)
+                    )
+                } else {
+                    format!(
+                        "the payments ({}) do not add up to the purchase total ({})",
+                        format_money(paid),
+                        format_money(total)
+                    )
+                };
+                AppError::Validation(detail)
+            }
             PurchaseError::EmptyPurchase
             | PurchaseError::SupplierRequired
             | PurchaseError::QuantityNotPositive
@@ -337,8 +381,9 @@ impl From<PurchaseError> for AppError {
             | PurchaseError::UnitCostTooLarge
             | PurchaseError::PaymentAmountNotPositive
             | PurchaseError::PaymentAmountPrecision
-            | PurchaseError::PaymentMismatch { .. }
-            | PurchaseError::PaymentMethodUnavailable => AppError::Validation(err.to_string()),
+            | PurchaseError::PaymentMethodUnavailable
+            | PurchaseError::OnAccountNegative
+            | PurchaseError::OnAccountPrecision => AppError::Validation(err.to_string()),
             PurchaseError::SupplierLookup(inner) => AppError::Internal(inner.to_string()),
             PurchaseError::Internal(repo) => AppError::Internal(repo.to_string()),
         }

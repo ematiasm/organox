@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT\n            id,\n            name,\n            tax_id,\n            email,\n            phone,\n            is_active,\n            created_at,\n            updated_at\n        FROM suppliers\n        WHERE id = $1\n        ",
+  "query": "\n        SELECT\n            s.id,\n            s.name,\n            s.tax_id,\n            s.email,\n            s.phone,\n            s.is_active,\n            s.credit_limit AS \"credit_limit?: Decimal\",\n            COALESCE(e.balance, 0)::numeric(14, 2) AS \"balance!: Decimal\",\n            (COALESCE(e.paid, 0) - COALESCE(e.refunded, 0) - COALESCE(a.allocated, 0))\n                ::numeric(14, 2) AS \"available_credit!: Decimal\",\n            s.created_at,\n            s.updated_at\n        FROM suppliers s\n        LEFT JOIN LATERAL (\n            SELECT\n                SUM(amount) AS balance,\n                SUM(CASE WHEN kind = 'payment' THEN -amount ELSE 0 END) AS paid,\n                SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END) AS refunded\n            FROM supplier_account_entries\n            WHERE supplier_id = s.id\n        ) e ON TRUE\n        LEFT JOIN LATERAL (\n            SELECT SUM(al.amount) AS allocated\n            FROM supplier_account_allocations al\n            JOIN supplier_account_entries en ON en.id = al.entry_id\n            WHERE en.supplier_id = s.id\n        ) a ON TRUE\n        WHERE s.id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,29 @@
       },
       {
         "ordinal": 6,
+        "name": "credit_limit?: Decimal",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "suppliers",
+            "name": "credit_limit"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "balance!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "available_credit!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +104,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -104,9 +127,12 @@
       true,
       true,
       false,
+      true,
+      null,
+      null,
       false,
       false
     ]
   },
-  "hash": "4d347624c201ac351a4dfae8bdce4bd7b32304a5c6cbbd94d8e435e48f5873d0"
+  "hash": "0159489c6bf1ce0ea840c01ddb094a96d22451a41f9733161523713b66d0c5a5"
 }

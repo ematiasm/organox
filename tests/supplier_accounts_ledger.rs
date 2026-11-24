@@ -410,3 +410,499 @@ async fn append_only_and_wallet_exclusivity_triggers_hold(pool: PgPool) {
     .await;
     assert!(bad.is_err());
 }
+
+#[sqlx::test]
+async fn write_guards_reject_invalid_backing_charges_payments_allocations_and_adjustments(
+    pool: PgPool,
+) {
+    let actor = setup_actor();
+    let supplier = setup_supplier(&pool, "GuardCo", None).await;
+    let other_supplier = setup_supplier(&pool, "OtherCo", None).await;
+    let (wallet, method) = setup_method(&pool, "Bank").await;
+
+    // --- record_charge guards: upfront-paid bound and duplicate charge ---
+    let p_partial = setup_completed_purchase(&pool, supplier, "GuardCo", dec!(100.00), actor).await;
+    wallets::insert_movement(
+        &pool,
+        NewWalletMovement {
+            wallet_id: wallet,
+            kind: WalletMovementKind::PurchasePayment,
+            amount: dec!(40.00),
+            sale_id: None,
+            purchase_id: Some(p_partial),
+            payment_method_id: Some(method),
+            credit_note_id: None,
+            customer_id: None,
+            supplier_id: None,
+            note: Some("upfront cash"),
+            created_by: Some(actor),
+        },
+    )
+    .await
+    .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_charge(&mut tx, supplier, p_partial, dec!(60.01), actor)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        RepoError::ChargeExceedsPurchaseTotal {
+            requested,
+            available
+        } if requested == dec!(60.01) && available == dec!(60.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let charge_entry_id = ledger::record_charge(&mut tx, supplier, p_partial, dec!(60.00), actor)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_charge(&mut tx, supplier, p_partial, dec!(10.00), actor)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RepoError::AlreadyCharged));
+    tx.rollback().await.unwrap();
+
+    // --- ensure_movement_backing: missing, amount mismatch, wrong kind, wrong supplier ---
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: Uuid::now_v7(),
+            amount: dec!(10.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .err()
+    .expect("missing movement must fail");
+    assert!(matches!(err, RepoError::MovementNotFound));
+    tx.rollback().await.unwrap();
+
+    let pay_mv_100 = insert_supplier_movement(
+        &pool,
+        wallet,
+        method,
+        supplier,
+        WalletMovementKind::SupplierAccountPayment,
+        dec!(100.00),
+        actor,
+    )
+    .await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: pay_mv_100,
+            amount: dec!(50.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .err()
+    .expect("amount mismatch must fail");
+    assert!(matches!(
+        err,
+        RepoError::EntryDoesNotMatchMovement { movement, entry }
+            if movement == dec!(100.00) && entry == dec!(50.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    let refund_mv_10 = insert_supplier_movement(
+        &pool,
+        wallet,
+        method,
+        supplier,
+        WalletMovementKind::SupplierAccountRefund,
+        dec!(10.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: refund_mv_10,
+            amount: dec!(10.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .err()
+    .expect("wrong movement kind must fail");
+    assert!(matches!(
+        err,
+        RepoError::MovementNotFromSupplierAccount { ref kind } if kind == "supplier_account_refund"
+    ));
+    tx.rollback().await.unwrap();
+
+    let other_mv_10 = insert_supplier_movement(
+        &pool,
+        wallet,
+        method,
+        other_supplier,
+        WalletMovementKind::SupplierAccountPayment,
+        dec!(10.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: other_mv_10,
+            amount: dec!(10.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .err()
+    .expect("movement of another supplier must fail");
+    assert!(matches!(err, RepoError::MovementOfAnotherSupplier));
+    tx.rollback().await.unwrap();
+
+    // --- record_payment guards: duplicate allocation, per-purchase outstanding, over-allocation, AlreadyRecorded ---
+    let p_second = setup_completed_purchase(&pool, supplier, "GuardCo", dec!(80.00), actor).await;
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, p_second, dec!(80.00), actor)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: pay_mv_100,
+            amount: dec!(100.00),
+            allocations: &[(p_partial, dec!(10.00)), (p_partial, dec!(10.00))],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .err()
+    .expect("duplicate allocation must fail");
+    assert!(matches!(
+        err,
+        RepoError::DuplicateAllocation { purchase_id } if purchase_id == p_partial
+    ));
+    tx.rollback().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: pay_mv_100,
+            amount: dec!(100.00),
+            allocations: &[(p_partial, dec!(60.01))],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .err()
+    .expect("exceeding purchase outstanding must fail");
+    assert!(matches!(
+        err,
+        RepoError::OutstandingExceeded {
+            requested,
+            outstanding
+        } if requested == dec!(60.01) && outstanding == dec!(60.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: pay_mv_100,
+            amount: dec!(100.00),
+            allocations: &[(p_partial, dec!(60.00)), (p_second, dec!(50.00))],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .err()
+    .expect("over-allocation must fail");
+    assert!(matches!(
+        err,
+        RepoError::PaymentOverAllocated { allocated, paid }
+            if allocated == dec!(110.00) && paid == dec!(100.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    // Commit pay_mv_100 (allocated to p_partial), then reuse the same wallet_movement_id -> AlreadyRecorded.
+    let mut tx = pool.begin().await.unwrap();
+    let pay_entry_id = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: pay_mv_100,
+            amount: dec!(100.00),
+            allocations: &[(p_partial, dec!(60.00))],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: pay_mv_100,
+            amount: dec!(100.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .err()
+    .expect("reusing wallet_movement_id must fail");
+    assert!(matches!(err, RepoError::AlreadyRecorded));
+    tx.rollback().await.unwrap();
+
+    // --- allocate guards: NotAPayment, AllocationExceedsPayment, AllocationExceedsCredit ---
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::allocate(&mut tx, charge_entry_id, p_second, dec!(10.00))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RepoError::NotAPayment));
+    tx.rollback().await.unwrap();
+
+    // pay_entry_id has 60 allocated out of 100 -> allocating 40.01 exceeds the payment itself.
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::allocate(&mut tx, pay_entry_id, p_second, dec!(40.01))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        RepoError::AllocationExceedsPayment { paid, allocated }
+            if paid == dec!(100.00) && allocated == dec!(60.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    // Trigger AllocationExceedsCredit: a fresh supplier prepays 100, receives a 60 credit refund
+    // (leaving unapplied_credit = 40 while the payment entry still has 100 unallocated), then
+    // tries to allocate 50 to an open purchase.
+    let credit_supplier = setup_supplier(&pool, "CreditBoundCo", None).await;
+    let prepay_mv = insert_supplier_movement(
+        &pool,
+        wallet,
+        method,
+        credit_supplier,
+        WalletMovementKind::SupplierAccountPayment,
+        dec!(100.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    let prepay_entry_id = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: credit_supplier,
+            wallet_movement_id: prepay_mv,
+            amount: dec!(100.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    let ref_mv = insert_supplier_movement(
+        &pool,
+        wallet,
+        method,
+        credit_supplier,
+        WalletMovementKind::SupplierAccountRefund,
+        dec!(60.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_credit_refund(
+        &mut tx,
+        NewSupplierCreditRefund {
+            supplier_id: credit_supplier,
+            wallet_movement_id: ref_mv,
+            amount: dec!(60.00),
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let p_credit =
+        setup_completed_purchase(&pool, credit_supplier, "CreditBoundCo", dec!(80.00), actor).await;
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, credit_supplier, p_credit, dec!(80.00), actor)
+        .await
+        .unwrap();
+    let err = ledger::allocate(&mut tx, prepay_entry_id, p_credit, dec!(50.00))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        RepoError::AllocationExceedsCredit {
+            requested,
+            available
+        } if requested == dec!(50.00) && available == dec!(40.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    // --- record_adjustment: non-manual kind, blank note, happy path (in + out), crossing zero ---
+    let adj_supplier = setup_supplier(&pool, "AdjCo", None).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_adjustment(
+        &mut tx,
+        adj_supplier,
+        SupplierAccountEntryKind::Payment,
+        dec!(10.00),
+        "wrong kind",
+        actor,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, RepoError::NotAnAdjustment));
+    tx.rollback().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_adjustment(
+        &mut tx,
+        adj_supplier,
+        SupplierAccountEntryKind::AdjustmentIn,
+        dec!(10.00),
+        "   ",
+        actor,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, RepoError::AdjustmentNoteRequired));
+    tx.rollback().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_adjustment(
+        &mut tx,
+        adj_supplier,
+        SupplierAccountEntryKind::AdjustmentIn,
+        dec!(75.00),
+        "opening balance",
+        actor,
+    )
+    .await
+    .unwrap();
+    ledger::record_adjustment(
+        &mut tx,
+        adj_supplier,
+        SupplierAccountEntryKind::AdjustmentOut,
+        dec!(25.00),
+        "invoice discount",
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let pos = ledger::account_position(&pool, adj_supplier).await.unwrap();
+    assert_eq!(pos.balance, dec!(50.00));
+    assert_eq!(pos.unapplied_credit, dec!(0.00));
+    assert!(pos.is_consistent());
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_adjustment(
+        &mut tx,
+        adj_supplier,
+        SupplierAccountEntryKind::AdjustmentOut,
+        dec!(50.01),
+        "too large",
+        actor,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        RepoError::AdjustmentCrossesZero { balance } if balance == dec!(50.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    let pos_after = ledger::account_position(&pool, adj_supplier).await.unwrap();
+    assert_eq!(pos_after.balance, dec!(50.00));
+}
+
+#[sqlx::test]
+async fn lock_supplier_maps_lock_timeout_to_supplier_busy_and_aborts_tx(pool: PgPool) {
+    let supplier = setup_supplier(&pool, "BusyLedgerCo", None).await;
+
+    // Another transaction holds the supplier advisory lock (seed 1).
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1))")
+        .bind(supplier.to_string())
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let mut waiter = pool.begin().await.unwrap();
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        ledger::lock_supplier(&mut waiter, supplier),
+    )
+    .await
+    .expect("lock_supplier did not time out within the bound")
+    .unwrap_err();
+    assert!(matches!(err, RepoError::SupplierBusy));
+
+    // PostgreSQL marks the timed-out transaction as aborted (25P02: rollback-only).
+    let follow_up = sqlx::query("SELECT 1").execute(&mut *waiter).await;
+    assert!(matches!(
+        follow_up,
+        Err(sqlx::Error::Database(ref db)) if db.code().as_deref() == Some("25P02")
+    ));
+
+    waiter.rollback().await.unwrap();
+    holder.rollback().await.unwrap();
+}

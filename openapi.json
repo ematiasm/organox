@@ -3079,7 +3079,7 @@
           "suppliers"
         ],
         "summary": "Register a supplier.",
-        "description": "`tax_id` is optional and unique when present; a duplicate returns 409.",
+        "description": "`tax_id` is optional and unique when present; a duplicate returns 409.\n`credit_limit` is optional: absent or `null` means unlimited, `0` means cash only.",
         "operationId": "create_supplier_doc",
         "requestBody": {
           "content": {
@@ -3140,7 +3140,7 @@
         "tags": [
           "suppliers"
         ],
-        "summary": "Supplier details.",
+        "summary": "Supplier details with derived account balance and available credit.",
         "operationId": "get_supplier_doc",
         "parameters": [
           {
@@ -3192,6 +3192,7 @@
           "suppliers"
         ],
         "summary": "Update only the fields sent.",
+        "description": "`credit_limit` is tri-state: omitted leaves it unchanged, explicit `null`\nclears it back to unlimited, and a value sets the cap. Deactivating with\n`is_active: false` requires a zero account position (otherwise 409).",
         "operationId": "update_supplier_doc",
         "parameters": [
           {
@@ -3240,7 +3241,7 @@
             }
           },
           "409": {
-            "description": "Document is already in use",
+            "description": "Document in use, open account position, or account busy",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3267,7 +3268,7 @@
         "tags": [
           "suppliers"
         ],
-        "summary": "Soft deactivation. Idempotent. Never deletes: purchases reference the supplier.",
+        "summary": "Soft deactivation. Idempotent. Requires a zero account position (409 otherwise).",
         "operationId": "deactivate_supplier_doc",
         "parameters": [
           {
@@ -3297,6 +3298,16 @@
           },
           "404": {
             "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Open account position or account busy",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4141,6 +4152,11 @@
               "null"
             ]
           },
+          "on_account": {
+            "type": "string",
+            "description": "Portion of the purchase total charged to the supplier's account instead\nof paid upfront from a wallet (defaults to `0.00`).",
+            "example": "0.00"
+          },
           "payments": {
             "type": "array",
             "items": {
@@ -4176,12 +4192,18 @@
           "total",
           "movement_ids",
           "payment_movement_ids",
+          "credit_applied",
           "completed_at"
         ],
         "properties": {
           "completed_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "credit_applied": {
+            "type": "string",
+            "description": "Unapplied supplier advance credit automatically allocated to this\npurchase upon completion (`\"0.00\"` when none applied).",
+            "example": "0.00"
           },
           "movement_ids": {
             "type": "array",
@@ -4380,6 +4402,14 @@
           "name"
         ],
         "properties": {
+          "credit_limit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional credit limit: absent or `null` means unlimited, `0` means cash\nonly. Never negative, at most two decimals.",
+            "example": "100.00"
+          },
           "email": {
             "type": [
               "string",
@@ -5954,13 +5984,32 @@
           "id",
           "name",
           "is_active",
+          "balance",
+          "available_credit",
           "created_at",
           "updated_at"
         ],
         "properties": {
+          "available_credit": {
+            "type": "string",
+            "description": "Money paid to the supplier not yet allocated to a purchase or refunded (`U`).",
+            "example": "0.00"
+          },
+          "balance": {
+            "type": "string",
+            "description": "Current account balance derived from `supplier_account_entries`.\nPositive means we owe the supplier; negative means advance credit held.",
+            "example": "120.00"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "credit_limit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` means unlimited, `\"0.00\"` means cash only."
           },
           "email": {
             "type": [
@@ -6112,6 +6161,14 @@
       "UpdateSupplierRequest": {
         "type": "object",
         "properties": {
+          "credit_limit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Tri-state: omitted leaves the limit untouched, explicit `null` clears\nit back to unlimited, and a value sets the cap.",
+            "example": "100.00"
+          },
           "email": {
             "type": [
               "string",
