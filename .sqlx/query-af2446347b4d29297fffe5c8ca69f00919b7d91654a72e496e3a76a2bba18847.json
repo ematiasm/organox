@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id                 AS \"entry_id!: Uuid\",\n               wallet_movement_id AS \"wallet_movement_id!: Uuid\"\n        FROM supplier_account_entries\n        WHERE supplier_id = $1 AND idempotency_key = $2 AND kind = 'credit_refund'\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "entry_id!: Uuid",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "supplier_account_entries",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "wallet_movement_id!: Uuid",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "supplier_account_entries",
+            "name": "wallet_movement_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "af2446347b4d29297fffe5c8ca69f00919b7d91654a72e496e3a76a2bba18847"
+}
