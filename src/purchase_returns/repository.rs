@@ -601,7 +601,8 @@ pub async fn for_purchase(
         .await?
         .into_iter()
         .map(|t| t.remaining)
-        .sum();
+        .sum::<Decimal>()
+        .min(returnable_total);
 
     tx.commit().await?;
 
@@ -629,13 +630,21 @@ pub async fn create(
 ) -> Result<CreatedPurchaseReturn, RepoError> {
     let mut tx = pool.begin().await?;
 
-    // Lock 1: purchase row FOR UPDATE.
+    // Lock 1: purchase row `FOR NO KEY UPDATE` (never `FOR UPDATE`).
+    //
+    // `FOR NO KEY UPDATE` still serializes concurrent `purchase_returns::create`,
+    // `purchases::complete`, and `purchases::cancel` on the same purchase, while
+    // remaining compatible with PostgreSQL's `FOR KEY SHARE` FK RI lock acquired
+    // when a concurrent `supplier_accounts::record_payment` / `allocate` inserts
+    // into `supplier_account_allocations (purchase_id)` while holding the
+    // supplier advisory lock. Using `FOR UPDATE` here would AB-BA deadlock with
+    // `record_payment` (purchases lock <-> supplier advisory lock).
     let purchase = sqlx::query!(
         r#"
         SELECT status AS "status: PurchaseStatus", total, supplier_id
         FROM purchases
         WHERE id = $1
-        FOR UPDATE
+        FOR NO KEY UPDATE
         "#,
         new.purchase_id
     )

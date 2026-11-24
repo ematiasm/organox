@@ -3,8 +3,8 @@
 //! Mirrors [`crate::customer_accounts::model`]: neither `suppliers` nor
 //! `purchases` stores a balance or paid flag. Every balance is the signed sum
 //! of `supplier_account_entries`, and every purchase's outstanding payable is
-//! its `purchase_charge` minus the `supplier_account_allocations` pointing at
-//! it.
+//! its `purchase_charge` minus `purchase_return` cancellations and the
+//! `supplier_account_allocations` pointing at it.
 //!
 //! Two quantities describe a supplier account:
 //!

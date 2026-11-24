@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT status AS \"status: PurchaseStatus\", total, supplier_id\n        FROM purchases\n        WHERE id = $1\n        FOR UPDATE\n        ",
+  "query": "\n        SELECT status AS \"status: PurchaseStatus\", total, supplier_id\n        FROM purchases\n        WHERE id = $1\n        FOR NO KEY UPDATE\n        ",
   "describe": {
     "columns": [
       {
@@ -59,5 +59,5 @@
       true
     ]
   },
-  "hash": "b34ca98e03faa8ef2387ba0f2828b62c08fef4e57073db98286d908d9a15635b"
+  "hash": "44b64cba049126acef506cc40fdbad1469016676a97685afbae34a68cc962200"
 }

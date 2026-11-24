@@ -827,3 +827,175 @@ async fn concurrent_returns_serialize_on_purchase_and_idempotency_key(pool: PgPo
         Some(dec!(2))
     );
 }
+
+#[sqlx::test]
+async fn manual_stock_movement_rejects_purchase_return_reason(pool: PgPool) {
+    let (actor, pw) = seed_user(&pool, "ret-manual@example.com", Role::Manager).await;
+    let app = app(pool.clone());
+    let cookie = login_cookie(&app, "ret-manual@example.com", &pw).await;
+
+    let product = seed_product(&pool, "Manual Guard Item").await;
+    catalog::record_movement(
+        &pool,
+        RecordMovementInput {
+            product_id: product,
+            reason: MovementReason::Purchase,
+            quantity: dec!(5),
+            unit_cost: Some(dec!(10.00)),
+            note: Some("seed".into()),
+            actor_id: actor,
+        },
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/products/{product}/movements"),
+        Some(json!({
+            "reason": "purchase_return",
+            "quantity": "1"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body["detail"].as_str().unwrap().contains("purchase_return"));
+    assert_eq!(
+        catalog::get_product(&pool, product).await.unwrap().stock,
+        Some(dec!(5))
+    );
+}
+
+#[sqlx::test]
+async fn rounding_drift_ceiling_rejects_return_exceeding_purchase_total(pool: PgPool) {
+    let (actor, pw) = seed_user(&pool, "ret-round@example.com", Role::Manager).await;
+    let app = app(pool.clone());
+    let cookie = login_cookie(&app, "ret-round@example.com", &pw).await;
+
+    let supplier = seed_supplier(&pool, "Rounding Supplier").await;
+    let product = seed_product(&pool, "Fractional Grain").await;
+    let (_wallet, method) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+
+    // 1.000 unit at 1.00 = 1.00 total. Returning 0.335 x 3 rounds each return
+    // to 0.34 (0.34 + 0.34 + 0.34 = 1.02 > 1.00), so the third return must be
+    // refused with 409 naming the remaining money allowance (0.32).
+    let purchase_id = complete_purchase(
+        &pool,
+        actor,
+        supplier,
+        &[(product, dec!(1.000), dec!(1.00))],
+        &[(method, dec!(1.00))],
+        dec!(0.00),
+    )
+    .await;
+
+    for i in 1..=2 {
+        let (st, ret) = call_json(
+            &app,
+            Some(&cookie),
+            "POST",
+            &format!("/api/v1/purchases/{purchase_id}/returns"),
+            Some(json!({
+                "reason": format!("Partial {i}"),
+                "surplus_mode": "wallet_refund",
+                "items": [{ "product_id": product, "quantity": "0.335" }]
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED);
+        assert_eq!(ret["total"], "0.34");
+    }
+
+    // 0.330 units left (0.33 > 0.32 remaining money allowance): refused with 409.
+    let (st_over, err) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/purchases/{purchase_id}/returns"),
+        Some(json!({
+            "reason": "Crosses money ceiling",
+            "surplus_mode": "wallet_refund",
+            "items": [{ "product_id": product, "quantity": "0.330" }]
+        })),
+    )
+    .await;
+    assert_eq!(st_over, StatusCode::CONFLICT);
+    assert!(err["detail"].as_str().unwrap().contains("0.32"));
+}
+
+#[sqlx::test]
+async fn concurrent_purchase_return_and_supplier_payment_allocation_do_not_deadlock(pool: PgPool) {
+    let (actor, pw) = seed_user(&pool, "ret-nodeadlock@example.com", Role::Manager).await;
+    let app = app(pool.clone());
+    let cookie = login_cookie(&app, "ret-nodeadlock@example.com", &pw).await;
+
+    let supplier = seed_supplier(&pool, "Deadlock Proof Supplier").await;
+    let product = seed_product(&pool, "Bolt").await;
+    let (_wallet, method) = seed_wallet_and_method(&pool, "Bank", "Wire").await;
+
+    // 10 @ 10.00 = 100.00 fully on account.
+    let purchase_id = complete_purchase(
+        &pool,
+        actor,
+        supplier,
+        &[(product, dec!(10), dec!(10.00))],
+        &[],
+        dec!(100.00),
+    )
+    .await;
+
+    // Race a 40.00 supplier return (supplier_credit) against a 50.00 supplier
+    // payment allocated to the SAME purchase: because purchase_returns locks
+    // `purchases` FOR NO KEY UPDATE (compatible with FK `FOR KEY SHARE`), both
+    // serialize cleanly without a 40P01 deadlock and preserve the ledger
+    // invariant (`balance + U == outstanding_total + adjustments`).
+    let ret_uri = format!("/api/v1/purchases/{purchase_id}/returns");
+    let pay_uri = format!("/api/v1/suppliers/{supplier}/payments");
+    let (ret_res, pay_res) = tokio::join!(
+        call_json(
+            &app,
+            Some(&cookie),
+            "POST",
+            &ret_uri,
+            Some(json!({
+                "reason": "Concurrent return",
+                "surplus_mode": "supplier_credit",
+                "items": [{ "product_id": product, "quantity": "4" }]
+            })),
+        ),
+        call_json(
+            &app,
+            Some(&cookie),
+            "POST",
+            &pay_uri,
+            Some(json!({
+                "payment_method_id": method,
+                "amount": "50.00",
+                "allocations": [{ "purchase_id": purchase_id, "amount": "50.00" }]
+            })),
+        ),
+    );
+
+    assert_eq!(
+        ret_res.0,
+        StatusCode::CREATED,
+        "return failed: {:?}",
+        ret_res
+    );
+    assert_eq!(
+        pay_res.0,
+        StatusCode::CREATED,
+        "payment failed: {:?}",
+        pay_res
+    );
+
+    let pos = supplier_accounts::account_position(&pool, supplier)
+        .await
+        .unwrap();
+    assert_eq!(pos.balance, dec!(10.00));
+    assert_eq!(pos.unapplied_credit, dec!(0.00));
+    assert_eq!(pos.outstanding_total, dec!(10.00));
+    assert!(pos.is_consistent());
+}

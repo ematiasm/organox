@@ -3,8 +3,8 @@
 //! Mirrors [`crate::customer_accounts::repository`]:
 //! - `balance` is `SUM(amount)` over `supplier_account_entries` (positive = we
 //!   owe the supplier, negative = advance credit in our favour);
-//! - `outstanding(purchase)` is `purchase_charge - SUM(allocations)`;
-//! - `unapplied_credit` is `paid - refunded - allocated >= 0`.
+//! - `outstanding(purchase)` is `purchase_charge - purchase_return - SUM(allocations)`;
+//! - `unapplied_credit` is `(payment + purchase_return_credit) - refunded - allocated >= 0`.
 //!
 //! Concurrency: every balance-changing writer calls [`lock_supplier`] first,
 //! acquiring `pg_advisory_xact_lock(hashtextextended(supplier_id, 1))` with a
