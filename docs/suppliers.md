@@ -9,10 +9,14 @@ draft editing and completion.
 
 There is no route that deletes a supplier, and there never will be one without
 a fresh decision. The only mutation that takes a supplier out of circulation is
-`POST /suppliers/{id}/deactivate` (or `PATCH {"is_active": false}`), which sets
-`is_active = false` and answers `204`. Repeated deactivation calls are
-idempotent (`204`). Reactivation exists only as a field:
-`PATCH {"is_active": true}`; there is no dedicated activate route.
+`POST /suppliers/{id}/deactivate` (or `PATCH {"is_active": false}`), which
+first checks the supplier's account under the supplier advisory lock (seed `1`)
+and answers `409` while `balance != 0` or `unapplied_credit != 0` — even if an
+already-inactive supplier still carries an open position
+(`docs/supplier-accounts.md`). Once settled, it sets `is_active = false` and
+answers `204`, and repeated deactivation calls are idempotent (`204`).
+Reactivation exists only as a field: `PATCH {"is_active": true}`; there is no
+dedicated activate route.
 
 Why: `purchases.supplier_id` points at this row (`0024_purchases.sql`). History
 points at a supplier, and a row that disappears breaks it — the same reasoning
@@ -45,19 +49,39 @@ The index name is part of the contract: the repository maps a violation of
 `suppliers_tax_id_unique` to the `409` "tax_id is already in use", so renaming
 it breaks the error, not just the schema.
 
-## The fields, and why there is no credit limit or payable balance
+## The fields, and why there is no stored payable balance
 
-`name`, `tax_id`, `email`, `phone` — the same core four fields `customers`
-started with, and nothing more. Every purchase in this version is paid in full
-through existing wallets (`docs/purchases.md`), so suppliers carry no credit
-limit and no payable account ledger. When supplier credit is added, it will
-arrive with its own ledger and rules rather than speculative columns on this
-table.
+`name`, `tax_id`, `email`, `phone`, plus `credit_limit`
+(`0026_supplier_credit_limit.sql`) — the same core fields as `customers`.
 
-The optional fields keep the same pragmatic validation rules as `customers`:
+A supplier carries no stored payable balance: `balance` and `available_credit`
+returned by `GET /suppliers` and `GET /suppliers/{id}` are derived from
+`supplier_account_entries` on read, never written to `suppliers`
+(`docs/supplier-accounts.md`). The credit limit is a policy ceiling rather than
+a balance.
+
+The optional text fields keep the same pragmatic validation rules as
+`customers`:
 
 - **`email`** requires exactly one `@` with text on both sides and nothing else.
 - **`phone`** has no format at all, only a length bound (≤ 40 chars).
+
+## The credit limit: NULL unlimited, 0 cash only
+
+`credit_limit` (`0026_supplier_credit_limit.sql`) is the ceiling on what the
+business is willing to owe one supplier: `numeric(14, 2)`, optional, never
+negative (`suppliers_credit_limit_not_negative`), at most two decimals, and at
+most `999999999999.99`.
+
+- **`NULL`** (the default, and what existing rows carry) means **unlimited**:
+  on-account purchases are not capped.
+- **`0`** means **cash only**: the supplier can still be purchased from, but
+  any `on_account > 0` completion is rejected with `409`.
+- **`> 0`** caps **total exposure** (`balance + on_account`), enforced under
+  the supplier advisory lock at `POST /purchases/{id}/complete` (`409` naming
+  remaining available credit; `docs/purchases.md`, `docs/supplier-accounts.md`).
+  Holding advance credit (`balance < 0`) spends our own advance before the
+  limit applies.
 
 ## `include_inactive` and `PATCH` semantics
 
@@ -66,10 +90,14 @@ The list shows only active suppliers unless the caller sends
 hides a supplier from the default listing, never from `GET /suppliers/{id}`, so
 historical purchases and detail links keep working.
 
-`PATCH /suppliers/{id}` uses `COALESCE($n, column)`: absent fields (and blank
-strings normalized to `None`) leave the stored value untouched. `tax_id`,
-`email`, and `phone` can be replaced, not cleared — avoiding partial forms that
-accidentally erase fields they did not send.
+`PATCH /suppliers/{id}` uses `COALESCE($n, column)` for text fields: absent
+fields (and blank strings normalized to `None`) leave the stored value
+untouched, so `tax_id`, `email`, and `phone` can be replaced, not cleared —
+avoiding partial forms that accidentally erase fields they did not send.
+
+`credit_limit` is the deliberate tri-state exception: an omitted `credit_limit`
+leaves the stored limit untouched, an explicit `null` clears it back to
+unlimited, and a non-negative value sets the cap.
 
 ## The purchase link: draft-only, required at completion
 
@@ -94,17 +122,27 @@ catalog and customers. Errors use `application/problem+json` (RFC 7807).
 
 | Method | Route | Result |
 |---|---|---|
-| POST | `/api/v1/suppliers` | `201` with `{id}`; `409` tax_id already in use; `422` invalid input |
-| GET | `/api/v1/suppliers?search=&include_inactive=&limit=&offset=` | `200` `{items, limit, offset, total}` |
-| GET | `/api/v1/suppliers/{id}` | `200` `SupplierResponse`; `404` unknown id |
-| PATCH | `/api/v1/suppliers/{id}` | `204`; `404` unknown id; `409` tax_id taken; `422` invalid input |
-| POST | `/api/v1/suppliers/{id}/deactivate` | `204`, idempotent; `404` unknown id |
+| POST | `/api/v1/suppliers` | `201` with `{id}` (optional `credit_limit`); `409` tax_id already in use; `422` invalid input |
+| GET | `/api/v1/suppliers?search=&include_inactive=&limit=&offset=` | `200` `{items, limit, offset, total}` (each item includes derived `balance` and `available_credit`) |
+| GET | `/api/v1/suppliers/{id}` | `200` `SupplierResponse` (with `credit_limit`, `balance`, `available_credit`); `404` unknown id |
+| PATCH | `/api/v1/suppliers/{id}` | `204`; `404` unknown id; `409` tax_id taken, busy account, or deactivating with an open position; `422` invalid input |
+| POST | `/api/v1/suppliers/{id}/deactivate` | `204`, idempotent; `404` unknown id; `409` open balance or unapplied credit, or busy account |
 | PUT | `/api/v1/purchases/{id}/supplier` | `204`; `404` unknown purchase or supplier; `409` closed purchase or inactive supplier; `422` `supplier_id` omitted |
+
+The payables account routes (`/suppliers/{id}/account`, `/payments`,
+`/credit-refunds`, `/adjustments`, and `/accounts/payables`) are documented in
+`docs/supplier-accounts.md`.
 
 The list is ordered by `lower(name), id`, with `limit` defaulting to 50 and
 clamped to 1–200. `total` uses `COUNT(*) OVER ()` with a fallback count when
 `offset` is past the end of the result set, and `search` matches `name` or
 `tax_id` case-insensitively using the shared `src/search.rs` LIKE escaping.
+
+`SupplierResponse` fields: `id`, `name`, `tax_id`, `email`, `phone`,
+`is_active`, `credit_limit` (`null` = unlimited, `"0.00"` = cash only),
+`balance` (derived signed balance; positive = we owe the supplier, negative =
+advance credit), `available_credit` (derived unapplied credit `U`),
+`created_at`, `updated_at`.
 
 ## Validation rules
 
@@ -115,14 +153,14 @@ clamped to 1–200. `total` uses `COUNT(*) OVER ()` with a fallback count when
 | `email` | optional, trimmed, ≤ 254 chars, one `@` with text on both sides | service |
 | `phone` | optional, trimmed, ≤ 40 chars, any format | service |
 | `email`, `phone`, `tax_id` blank | stored as `NULL`, never `""` | service + `CHECK`s (`*_not_blank`) |
+| `credit_limit` | optional, `>= 0`, at most two decimals, ≤ `999999999999.99`; `NULL` = unlimited, `0` = cash only; clearable through `PATCH` with an explicit `null` | service + `suppliers_credit_limit_not_negative` |
 
 ## What is missing
 
-- **Supplier payables / credit accounts**: purchases are cash-only in this
-  version; accounts payable, partial payments, and supplier statements are
-  deferred to their own feature.
 - **Per-supplier purchase summary / catalog**: `GET /purchases?supplier_id=...`
-  filters purchases by supplier, but there is no supplier-specific price list or
-  lead-time registry.
+  filters purchases by supplier and `GET /suppliers/{id}/account` reports open
+  payables (`docs/supplier-accounts.md`), but there is no supplier-specific
+  price list or lead-time registry.
 - **Hard delete**: no route, by decision. A supplier created by mistake is
-  deactivated, and its document stays taken until edited.
+  deactivated (once its account position is zero), and its document stays taken
+  until edited.
