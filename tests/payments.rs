@@ -808,3 +808,187 @@ async fn supplier_account_movements_cannot_be_typed_by_hand(pool: PgPool) {
     }
     assert_eq!(movement_count(&pool, wallet).await, 0);
 }
+
+#[sqlx::test]
+async fn supplier_account_wallet_link_constraints_reject_invalid_combinations(pool: PgPool) {
+    let _cookie = login(&pool).await;
+    let owner: Uuid = sqlx::query_scalar("SELECT id FROM users LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let wallet = ledger::create_wallet(&pool, "Link Guard Wallet")
+        .await
+        .unwrap();
+    let method = ledger::create_method(
+        &pool,
+        ledger::NewMethod {
+            name: "Transfer",
+            wallet_id: wallet,
+        },
+    )
+    .await
+    .unwrap();
+    let supplier: Uuid = sqlx::query_scalar(
+        "INSERT INTO suppliers (id, name) VALUES ($1, 'Guard Supplier') RETURNING id",
+    )
+    .bind(Uuid::now_v7())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let customer: Uuid = sqlx::query_scalar(
+        "INSERT INTO customers (id, name) VALUES ($1, 'Guard Customer') RETURNING id",
+    )
+    .bind(Uuid::now_v7())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let purchase = Uuid::now_v7();
+    sqlx::query("INSERT INTO purchases (id, status, created_by) VALUES ($1, 'draft', $2)")
+        .bind(purchase)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let assert_check_violation =
+        |err: ledger::RepoError, expected_constraint: Option<&str>, label: &str| match err {
+            ledger::RepoError::Database(sqlx::Error::Database(db)) => {
+                assert_eq!(
+                    db.code().as_deref(),
+                    Some("23514"),
+                    "{label}: expected CHECK violation (23514), got {db:?}"
+                );
+                if let Some(name) = expected_constraint {
+                    assert_eq!(
+                        db.constraint(),
+                        Some(name),
+                        "{label}: unexpected constraint name"
+                    );
+                }
+            }
+            other => panic!("{label}: expected DB CHECK violation, got {other:?}"),
+        };
+
+    // 1. Non-supplier-account kind must not carry supplier_id.
+    let err = ledger::insert_movement(
+        &pool,
+        NewWalletMovement {
+            wallet_id: wallet,
+            kind: WalletMovementKind::Expense,
+            amount: dec!(10.00),
+            sale_id: None,
+            purchase_id: None,
+            payment_method_id: None,
+            credit_note_id: None,
+            customer_id: None,
+            supplier_id: Some(supplier),
+            note: None,
+            created_by: Some(owner),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_check_violation(
+        err,
+        Some("wallet_movements_supplier_link_only_for_account_kinds"),
+        "expense with supplier_id",
+    );
+
+    // 2. Supplier account kinds require both supplier_id and payment_method_id.
+    for kind in [
+        WalletMovementKind::SupplierAccountPayment,
+        WalletMovementKind::SupplierAccountRefund,
+    ] {
+        let missing_supplier = ledger::insert_movement(
+            &pool,
+            NewWalletMovement {
+                wallet_id: wallet,
+                kind,
+                amount: dec!(10.00),
+                sale_id: None,
+                purchase_id: None,
+                payment_method_id: Some(method),
+                credit_note_id: None,
+                customer_id: None,
+                supplier_id: None,
+                note: None,
+                created_by: Some(owner),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_check_violation(
+            missing_supplier,
+            Some("wallet_movements_supplier_account_is_complete"),
+            &format!("{kind} without supplier_id"),
+        );
+
+        let missing_method = ledger::insert_movement(
+            &pool,
+            NewWalletMovement {
+                wallet_id: wallet,
+                kind,
+                amount: dec!(10.00),
+                sale_id: None,
+                purchase_id: None,
+                payment_method_id: None,
+                credit_note_id: None,
+                customer_id: None,
+                supplier_id: Some(supplier),
+                note: None,
+                created_by: Some(owner),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_check_violation(
+            missing_method,
+            Some("wallet_movements_supplier_account_is_complete"),
+            &format!("{kind} without payment_method_id"),
+        );
+    }
+
+    // 3. Cross-entity exclusivity: never attribute one wallet movement to two entities.
+    let supplier_and_customer = ledger::insert_movement(
+        &pool,
+        NewWalletMovement {
+            wallet_id: wallet,
+            kind: WalletMovementKind::SupplierAccountPayment,
+            amount: dec!(10.00),
+            sale_id: None,
+            purchase_id: None,
+            payment_method_id: Some(method),
+            credit_note_id: None,
+            customer_id: Some(customer),
+            supplier_id: Some(supplier),
+            note: None,
+            created_by: Some(owner),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_check_violation(supplier_and_customer, None, "supplier_id + customer_id");
+
+    let supplier_and_purchase = ledger::insert_movement(
+        &pool,
+        NewWalletMovement {
+            wallet_id: wallet,
+            kind: WalletMovementKind::SupplierAccountPayment,
+            amount: dec!(10.00),
+            sale_id: None,
+            purchase_id: Some(purchase),
+            payment_method_id: Some(method),
+            credit_note_id: None,
+            customer_id: None,
+            supplier_id: Some(supplier),
+            note: None,
+            created_by: Some(owner),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_check_violation(supplier_and_purchase, None, "supplier_id + purchase_id");
+
+    assert_eq!(movement_count(&pool, wallet).await, 0);
+}

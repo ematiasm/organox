@@ -1570,3 +1570,95 @@ async fn on_account_purchase_rejects_deactivated_supplier_without_partial_writes
     assert_eq!(pos.balance, Decimal::ZERO);
     assert_eq!(pos.unapplied_credit, Decimal::ZERO);
 }
+
+#[sqlx::test]
+async fn cash_purchase_for_inactive_supplier_returns_409_even_with_invalid_payments(pool: PgPool) {
+    let (actor, password) =
+        seed_user(&pool, "inactive-cash-prec@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Closed Cash Mill").await;
+    let flour = seed_good(&pool, "Flour").await;
+    let (wallet_id, method_id) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+    let draft_id = prepare_http_draft(&pool, actor, supplier_id, flour, dec!(2), dec!(50.00)).await;
+
+    suppliers::deactivate_supplier(&pool, supplier_id)
+        .await
+        .unwrap();
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "inactive-cash-prec@organox.test", &password).await;
+
+    // 1. Deactivated supplier + payment sum mismatch -> 409 SupplierInactive (baseline precedence).
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [{ "payment_method_id": method_id, "amount": "10.00" }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/problem+json"
+    );
+    let body = json_body(res).await;
+    assert_eq!(
+        body["detail"],
+        "the supplier is deactivated and cannot be used for a purchase"
+    );
+
+    // 2. Deactivated supplier + unknown/unavailable payment method -> 409 SupplierInactive.
+    let res = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [{ "payment_method_id": Uuid::now_v7(), "amount": "100.00" }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    let body = json_body(res).await;
+    assert_eq!(
+        body["detail"],
+        "the supplier is deactivated and cannot be used for a purchase"
+    );
+
+    // Rejected calls leave draft, stock, and wallet untouched.
+    assert_eq!(
+        purchases::get_purchase(&pool, draft_id)
+            .await
+            .unwrap()
+            .status,
+        PurchaseStatus::Draft
+    );
+    assert_eq!(
+        catalog::get_product(&pool, flour).await.unwrap().stock,
+        Some(dec!(0))
+    );
+    assert_eq!(
+        payments::get_wallet(&pool, wallet_id)
+            .await
+            .unwrap()
+            .balance,
+        dec!(0.00)
+    );
+}
