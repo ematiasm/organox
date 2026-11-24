@@ -167,9 +167,9 @@ All routes require a session (`401` without a cookie). Errors use
 
 - **Product cost & markup pricing**: storing a current product cost and deriving
   sale price from `cost + %` is deferred to its own feature.
-- **Supplier returns / debit notes**: returning merchandise from a completed
-  purchase currently requires manual stock and wallet adjustments until a
-  dedicated return document is added.
 - **Invoice number / VAT breakdown**: supplier invoice references can be stored
   in `note`, without structured fiscal numbering or tax lines.
 - **Orphan drafts**: old abandoned drafts are not cleaned up automatically.
+
+See `docs/purchase-returns.md` for returning merchandise against a completed
+purchase.

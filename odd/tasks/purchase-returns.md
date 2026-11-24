@@ -56,10 +56,10 @@ Branch: `feat/purchase-returns` | Delivery: `ask-on-risk` (forecast: ~1,600 auth
 
 | ID | Task | Specs | Route | Risk | Status | Commit / Evidence |
 |---|---|---|---|---|---|---|
-| T1 | Migrations `0030`–`0031` + shared ledger extensions (`catalog`, `payments`, `supplier_accounts`, `suppliers`) + unit/DB tests | S1, S2, S3, S4 | inline | high (items 1, 3) | pending | — |
-| T2 | `src/purchase_returns/` module, routes, OpenAPI, `.sqlx`, `schema.d.ts`, HTTP & concurrency integration tests | S1, S2, S3, S5, S6 | inline | high (items 1, 3) | pending | — |
-| T3 | Frontend API client, enum labels, `/operations/purchases` link, `/operations/purchases/[id]/return` page, Playwright e2e probe | S7 | inline | medium | pending | — |
-| T4 | Docs (`docs/purchase-returns.md`, updated module docs & `README.md`) + full suite & independent verification | S8 | inline | passive + high-risk verify | pending | — |
+| T1 | Migrations `0030`–`0031` + shared ledger extensions (`catalog`, `payments`, `supplier_accounts`, `suppliers`) + unit/DB tests | S1, S2, S3, S4 | inline | high (items 1, 3) | done | `acd6d1b` (117/117 targeted tests, `clippy -D warnings`, offline build) |
+| T2 | `src/purchase_returns/` module, routes, OpenAPI, `.sqlx`, `schema.d.ts`, HTTP & concurrency integration tests | S1, S2, S3, S5, S6 | inline | high (items 1, 3) | done | `c2815d8` (91/91 tests, `.sqlx`, `openapi.json`, `schema.d.ts`) |
+| T3 | Frontend API client, enum labels, `/operations/purchases` link, `/operations/purchases/[id]/return` page, Playwright e2e probe | S7 | inline | medium | done | `4a3ca3e` (`svelte-check` 0/0, `vite build`, e2e probe 7/7) |
+| T4 | Docs (`docs/purchase-returns.md`, updated module docs & `README.md`) + verifier blocker fixes + full verification | S8 | inline | passive + high-risk verify | done | `ada2d81` + docs commit (`make check` 445/445, `SQLX_OFFLINE=true`, `make fe-build`, verifier S1–S8 PASS) |
 
 ## Log
 
@@ -67,3 +67,6 @@ Branch: `feat/purchase-returns` | Delivery: `ask-on-risk` (forecast: ~1,600 auth
 - **L2 (2026-11-24)**: User clarified return ceiling invariant verbatim: `"la devolucion nunca puede ser mayor a la compra linkeada. Una devolucion tiene que respetar los productos que ya existen en la compra linkeada. Nunca se puede devolver mas de los productos que figuran en la compra u otro precio, por lo que una devolucion nunca puede ser mayor que una compra por diseño."`
 - **L3 (2026-11-24)**: User chose paid-surplus disposition verbatim: `"El operador elige en cada devolución: reembolso a wallets O dejarlo como saldo a favor en la cuenta del proveedor"`
 - **L4 (2026-11-24)**: Mapped `credit_notes`, `purchases`, `supplier_accounts`, `catalog`, `payments`, OpenAPI, and frontend via read-only `research` subagent. Branch `feat/purchase-returns` created; feature document initialized with 4 inline tasks (T1–T4) and Engram mirror `odd/purchase-returns/tasks`.
+- **L5 (2026-11-24)**: T1 committed (`acd6d1b`), T2 committed (`c2815d8`), T3 committed (`4a3ca3e`, Playwright e2e probe 7/7 checks passed with zero console errors).
+- **L6 (2026-11-24)**: Independent high-risk verifier audited `main..HEAD` against `S1`–`S8` and reported two blockers: (1) `POST /api/v1/products/{id}/movements` did not reject `MovementReason::PurchaseReturn` as non-manual (S2), and (2) `purchases FOR UPDATE` in `purchase_returns::create` risked an AB-BA deadlock with FK `FOR KEY SHARE` from concurrent `supplier_account_allocations` inserts (S3). Fixed both (`ValidationError::NonManualReason`, `FOR NO KEY UPDATE` on `purchases`), capped `wallet_refundable_capacity` by `returnable_total`, updated stale comments, and added 3 regression tests (manual movement `422`, rounding-drift `409`, concurrent return + payment allocation deadlock proof). Re-ran `make prepare`, `make check` (445/445 passed), `SQLX_OFFLINE=true cargo check --all-targets`, and `make fe-build` — all green; scoped verifier recheck requested.
+- **L7 (2026-11-24)**: Independent verifier scoped recheck confirmed both blockers resolved (`S1`–`S8` PASS, zero open blockers). Verifier fixes committed in `ada2d81`; docs and task closure committed on `feat/purchase-returns`. Ready for user publication decision (push / PR).

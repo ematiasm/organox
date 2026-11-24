@@ -40,6 +40,7 @@ money actually went, at the moment it went. Re-pointing a method changes where
 SELECT SUM(CASE kind
     WHEN 'sale_payment'            THEN amount
     WHEN 'account_payment'         THEN amount
+    WHEN 'purchase_refund'         THEN amount
     WHEN 'supplier_account_refund' THEN amount
     WHEN 'adjustment_in'           THEN amount
     ELSE -amount
@@ -67,6 +68,7 @@ matching the drawer.
 | `account_payment` | inflow | collecting against a customer's account (`POST /customers/{id}/receipts`), never by hand |
 | `account_payment_refund` | outflow | handing back a customer's credit balance (`POST /customers/{id}/credit-refunds`), never by hand |
 | `purchase_payment` | outflow | completing a purchase's upfront payment leg (`POST /purchases/{id}/complete`), never by hand |
+| `purchase_refund` | inflow | returning a completed purchase with `surplus_mode = "wallet_refund"` (`POST /purchases/{id}/returns`), never by hand |
 | `supplier_account_payment` | outflow | paying against a supplier's account (`POST /suppliers/{id}/payments`), never by hand |
 | `supplier_account_refund` | inflow | receiving refunded advance credit back from a supplier (`POST /suppliers/{id}/credit-refunds`), never by hand |
 | `expense` | outflow | the operator, from the wallet |
@@ -111,11 +113,14 @@ The database keeps the attribution honest: only `account_payment` and
 `account_payment_refund` may carry a customer
 (`wallet_movements_customer_link_only_for_account_kinds`), and either kind
 without its customer or its method is refused
-(`wallet_movements_account_payment_is_complete`). Likewise, only
-`purchase_payment` may carry a `purchase_id`
-(`wallet_movements_purchase_link_only_for_purchase_kinds`), and a
-`purchase_payment` without both `purchase_id` and `payment_method_id` is
-refused (`wallet_movements_purchase_payment_is_complete`). For supplier
+(`wallet_movements_account_payment_is_complete`). Likewise, only `purchase_payment` and `purchase_refund` may carry a
+`purchase_id` (`wallet_movements_purchase_link_only_for_purchase_kinds`), both
+require `purchase_id` and `payment_method_id`
+(`wallet_movements_purchase_kind_is_complete`), and `purchase_refund` must also
+name its `purchase_return_id`
+(`wallet_movements_purchase_refund_names_its_return`,
+`wallet_movements_purchase_return_only_for_purchase_refunds`, see
+`docs/purchase-returns.md`). For supplier
 accounts (`0029_wallet_supplier_account_links.sql`), only
 `supplier_account_payment` and `supplier_account_refund` may carry a
 `supplier_id` (`wallet_movements_supplier_link_only_for_account_kinds`), both
