@@ -6,5 +6,7 @@
 //! a wallet; that payable lives here, never in a wallet, and never as a stored
 //! column on `purchases` or `suppliers`.
 
+pub mod handlers;
 pub mod model;
 pub mod repository;
+pub mod service;

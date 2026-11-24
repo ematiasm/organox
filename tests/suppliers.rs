@@ -1248,3 +1248,86 @@ async fn deactivation_guard_blocks_open_balance_or_unapplied_credit_and_allows_o
             .is_active
     );
 }
+
+#[sqlx::test]
+async fn deactivation_routes_answer_409_when_supplier_account_is_busy(pool: PgPool) {
+    let (_actor, password) =
+        seed_user_with_password(&pool, "busy-deact@organox.test", Role::Manager).await;
+    let supplier_id = service::create_supplier(
+        &pool,
+        CreateSupplierInput {
+            name: "Locked Supplier".into(),
+            tax_id: None,
+            email: None,
+            phone: None,
+            credit_limit: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "busy-deact@organox.test", &password).await;
+
+    // Hold the per-supplier advisory lock (seed 1) on another connection.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1))")
+        .bind(supplier_id.to_string())
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        router.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/suppliers/{supplier_id}/deactivate"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("POST /deactivate never answered: lock wait is not bounded")
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/problem+json"
+    );
+    let body = json_body(res).await;
+    assert_eq!(body["detail"], "the supplier account is busy, retry");
+
+    let res = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        router.oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/suppliers/{supplier_id}"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "is_active": false }).to_string()))
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("PATCH is_active=false never answered: lock wait is not bounded")
+    .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/problem+json"
+    );
+    let body = json_body(res).await;
+    assert_eq!(body["detail"], "the supplier account is busy, retry");
+
+    holder.rollback().await.unwrap();
+
+    assert!(
+        service::get_supplier(&pool, supplier_id)
+            .await
+            .unwrap()
+            .is_active
+    );
+}

@@ -9,6 +9,38 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/accounts/payables": {
+      "get": {
+        "tags": [
+          "supplier_accounts"
+        ],
+        "summary": "Accounts payable report across every supplier with an open position.",
+        "description": "Lists every supplier whose `balance != 0` or `unapplied_credit != 0`,\nordered by highest balance first, with open-purchase aging buckets computed\nfrom each purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`).",
+        "operationId": "list_payables_doc",
+        "responses": {
+          "200": {
+            "description": "Open supplier positions and aging buckets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayablesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/accounts/receivables": {
       "get": {
         "tags": [
@@ -3263,6 +3295,305 @@
         }
       }
     },
+    "/api/v1/suppliers/{id}/account": {
+      "get": {
+        "tags": [
+          "supplier_accounts"
+        ],
+        "summary": "Supplier account statement.",
+        "description": "Returns every ledger entry oldest first with its running balance, the\nsupplier's current balance and unapplied credit, and every completed\npurchase with an open payable — all read from one consistent snapshot.",
+        "operationId": "get_account_statement_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Supplier ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Supplier account statement",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierAccountResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown supplier",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/suppliers/{id}/adjustments": {
+      "get": {
+        "tags": [
+          "supplier_accounts"
+        ],
+        "summary": "Manual payable adjustment write log for one supplier, newest first.",
+        "operationId": "list_adjustments_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Supplier ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Manual adjustments recorded for this supplier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SupplierAdjustmentLogResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown supplier",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "supplier_accounts"
+        ],
+        "summary": "Record a manual payable adjustment on a supplier's account.",
+        "description": "Writes `adjustment_in` or `adjustment_out` without touching any wallet.\nBoth directions require the balance to stay `>= 0`: an adjustment may load\nan opening payable or correct a balance, never create or consume advance\ncredit.",
+        "operationId": "record_adjustment_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Supplier ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSupplierAdjustmentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Adjustment recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierAdjustmentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown supplier",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The supplier account is busy, retry",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Blank note, invalid amount, or adjustment crossing zero",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/suppliers/{id}/credit-refunds": {
+      "post": {
+        "tags": [
+          "supplier_accounts"
+        ],
+        "summary": "Record refunded advance credit returned by a supplier through a wallet\ninflow.",
+        "description": "One request, one transaction: a `supplier_account_refund` inflow enters the\npayment method's wallet and a `credit_refund` entry moves the supplier's\nbalance toward zero. Refused unless `amount <= min(unapplied_credit, -balance)`.\nAn optional idempotency key returns the first refund with `200` instead of\nbooking the inflow twice.",
+        "operationId": "refund_credit_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Supplier ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundSupplierCreditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Existing credit refund returned for a repeated idempotency key; nothing was written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierCreditRefundResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Credit refund recorded: wallet inflow and ledger entry written together",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierCreditRefundResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown supplier",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Busy supplier account, or idempotency key already used by another entry kind",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown or inactive payment method, blank note, invalid amount, or amount exceeding refundable credit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/suppliers/{id}/deactivate": {
       "post": {
         "tags": [
@@ -3308,6 +3639,167 @@
           },
           "409": {
             "description": "Open account position or account busy",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/suppliers/{id}/payments": {
+      "get": {
+        "tags": [
+          "supplier_accounts"
+        ],
+        "summary": "Payment write log for one supplier, newest first.",
+        "operationId": "list_payments_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Supplier ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Payments recorded for this supplier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SupplierPaymentLogResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown supplier",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "supplier_accounts"
+        ],
+        "summary": "Record a payment against a supplier's account.",
+        "description": "One request, one transaction: money leaves the payment method's wallet as a\n`supplier_account_payment` movement carrying the supplier and the method,\nand the supplier's ledger records one `payment` entry linked to it.\nAllocations are explicit — the server never invents them — and any\nunallocated remainder becomes unapplied advance credit with the supplier.\nAn optional idempotency key makes a retry return the first payment with\n`200` instead of paying twice.",
+        "operationId": "record_payment_doc",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Supplier ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSupplierPaymentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Existing payment returned for a repeated idempotency key; nothing was written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierPaymentResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Payment recorded: wallet outflow and ledger entry written together",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierPaymentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown supplier, or an allocation names an unknown purchase",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Busy supplier account, or idempotency key already used by another entry kind",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown or inactive payment method, invalid amount, overlong idempotency key, or invalid allocations",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4976,6 +5468,39 @@
           }
         }
       },
+      "OutstandingPurchaseResponse": {
+        "type": "object",
+        "description": "One completed purchase that still has an open payable on the supplier's\naccount.",
+        "required": [
+          "purchase_id",
+          "completed_at",
+          "charged",
+          "allocated",
+          "outstanding"
+        ],
+        "properties": {
+          "allocated": {
+            "type": "string",
+            "example": "80.00"
+          },
+          "charged": {
+            "type": "string",
+            "example": "200.00"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "outstanding": {
+            "type": "string",
+            "example": "120.00"
+          },
+          "purchase_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "OutstandingSaleResponse": {
         "type": "object",
         "description": "One sale that still owes money on the customer's account.",
@@ -5011,6 +5536,124 @@
           "sale_id": {
             "type": "string",
             "format": "uuid"
+          }
+        }
+      },
+      "PayableSupplierResponse": {
+        "type": "object",
+        "description": "One supplier with an open account position (`balance != 0` or\n`unapplied_credit != 0`).",
+        "required": [
+          "supplier_id",
+          "supplier_name",
+          "is_active",
+          "balance",
+          "unapplied_credit",
+          "outstanding_total",
+          "adjustments",
+          "aging"
+        ],
+        "properties": {
+          "adjustments": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "aging": {
+            "$ref": "#/components/schemas/PayablesAgingBucketsResponse"
+          },
+          "balance": {
+            "type": "string",
+            "example": "175.00"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "outstanding_total": {
+            "type": "string",
+            "example": "175.00"
+          },
+          "supplier_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "supplier_name": {
+            "type": "string"
+          },
+          "tax_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unapplied_credit": {
+            "type": "string",
+            "example": "0.00"
+          }
+        }
+      },
+      "PayablesAgingBucketsResponse": {
+        "type": "object",
+        "description": "Open purchase payables split into aging buckets from each purchase's\n`completed_at` timestamp (`0-30`, `31-60`, `61-90`, `90+`).",
+        "required": [
+          "days_0_30",
+          "days_31_60",
+          "days_61_90",
+          "days_90_plus"
+        ],
+        "properties": {
+          "days_0_30": {
+            "type": "string",
+            "example": "100.00"
+          },
+          "days_31_60": {
+            "type": "string",
+            "example": "50.00"
+          },
+          "days_61_90": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "days_90_plus": {
+            "type": "string",
+            "example": "25.00"
+          }
+        }
+      },
+      "PayablesResponse": {
+        "type": "object",
+        "description": "Portfolio-wide payables report across every supplier with an open account\nposition.",
+        "required": [
+          "total_balance",
+          "total_unapplied_credit",
+          "total_outstanding",
+          "total_adjustments",
+          "aging",
+          "items"
+        ],
+        "properties": {
+          "aging": {
+            "$ref": "#/components/schemas/PayablesAgingBucketsResponse"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayableSupplierResponse"
+            }
+          },
+          "total_adjustments": {
+            "type": "string",
+            "example": "0.00"
+          },
+          "total_balance": {
+            "type": "string",
+            "example": "175.00"
+          },
+          "total_outstanding": {
+            "type": "string",
+            "example": "175.00"
+          },
+          "total_unapplied_credit": {
+            "type": "string",
+            "example": "0.00"
           }
         }
       },
@@ -5672,6 +6315,67 @@
           }
         }
       },
+      "RecordSupplierAdjustmentRequest": {
+        "type": "object",
+        "description": "A manual adjustment against a supplier's payables ledger. Touches no wallet.",
+        "required": [
+          "direction",
+          "amount",
+          "note"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "250.00"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/SupplierAdjustmentDirection"
+          },
+          "note": {
+            "type": "string",
+            "description": "Why the balance was adjusted. Required and non-blank."
+          }
+        }
+      },
+      "RecordSupplierPaymentRequest": {
+        "type": "object",
+        "description": "A payment to a supplier: money leaving a wallet, and the completed\npurchases it pays.\n\nAllocations are explicit and never invented by the server; any unallocated\nremainder becomes unapplied advance credit with the supplier.",
+        "required": [
+          "payment_method_id",
+          "amount",
+          "allocations"
+        ],
+        "properties": {
+          "allocations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SupplierPaymentAllocationRequest"
+            }
+          },
+          "amount": {
+            "type": "string",
+            "example": "150.00"
+          },
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional retry key. A repeated payment with the same key returns the\nfirst payment with `200` instead of paying twice.",
+            "maxLength": 100
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payment_method_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "RefundCreditRequest": {
         "type": "object",
         "description": "A credit refund: money handed back to a customer who holds usable credit.",
@@ -5696,6 +6400,37 @@
           "note": {
             "type": "string",
             "description": "Why the money is being handed back. Required and non-blank."
+          },
+          "payment_method_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "RefundSupplierCreditRequest": {
+        "type": "object",
+        "description": "A credit refund: unapplied advance credit returned by a supplier into a\nwallet.",
+        "required": [
+          "payment_method_id",
+          "amount",
+          "note"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "50.00"
+          },
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional retry key. A repeated refund with the same key returns the\nfirst refund with `200` instead of booking the inflow twice.",
+            "maxLength": 100
+          },
+          "note": {
+            "type": "string",
+            "description": "Why the supplier refunded the advance credit. Required and non-blank."
           },
           "payment_method_id": {
             "type": "string",
@@ -5934,6 +6669,227 @@
           }
         }
       },
+      "SupplierAccountEntryKind": {
+        "type": "string",
+        "description": "Why the supplier's account moved.",
+        "enum": [
+          "purchase_charge",
+          "payment",
+          "credit_refund",
+          "adjustment_in",
+          "adjustment_out"
+        ]
+      },
+      "SupplierAccountResponse": {
+        "type": "object",
+        "description": "Complete account statement for one supplier: entries oldest first with a\nrunning balance, current position, and every purchase with open payable.",
+        "required": [
+          "supplier_id",
+          "balance",
+          "unapplied_credit",
+          "outstanding_total",
+          "entries",
+          "outstanding_purchases"
+        ],
+        "properties": {
+          "balance": {
+            "type": "string",
+            "description": "Current signed balance. Positive: we owe the supplier. Negative: we\nhold advance credit with them.",
+            "example": "100.00"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SupplierAccountStatementEntryResponse"
+            },
+            "description": "Ledger entries oldest first, each carrying the running balance after it."
+          },
+          "outstanding_purchases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutstandingPurchaseResponse"
+            },
+            "description": "Purchases with `outstanding > 0`, oldest first."
+          },
+          "outstanding_total": {
+            "type": "string",
+            "description": "Sum of what every open purchase still owes.",
+            "example": "100.00"
+          },
+          "supplier_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "unapplied_credit": {
+            "type": "string",
+            "description": "Paid money not yet allocated to a purchase or refunded.",
+            "example": "0.00"
+          }
+        }
+      },
+      "SupplierAccountStatementEntryResponse": {
+        "type": "object",
+        "description": "One ledger line in a supplier's account statement, with the running balance\nright after it.",
+        "required": [
+          "id",
+          "kind",
+          "amount",
+          "running_balance",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "description": "Signed effect on the balance: positive grows what we owe, negative\nshrinks it.",
+            "example": "150.00"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SupplierAccountEntryKind"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "purchase_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "running_balance": {
+            "type": "string",
+            "description": "Supplier's running balance immediately after this entry.",
+            "example": "150.00"
+          },
+          "wallet_movement_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "SupplierAdjustmentDirection": {
+        "type": "string",
+        "description": "Direction of a manual payable adjustment.",
+        "enum": [
+          "in",
+          "out"
+        ]
+      },
+      "SupplierAdjustmentLogResponse": {
+        "type": "object",
+        "description": "One manual adjustment returned by `GET /suppliers/{id}/adjustments`.",
+        "required": [
+          "adjustment_id",
+          "kind",
+          "amount",
+          "note",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "adjustment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Signed effect on the balance: positive for `adjustment_in`, negative\nfor `adjustment_out`.",
+            "example": "250.00"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SupplierAccountEntryKind"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      },
+      "SupplierAdjustmentResponse": {
+        "type": "object",
+        "required": [
+          "adjustment_id",
+          "kind",
+          "balance",
+          "unapplied_credit"
+        ],
+        "properties": {
+          "adjustment_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The ledger entry that recorded the adjustment."
+          },
+          "balance": {
+            "type": "string",
+            "description": "The supplier's balance after the adjustment. Always `>= 0.00`.",
+            "example": "250.00"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SupplierAccountEntryKind"
+          },
+          "unapplied_credit": {
+            "type": "string",
+            "example": "0.00"
+          }
+        }
+      },
+      "SupplierCreditRefundResponse": {
+        "type": "object",
+        "required": [
+          "refund_id",
+          "wallet_movement_id",
+          "balance",
+          "unapplied_credit"
+        ],
+        "properties": {
+          "balance": {
+            "type": "string",
+            "description": "The supplier's balance after the refund. Never positive after a refund.",
+            "example": "-20.00"
+          },
+          "refund_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The ledger entry that recorded the refund."
+          },
+          "unapplied_credit": {
+            "type": "string",
+            "description": "Unapplied advance credit remaining after the refund.",
+            "example": "20.00"
+          },
+          "wallet_movement_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The `supplier_account_refund` movement that carried the money into the\nwallet."
+          }
+        }
+      },
       "SupplierIdResponse": {
         "type": "object",
         "required": [
@@ -5975,6 +6931,169 @@
             "type": "integer",
             "format": "int64",
             "description": "Total matching suppliers across all pages."
+          }
+        }
+      },
+      "SupplierPaymentAllocationRequest": {
+        "type": "object",
+        "description": "Which completed purchase one slice of a supplier payment applies to.",
+        "required": [
+          "purchase_id",
+          "amount"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "150.00"
+          },
+          "purchase_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "SupplierPaymentAllocationResponse": {
+        "type": "object",
+        "description": "One allocated purchase with what it still owes after this payment.",
+        "required": [
+          "purchase_id",
+          "outstanding"
+        ],
+        "properties": {
+          "outstanding": {
+            "type": "string",
+            "description": "The purchase's outstanding payable after this payment's allocation.",
+            "example": "40.00"
+          },
+          "purchase_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "SupplierPaymentLogAllocationResponse": {
+        "type": "object",
+        "description": "One purchase allocation inside the supplier payment write log.",
+        "required": [
+          "purchase_id",
+          "amount",
+          "created_at"
+        ],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "example": "50.00"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "purchase_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "SupplierPaymentLogResponse": {
+        "type": "object",
+        "description": "One supplier payment returned by `GET /suppliers/{id}/payments`.",
+        "required": [
+          "payment_id",
+          "wallet_movement_id",
+          "wallet_id",
+          "amount",
+          "allocated_total",
+          "allocations",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "allocated_total": {
+            "type": "string",
+            "description": "Sum of allocations pointing at this payment.",
+            "example": "100.00"
+          },
+          "allocations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SupplierPaymentLogAllocationResponse"
+            }
+          },
+          "amount": {
+            "type": "string",
+            "description": "Positive amount paid.",
+            "example": "150.00"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payment_method_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "wallet_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "wallet_movement_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "SupplierPaymentResponse": {
+        "type": "object",
+        "required": [
+          "payment_id",
+          "wallet_movement_id",
+          "balance",
+          "unapplied_credit",
+          "allocations"
+        ],
+        "properties": {
+          "allocations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SupplierPaymentAllocationResponse"
+            }
+          },
+          "balance": {
+            "type": "string",
+            "description": "The supplier's balance after the payment. Positive: we still owe the\nsupplier. Negative: we hold advance credit with them.",
+            "example": "40.00"
+          },
+          "payment_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The ledger entry that recorded the payment."
+          },
+          "unapplied_credit": {
+            "type": "string",
+            "description": "Money paid to the supplier not yet allocated to a purchase or refunded.",
+            "example": "90.00"
+          },
+          "wallet_movement_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The `supplier_account_payment` movement that carried the money out of\nthe wallet."
           }
         }
       },
@@ -6392,6 +7511,10 @@
     {
       "name": "suppliers",
       "description": "Suppliers and their documents"
+    },
+    {
+      "name": "supplier_accounts",
+      "description": "Supplier accounts: payables and payments"
     },
     {
       "name": "purchases",

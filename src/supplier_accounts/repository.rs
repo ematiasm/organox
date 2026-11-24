@@ -442,6 +442,13 @@ pub async fn list_adjustments_in(
 /// `unapplied_credit != 0`), with open-purchase aging buckets computed from
 /// each purchase's `completed_at` timestamp in one consistent snapshot.
 pub async fn list_payables(pool: &PgPool) -> Result<Vec<PayableSupplier>, RepoError> {
+    let mut conn = pool.acquire().await?;
+    list_payables_in(&mut conn).await
+}
+
+/// [`list_payables`] inside an open transaction (such as a `REPEATABLE READ,
+/// READ ONLY` snapshot).
+pub async fn list_payables_in(conn: &mut PgConnection) -> Result<Vec<PayableSupplier>, RepoError> {
     let rows = sqlx::query!(
         r#"
         WITH entry_totals AS (
@@ -523,7 +530,7 @@ pub async fn list_payables(pool: &PgPool) -> Result<Vec<PayableSupplier>, RepoEr
         ORDER BY et.balance DESC, lower(s.name) ASC, s.id ASC
         "#
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     Ok(rows
