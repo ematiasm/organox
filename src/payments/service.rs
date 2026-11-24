@@ -241,6 +241,7 @@ pub async fn record_manual_movement(
             purchase_id: None,
             payment_method_id: None,
             credit_note_id: None,
+            purchase_return_id: None,
             // Manual movements never belong to a customer's account: the
             // database constraint refuses a `customer_id` on any kind except
             // `account_payment` and `account_payment_refund`, which this route

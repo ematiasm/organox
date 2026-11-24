@@ -68,6 +68,9 @@ pub enum MovementReason {
     /// Goods a customer brought back. They rejoin stock because the sale that
     /// took them out is being corrected, not because someone counted them.
     Return,
+    /// Goods sent back to a supplier against a completed purchase. They leave
+    /// stock with the frozen unit cost from the purchase line.
+    PurchaseReturn,
     Adjustment,
     Loss,
 }
@@ -78,6 +81,7 @@ impl MovementReason {
             MovementReason::Purchase => "purchase",
             MovementReason::Sale => "sale",
             MovementReason::Return => "return",
+            MovementReason::PurchaseReturn => "purchase_return",
             MovementReason::Adjustment => "adjustment",
             MovementReason::Loss => "loss",
         }
@@ -90,7 +94,7 @@ impl MovementReason {
     pub fn sign(self) -> i8 {
         match self {
             MovementReason::Purchase | MovementReason::Return | MovementReason::Adjustment => 1,
-            MovementReason::Sale | MovementReason::Loss => -1,
+            MovementReason::Sale | MovementReason::PurchaseReturn | MovementReason::Loss => -1,
         }
     }
 
@@ -114,10 +118,11 @@ impl FromStr for MovementReason {
             "purchase" | "compra" => Ok(MovementReason::Purchase),
             "sale" | "venta" => Ok(MovementReason::Sale),
             "return" => Ok(MovementReason::Return),
+            "purchase_return" => Ok(MovementReason::PurchaseReturn),
             "adjustment" | "ajuste" => Ok(MovementReason::Adjustment),
             "loss" | "perdida" | "p\u{e9}rdida" => Ok(MovementReason::Loss),
             other => Err(format!(
-                "unknown reason: {other:?} (valid: purchase, sale, return, adjustment, loss)"
+                "unknown reason: {other:?} (valid: purchase, sale, return, purchase_return, adjustment, loss)"
             )),
         }
     }
@@ -172,6 +177,7 @@ mod tests {
         assert_eq!(MovementReason::Return.sign(), 1);
         assert_eq!(MovementReason::Adjustment.sign(), 1);
         assert_eq!(MovementReason::Sale.sign(), -1);
+        assert_eq!(MovementReason::PurchaseReturn.sign(), -1);
         assert_eq!(MovementReason::Loss.sign(), -1);
     }
 
@@ -180,6 +186,10 @@ mod tests {
         // Stored quantity is always positive; the sign is derived.
         let qty = dec!(3.5);
         assert_eq!(MovementReason::Sale.signed_effect(qty), dec!(-3.5));
+        assert_eq!(
+            MovementReason::PurchaseReturn.signed_effect(qty),
+            dec!(-3.5)
+        );
         assert_eq!(MovementReason::Purchase.signed_effect(qty), dec!(3.5));
         // Returned goods add stock: the return is the correction of a sale.
         assert_eq!(MovementReason::Return.signed_effect(qty), dec!(3.5));

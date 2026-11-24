@@ -149,7 +149,8 @@ pub async fn account_position_in(
         r#"
         WITH entries AS (
             SELECT COALESCE(SUM(amount), 0) AS balance,
-                   COALESCE(SUM(CASE WHEN kind = 'payment' THEN -amount ELSE 0 END), 0)
+                   COALESCE(SUM(CASE WHEN kind IN ('payment', 'purchase_return_credit')
+                                     THEN -amount ELSE 0 END), 0)
                        AS paid,
                    COALESCE(SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END), 0)
                        AS refunded,
@@ -171,6 +172,12 @@ pub async fn account_position_in(
             WHERE supplier_id = $1 AND kind = 'purchase_charge'
             GROUP BY purchase_id
         ),
+        cancellations AS (
+            SELECT purchase_id, SUM(-amount) AS cancelled
+            FROM supplier_account_entries
+            WHERE supplier_id = $1 AND kind = 'purchase_return'
+            GROUP BY purchase_id
+        ),
         purchase_allocated AS (
             SELECT a.purchase_id, SUM(a.amount) AS allocated
             FROM supplier_account_allocations a
@@ -179,8 +186,9 @@ pub async fn account_position_in(
             GROUP BY a.purchase_id
         ),
         payables AS (
-            SELECT c.charged - COALESCE(l.allocated, 0) AS outstanding
+            SELECT c.charged - COALESCE(r.cancelled, 0) - COALESCE(l.allocated, 0) AS outstanding
             FROM charges c
+            LEFT JOIN cancellations r ON r.purchase_id = c.purchase_id
             LEFT JOIN purchase_allocated l ON l.purchase_id = c.purchase_id
         )
         SELECT balance::numeric(14, 2)                       AS "balance!: Decimal",
@@ -226,6 +234,12 @@ pub async fn outstanding_by_purchase_in(
             WHERE supplier_id = $1 AND kind = 'purchase_charge'
             GROUP BY purchase_id
         ),
+        cancellations AS (
+            SELECT purchase_id, SUM(-amount) AS cancelled
+            FROM supplier_account_entries
+            WHERE supplier_id = $1 AND kind = 'purchase_return'
+            GROUP BY purchase_id
+        ),
         allocated AS (
             SELECT a.purchase_id, SUM(a.amount) AS allocated
             FROM supplier_account_allocations a
@@ -236,13 +250,15 @@ pub async fn outstanding_by_purchase_in(
         SELECT c.purchase_id                              AS "purchase_id!: Uuid",
                p.completed_at                             AS "completed_at!: DateTime<Utc>",
                c.charged::numeric(14, 2)                  AS "charged!: Decimal",
+               COALESCE(r.cancelled, 0)::numeric(14, 2)   AS "cancelled!: Decimal",
                COALESCE(l.allocated, 0)::numeric(14, 2)   AS "allocated!: Decimal",
-               (c.charged - COALESCE(l.allocated, 0))::numeric(14, 2)
+               (c.charged - COALESCE(r.cancelled, 0) - COALESCE(l.allocated, 0))::numeric(14, 2)
                                                           AS "outstanding!: Decimal"
         FROM charges c
         JOIN purchases p ON p.id = c.purchase_id
+        LEFT JOIN cancellations r ON r.purchase_id = c.purchase_id
         LEFT JOIN allocated l ON l.purchase_id = c.purchase_id
-        WHERE c.charged - COALESCE(l.allocated, 0) > 0
+        WHERE c.charged - COALESCE(r.cancelled, 0) - COALESCE(l.allocated, 0) > 0
         ORDER BY p.completed_at, c.purchase_id
         "#,
         supplier_id
@@ -256,6 +272,7 @@ pub async fn outstanding_by_purchase_in(
             purchase_id: row.purchase_id,
             completed_at: row.completed_at,
             charged: row.charged,
+            cancelled: row.cancelled,
             allocated: row.allocated,
             outstanding: row.outstanding,
         })
@@ -289,6 +306,7 @@ pub async fn list_entries_in(
                kind AS "kind: SupplierAccountEntryKind",
                amount,
                purchase_id,
+               purchase_return_id,
                wallet_movement_id,
                note,
                created_by,
@@ -310,6 +328,7 @@ pub async fn list_entries_in(
             kind: row.kind,
             amount: row.amount,
             purchase_id: row.purchase_id,
+            purchase_return_id: row.purchase_return_id,
             wallet_movement_id: row.wallet_movement_id,
             note: row.note,
             created_by: row.created_by,
@@ -455,7 +474,8 @@ pub async fn list_payables_in(conn: &mut PgConnection) -> Result<Vec<PayableSupp
             SELECT
                 supplier_id,
                 COALESCE(SUM(amount), 0) AS balance,
-                COALESCE(SUM(CASE WHEN kind = 'payment' THEN -amount ELSE 0 END), 0) AS paid,
+                COALESCE(SUM(CASE WHEN kind IN ('payment', 'purchase_return_credit')
+                                  THEN -amount ELSE 0 END), 0) AS paid,
                 COALESCE(SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END), 0)
                     AS refunded,
                 COALESCE(SUM(CASE WHEN kind IN ('adjustment_in', 'adjustment_out')
@@ -475,6 +495,12 @@ pub async fn list_payables_in(conn: &mut PgConnection) -> Result<Vec<PayableSupp
             WHERE kind = 'purchase_charge'
             GROUP BY supplier_id, purchase_id
         ),
+        cancellations AS (
+            SELECT supplier_id, purchase_id, SUM(-amount) AS cancelled
+            FROM supplier_account_entries
+            WHERE kind = 'purchase_return'
+            GROUP BY supplier_id, purchase_id
+        ),
         purchase_allocated AS (
             SELECT e.supplier_id, a.purchase_id, SUM(a.amount) AS allocated
             FROM supplier_account_allocations a
@@ -484,13 +510,15 @@ pub async fn list_payables_in(conn: &mut PgConnection) -> Result<Vec<PayableSupp
         open_purchases AS (
             SELECT
                 ch.supplier_id,
-                (ch.charged - COALESCE(pa.allocated, 0)) AS outstanding,
+                (ch.charged - COALESCE(cn.cancelled, 0) - COALESCE(pa.allocated, 0)) AS outstanding,
                 FLOOR(EXTRACT(EPOCH FROM (NOW() - p.completed_at)) / 86400)::bigint AS age_days
             FROM charges ch
             JOIN purchases p ON p.id = ch.purchase_id
+            LEFT JOIN cancellations cn
+                   ON cn.supplier_id = ch.supplier_id AND cn.purchase_id = ch.purchase_id
             LEFT JOIN purchase_allocated pa
                    ON pa.supplier_id = ch.supplier_id AND pa.purchase_id = ch.purchase_id
-            WHERE ch.charged - COALESCE(pa.allocated, 0) > 0
+            WHERE ch.charged - COALESCE(cn.cancelled, 0) - COALESCE(pa.allocated, 0) > 0
         ),
         aging_by_supplier AS (
             SELECT
@@ -573,7 +601,7 @@ fn ensure_cents(amount: Decimal) -> Result<(), RepoError> {
     Ok(())
 }
 
-/// What one purchase still owes on account (`charge - allocated`).
+/// What one purchase still owes on account (`charge - cancelled - allocated`).
 pub async fn outstanding_for_purchase_in(
     conn: &mut PgConnection,
     purchase_id: Uuid,
@@ -585,14 +613,19 @@ pub async fn outstanding_for_purchase_in(
             FROM supplier_account_entries
             WHERE purchase_id = $1 AND kind = 'purchase_charge'
         ),
+        cancelled AS (
+            SELECT COALESCE(-SUM(amount), 0) AS cancelled
+            FROM supplier_account_entries
+            WHERE purchase_id = $1 AND kind = 'purchase_return'
+        ),
         allocated AS (
             SELECT COALESCE(SUM(amount), 0) AS allocated
             FROM supplier_account_allocations
             WHERE purchase_id = $1
         )
-        SELECT (charge.charged - allocated.allocated)::numeric(14, 2)
+        SELECT (charge.charged - cancelled.cancelled - allocated.allocated)::numeric(14, 2)
                AS "outstanding!: Decimal"
-        FROM charge, allocated
+        FROM charge, cancelled, allocated
         "#,
         purchase_id
     )
@@ -999,7 +1032,10 @@ pub async fn allocate(
     .await?
     .ok_or(RepoError::EntryNotFound)?;
 
-    if entry.kind != SupplierAccountEntryKind::Payment {
+    if !matches!(
+        entry.kind,
+        SupplierAccountEntryKind::Payment | SupplierAccountEntryKind::PurchaseReturnCredit
+    ) {
         return Err(RepoError::NotAPayment);
     }
 
@@ -1089,7 +1125,7 @@ pub async fn apply_available_credit(
                                                                  AS "available!: Decimal"
         FROM supplier_account_entries e
         LEFT JOIN supplier_account_allocations a ON a.entry_id = e.id
-        WHERE e.supplier_id = $1 AND e.kind = 'payment'
+        WHERE e.supplier_id = $1 AND e.kind IN ('payment', 'purchase_return_credit')
         GROUP BY e.id
         HAVING -e.amount - COALESCE(SUM(a.amount), 0) > 0
         ORDER BY e.created_at, e.id
@@ -1277,6 +1313,110 @@ pub async fn record_adjustment(
     )
     .execute(&mut *conn)
     .await?;
+
+    Ok(id)
+}
+
+/// Cancel open debt on a completed purchase from a purchase return.
+///
+/// The caller must already hold the supplier advisory lock. Enforces that
+/// `amount` does not exceed the purchase's remaining open payable and writes
+/// one negative `purchase_return` entry linked to both `purchase_id` and
+/// `purchase_return_id`.
+pub async fn record_purchase_return(
+    conn: &mut PgConnection,
+    supplier_id: Uuid,
+    purchase_id: Uuid,
+    purchase_return_id: Uuid,
+    amount: Decimal,
+    note: Option<&str>,
+    created_by: Uuid,
+) -> Result<Uuid, RepoError> {
+    ensure_cents(amount)?;
+    lock_supplier(conn, supplier_id).await?;
+    ensure_chargeable_purchase(conn, supplier_id, purchase_id).await?;
+
+    let outstanding = outstanding_for_purchase_in(conn, purchase_id).await?;
+    if amount > outstanding {
+        return Err(RepoError::OutstandingExceeded {
+            requested: amount,
+            outstanding,
+        });
+    }
+
+    let id = Uuid::now_v7();
+    sqlx::query!(
+        r#"
+        INSERT INTO supplier_account_entries
+            (id, supplier_id, kind, amount, purchase_id, purchase_return_id, note, created_by)
+        VALUES ($1, $2, 'purchase_return', $3, $4, $5, $6, $7)
+        "#,
+        id,
+        supplier_id,
+        -amount,
+        purchase_id,
+        purchase_return_id,
+        note,
+        created_by,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| {
+        if violated_constraint(&err)
+            == Some("supplier_account_entries_one_return_cancel_per_return")
+        {
+            RepoError::AlreadyRecorded
+        } else {
+            RepoError::Database(err)
+        }
+    })?;
+
+    Ok(id)
+}
+
+/// Record the paid surplus of a purchase return as unapplied advance credit
+/// with the supplier.
+///
+/// The caller must already hold the supplier advisory lock (and verify the
+/// supplier is active). Writes one negative `purchase_return_credit` entry
+/// linked to `purchase_return_id` with `purchase_id = NULL`, increasing
+/// `unapplied_credit` by `amount` and decreasing `balance` by `amount`.
+pub async fn record_purchase_return_credit(
+    conn: &mut PgConnection,
+    supplier_id: Uuid,
+    purchase_return_id: Uuid,
+    amount: Decimal,
+    note: Option<&str>,
+    created_by: Uuid,
+) -> Result<Uuid, RepoError> {
+    ensure_cents(amount)?;
+    lock_supplier(conn, supplier_id).await?;
+
+    let id = Uuid::now_v7();
+    sqlx::query!(
+        r#"
+        INSERT INTO supplier_account_entries
+            (id, supplier_id, kind, amount, purchase_return_id, note, created_by)
+        VALUES ($1, $2, 'purchase_return_credit', $3, $4, $5, $6)
+        "#,
+        id,
+        supplier_id,
+        -amount,
+        purchase_return_id,
+        note,
+        created_by,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| {
+        if violated_constraint(&err)
+            == Some("supplier_account_entries_one_return_credit_per_return")
+        {
+            RepoError::AlreadyRecorded
+        } else {
+            RepoError::Database(err)
+        }
+    })?;
 
     Ok(id)
 }

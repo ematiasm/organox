@@ -1,0 +1,68 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH charges AS (\n            SELECT purchase_id, SUM(amount) AS charged\n            FROM supplier_account_entries\n            WHERE supplier_id = $1 AND kind = 'purchase_charge'\n            GROUP BY purchase_id\n        ),\n        cancellations AS (\n            SELECT purchase_id, SUM(-amount) AS cancelled\n            FROM supplier_account_entries\n            WHERE supplier_id = $1 AND kind = 'purchase_return'\n            GROUP BY purchase_id\n        ),\n        allocated AS (\n            SELECT a.purchase_id, SUM(a.amount) AS allocated\n            FROM supplier_account_allocations a\n            JOIN supplier_account_entries e ON e.id = a.entry_id\n            WHERE e.supplier_id = $1\n            GROUP BY a.purchase_id\n        )\n        SELECT c.purchase_id                              AS \"purchase_id!: Uuid\",\n               p.completed_at                             AS \"completed_at!: DateTime<Utc>\",\n               c.charged::numeric(14, 2)                  AS \"charged!: Decimal\",\n               COALESCE(r.cancelled, 0)::numeric(14, 2)   AS \"cancelled!: Decimal\",\n               COALESCE(l.allocated, 0)::numeric(14, 2)   AS \"allocated!: Decimal\",\n               (c.charged - COALESCE(r.cancelled, 0) - COALESCE(l.allocated, 0))::numeric(14, 2)\n                                                          AS \"outstanding!: Decimal\"\n        FROM charges c\n        JOIN purchases p ON p.id = c.purchase_id\n        LEFT JOIN cancellations r ON r.purchase_id = c.purchase_id\n        LEFT JOIN allocated l ON l.purchase_id = c.purchase_id\n        WHERE c.charged - COALESCE(r.cancelled, 0) - COALESCE(l.allocated, 0) > 0\n        ORDER BY p.completed_at, c.purchase_id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "purchase_id!: Uuid",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "supplier_account_entries",
+            "name": "purchase_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "completed_at!: DateTime<Utc>",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "purchases",
+            "name": "completed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "charged!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "cancelled!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "allocated!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "outstanding!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f7ab6dfe97e95fc10b5c58e2da94f31f4e8185ec800129d688a30efd2b408f23"
+}

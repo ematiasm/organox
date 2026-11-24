@@ -94,7 +94,7 @@ fn supplier_accounts_suppliers_purchases_and_wallet_schemas_are_complete() {
         ),
         (
             "OutstandingPurchaseResponse",
-            &["charged", "allocated", "outstanding"],
+            &["charged", "cancelled", "allocated", "outstanding"],
         ),
         ("RecordSupplierPaymentRequest", &["amount"]),
         ("SupplierPaymentAllocationRequest", &["amount"]),

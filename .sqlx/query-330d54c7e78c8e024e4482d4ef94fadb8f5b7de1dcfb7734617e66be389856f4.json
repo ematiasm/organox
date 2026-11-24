@@ -42,7 +42,8 @@
                 "account_payment_refund",
                 "purchase_payment",
                 "supplier_account_payment",
-                "supplier_account_refund"
+                "supplier_account_refund",
+                "purchase_refund"
               ]
             }
           }

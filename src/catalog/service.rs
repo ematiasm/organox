@@ -229,11 +229,12 @@ pub async fn record_movement(
             r#"
             SELECT COALESCE(SUM(
                 CASE reason
-                    WHEN 'purchase'   THEN quantity
-                    WHEN 'return'     THEN quantity
-                    WHEN 'adjustment' THEN quantity
-                    WHEN 'sale'       THEN -quantity
-                    WHEN 'loss'       THEN -quantity
+                    WHEN 'purchase'        THEN quantity
+                    WHEN 'return'          THEN quantity
+                    WHEN 'adjustment'      THEN quantity
+                    WHEN 'sale'            THEN -quantity
+                    WHEN 'purchase_return' THEN -quantity
+                    WHEN 'loss'            THEN -quantity
                 END
             ), 0) AS "stock!"
             FROM stock_movements

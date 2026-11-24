@@ -16,7 +16,9 @@
                 "payment",
                 "credit_refund",
                 "adjustment_in",
-                "adjustment_out"
+                "adjustment_out",
+                "purchase_return",
+                "purchase_return_credit"
               ]
             }
           }

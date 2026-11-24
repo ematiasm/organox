@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT e.id                                              AS \"entry_id!: Uuid\",\n               (-e.amount - COALESCE(SUM(a.amount), 0))::numeric(14, 2)\n                                                                 AS \"available!: Decimal\"\n        FROM supplier_account_entries e\n        LEFT JOIN supplier_account_allocations a ON a.entry_id = e.id\n        WHERE e.supplier_id = $1 AND e.kind IN ('payment', 'purchase_return_credit')\n        GROUP BY e.id\n        HAVING -e.amount - COALESCE(SUM(a.amount), 0) > 0\n        ORDER BY e.created_at, e.id\n        LIMIT 100\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "entry_id!: Uuid",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "supplier_account_entries",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "available!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "a9ea38ed54f84bd19de161677dc39dfca9a7097cb704e180f87aa182d9cdf6a3"
+}

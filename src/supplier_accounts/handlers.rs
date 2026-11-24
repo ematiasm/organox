@@ -190,6 +190,7 @@ pub struct SupplierAccountStatementEntryResponse {
     #[schema(value_type = String, example = "150.00")]
     pub running_balance: String,
     pub purchase_id: Option<Uuid>,
+    pub purchase_return_id: Option<Uuid>,
     pub wallet_movement_id: Option<Uuid>,
     pub note: Option<String>,
     pub created_by: Uuid,
@@ -204,9 +205,11 @@ pub struct OutstandingPurchaseResponse {
     pub completed_at: DateTime<Utc>,
     #[schema(value_type = String, example = "200.00")]
     pub charged: String,
+    #[schema(value_type = String, example = "20.00")]
+    pub cancelled: String,
     #[schema(value_type = String, example = "80.00")]
     pub allocated: String,
-    #[schema(value_type = String, example = "120.00")]
+    #[schema(value_type = String, example = "100.00")]
     pub outstanding: String,
 }
 
@@ -525,6 +528,7 @@ fn to_statement_entry(
         amount: format_money(item.entry.amount),
         running_balance: format_money(item.running_balance),
         purchase_id: item.entry.purchase_id,
+        purchase_return_id: item.entry.purchase_return_id,
         wallet_movement_id: item.entry.wallet_movement_id,
         note: item.entry.note,
         created_by: item.entry.created_by,
@@ -537,6 +541,7 @@ fn to_outstanding_purchase(purchase: PurchaseOutstanding) -> OutstandingPurchase
         purchase_id: purchase.purchase_id,
         completed_at: purchase.completed_at,
         charged: format_money(purchase.charged),
+        cancelled: format_money(purchase.cancelled),
         allocated: format_money(purchase.allocated),
         outstanding: format_money(purchase.outstanding),
     }

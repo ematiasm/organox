@@ -422,7 +422,7 @@ mod tests {
             ),
             (
                 "OutstandingPurchaseResponse",
-                &["charged", "allocated", "outstanding"],
+                &["charged", "cancelled", "allocated", "outstanding"],
             ),
             ("RecordSupplierPaymentRequest", &["amount"]),
             ("SupplierPaymentAllocationRequest", &["amount"]),

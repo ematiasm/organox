@@ -614,11 +614,12 @@ pub async fn complete(
             r#"
             SELECT COALESCE(SUM(
                 CASE reason
-                    WHEN 'purchase'   THEN quantity
-                    WHEN 'return'     THEN quantity
-                    WHEN 'adjustment' THEN quantity
-                    WHEN 'sale'       THEN -quantity
-                    WHEN 'loss'       THEN -quantity
+                    WHEN 'purchase'        THEN quantity
+                    WHEN 'return'          THEN quantity
+                    WHEN 'adjustment'      THEN quantity
+                    WHEN 'sale'            THEN -quantity
+                    WHEN 'purchase_return' THEN -quantity
+                    WHEN 'loss'            THEN -quantity
                 END
             ), 0) AS "stock!"
             FROM stock_movements
@@ -712,6 +713,7 @@ pub async fn complete(
                 purchase_id: None,
                 payment_method_id: Some(charge.payment_method_id),
                 credit_note_id: None,
+                purchase_return_id: None,
                 // Till money is never an account payment: the customer link
                 // belongs to the collection endpoint alone.
                 customer_id: None,
