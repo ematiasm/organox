@@ -57,22 +57,17 @@ fn supplier_accounts_suppliers_purchases_and_wallet_schemas_are_complete() {
     }
 
     // Purchases on_account and credit_applied are documented as strings.
-    let on_account =
-        serde_json::to_string(&schemas["CompletePurchaseRequest"]["properties"]["on_account"])
-            .expect("CompletePurchaseRequest.on_account");
-    assert!(
-        on_account.contains("\"string\""),
-        "on_account: {on_account}"
-    );
-
-    let credit_applied = serde_json::to_string(
-        &schemas["CompletedPurchaseResponse"]["properties"]["credit_applied"],
-    )
-    .expect("CompletedPurchaseResponse.credit_applied");
-    assert!(
-        credit_applied.contains("\"string\""),
-        "credit_applied: {credit_applied}"
-    );
+    for (schema_name, prop_name) in [
+        ("CompletePurchaseRequest", "on_account"),
+        ("CompletedPurchaseResponse", "credit_applied"),
+    ] {
+        let raw = serde_json::to_string(&schemas[schema_name]["properties"][prop_name])
+            .unwrap_or_else(|_| panic!("{schema_name}.{prop_name} missing"));
+        assert!(
+            raw.contains("\"string\""),
+            "{schema_name}.{prop_name}: {raw}"
+        );
+    }
 
     // WalletMovementKind includes the two new supplier account kinds.
     let kinds = schemas["WalletMovementKind"]["enum"]
