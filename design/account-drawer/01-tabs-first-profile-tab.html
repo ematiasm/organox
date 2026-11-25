@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>01 — Account-first: move Details into its own tab</title>
+<style>
+  :root {
+    --bg: #0c0c09;
+    --card: #1d1d16;
+    --surface: #171712;
+    --muted: #2b2b22;
+    --fg: #fbfbf9;
+    --fg-muted: #abab9c;
+    --primary: #e8e8e3;
+    --primary-fg: #1d1d16;
+    --destructive: #ff6467;
+    --destructive-bg: rgba(255, 100, 103, 0.12);
+    --border: rgba(255, 255, 255, 0.1);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --radius: 10px;
+    --font: 'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  .backdrop-page {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    opacity: 0.28;
+    pointer-events: none;
+  }
+  .rail {
+    background: var(--card);
+    border-right: 1px solid var(--border);
+    padding: 16px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    align-items: center;
+  }
+  .rail-dot { width: 32px; height: 32px; border-radius: 8px; background: var(--muted); }
+  .rail-dot.active { background: rgba(232, 232, 227, 0.2); }
+  .bg-content { padding: 28px 32px; }
+  .bg-title { font-size: 20px; font-weight: 600; margin-bottom: 18px; }
+  .bg-table { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .bg-row { display: grid; grid-template-columns: 2fr 1fr 1.5fr 1fr 1fr; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 13px; color: var(--fg-muted); }
+  .bg-row:first-child { border-top: none; background: var(--surface); font-weight: 500; }
+
+  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.52); }
+
+  .drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 672px;
+    max-width: 92vw;
+    background: var(--card);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    box-shadow: -16px 0 48px rgba(0, 0, 0, 0.55);
+  }
+
+  .drawer-header {
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .header-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .title-row { display: flex; align-items: center; gap: 8px; }
+  .title-row h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--fg);
+  }
+  .contact-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    font-size: 12px;
+    color: var(--fg-muted);
+    margin-top: 4px;
+  }
+  .contact-strip span strong { color: var(--fg); font-weight: 500; }
+  .header-actions { display: flex; align-items: center; gap: 6px; }
+
+  .btn {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 7px;
+    border: 1px solid var(--border-strong);
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .btn:hover { background: var(--muted); }
+  .btn-primary {
+    background: var(--primary);
+    color: var(--primary-fg);
+    border-color: var(--primary);
+  }
+  .btn-ghost { border-color: transparent; color: var(--fg-muted); padding: 0 8px; }
+  .btn-danger {
+    background: var(--destructive-bg);
+    border-color: rgba(255, 100, 103, 0.3);
+    color: var(--destructive);
+  }
+
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+  .kpi {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .kpi-label { font-size: 11px; color: var(--fg-muted); }
+  .kpi-value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .kpi-sub { font-size: 11px; color: var(--fg-muted); margin-top: 1px; }
+
+  .drawer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 24px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .tabs {
+    display: flex;
+    background: var(--muted);
+    padding: 3px;
+    border-radius: 9px;
+    gap: 2px;
+  }
+  .tab {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .tab.active {
+    background: var(--bg);
+    color: var(--fg);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  }
+
+  .section { display: flex; flex-direction: column; gap: 8px; }
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .section-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+  }
+
+  .table-wrap {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th {
+    text-align: left;
+    font-weight: 500;
+    color: var(--fg-muted);
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .muted { color: var(--fg-muted); }
+  .note { font-size: 11px; color: var(--fg-muted); opacity: 0.85; margin-top: 2px; }
+  .credit { color: #b8d8a8; }
+
+  .hint-pill {
+    font-size: 11px;
+    color: var(--fg-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .hint-pill code { font-family: var(--mono); font-size: 11px; color: var(--fg); }
+
+  .hidden { display: none; }
+  .details-grid {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 10px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-size: 13px;
+  }
+  .danger-zone {
+    border: 1px solid rgba(255, 100, 103, 0.25);
+    background: rgba(255, 100, 103, 0.05);
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .danger-zone p { margin: 2px 0 0; font-size: 12px; color: var(--fg-muted); }
+</style>
+</head>
+<body>
+  <div class="backdrop-page">
+    <div class="rail">
+      <div class="rail-dot"></div>
+      <div class="rail-dot"></div>
+      <div class="rail-dot active"></div>
+      <div class="rail-dot"></div>
+    </div>
+    <div class="bg-content">
+      <div class="bg-title">Customers</div>
+      <div class="bg-table">
+        <div class="bg-row"><span>Name</span><span>Document</span><span>Email</span><span>Balance</span><span>Status</span></div>
+        <div class="bg-row"><span>Juan</span><span>11111111</span><span>juan@local.com</span><span>500.00</span><span>Active</span></div>
+        <div class="bg-row"><span>Mercado Norte</span><span>30-71234567-8</span><span>pagos@mnorte.com</span><span>-120.00</span><span>Active</span></div>
+        <div class="bg-row"><span>Distribuidora Sur</span><span>20-33445566-1</span><span>sur@local.com</span><span>0.00</span><span>Active</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="scrim"></div>
+
+  <aside class="drawer" aria-label="Customer drawer">
+    <header class="drawer-header">
+      <div class="header-top">
+        <div>
+          <div class="title-row">
+            <h1>Juan</h1>
+            <span class="badge">Active</span>
+          </div>
+          <div class="contact-strip">
+            <span>Doc <strong>11111111</strong></span>
+            <span>·</span>
+            <span>juan@local.com</span>
+            <span>·</span>
+            <span>3454343434</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="btn" type="button">Edit</button>
+          <button class="btn btn-ghost" type="button" aria-label="Close">✕</button>
+        </div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi">
+          <div class="kpi-label">Balance</div>
+          <div class="kpi-value">500.00</div>
+          <div class="kpi-sub">Customer owes</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Available credit</div>
+          <div class="kpi-value">0.00</div>
+          <div class="kpi-sub">Unapplied receipts</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Credit limit</div>
+          <div class="kpi-value">Unlimited</div>
+          <div class="kpi-sub">Max exposure</div>
+        </div>
+      </div>
+    </header>
+
+    <div class="drawer-body">
+      <div class="tabs" role="tablist">
+        <button class="tab active" type="button" onclick="showTab('statement', this)">Statement</button>
+        <button class="tab" type="button" onclick="showTab('collect', this)">Collect</button>
+        <button class="tab" type="button" onclick="showTab('refund', this)">Refund credit</button>
+        <button class="tab" type="button" onclick="showTab('adjust', this)">Adjustment</button>
+        <button class="tab" type="button" onclick="showTab('details', this)">Details</button>
+      </div>
+
+      <div id="panel-statement" class="section" style="gap: 18px;">
+        <div class="section">
+          <div class="section-head">
+            <span class="section-title">Open sales (1)</span>
+            <span class="muted" style="font-size: 12px; font-variant-numeric: tabular-nums;">Total due: 500.00</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Sale</th>
+                  <th>Date</th>
+                  <th class="num">Charged</th>
+                  <th class="num">Outstanding</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="mono">01a1fc32</td>
+                  <td class="muted">11/21/26, 9:58 PM</td>
+                  <td class="num muted">1000.00</td>
+                  <td class="num"><strong>500.00</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-head">
+            <span class="section-title">Account statement</span>
+            <span class="muted" style="font-size: 12px;">2 entries</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Type</th>
+                  <th class="num">Amount</th>
+                  <th class="num">Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <div class="muted">11/21/26, 9:58 PM</div>
+                  </td>
+                  <td><span class="badge">Sale charge</span></td>
+                  <td class="num"><strong>1000.00</strong></td>
+                  <td class="num"><strong>1000.00</strong></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="muted">11/21/26, 9:59 PM</div>
+                    <div class="note">Cash partial payment</div>
+                  </td>
+                  <td><span class="badge">Receipt</span></td>
+                  <td class="num credit">-500.00</td>
+                  <td class="num"><strong>500.00</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div id="panel-details" class="section hidden" style="gap: 16px;">
+        <div class="section-title">Customer details</div>
+        <div class="details-grid">
+          <span class="muted">Document</span><span>11111111</span>
+          <span class="muted">Email</span><span>juan@local.com</span>
+          <span class="muted">Phone</span><span>3454343434</span>
+          <span class="muted">Status</span><span><span class="badge">Active</span></span>
+          <span class="muted">Created</span><span class="muted">11/20/26, 5:53 PM</span>
+          <span class="muted">Updated</span><span class="muted">11/20/26, 5:53 PM</span>
+        </div>
+        <div class="danger-zone">
+          <div>
+            <strong style="font-size: 13px;">Deactivate customer</strong>
+            <p>Requires zero balance and zero unapplied credit.</p>
+          </div>
+          <button class="btn btn-danger" type="button">Deactivate</button>
+        </div>
+      </div>
+
+      <div id="panel-form" class="hint-pill hidden">
+        <span>Active form tab (<code>Collect</code>, <code>Refund credit</code>, or <code>Adjustment</code>) renders here with full vertical space.</span>
+      </div>
+    </div>
+  </aside>
+
+  <script>
+    function showTab(name, btn) {
+      document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('panel-statement').classList.toggle('hidden', name !== 'statement');
+      document.getElementById('panel-details').classList.toggle('hidden', name !== 'details');
+      document.getElementById('panel-form').classList.toggle('hidden', name === 'statement' || name === 'details');
+    }
+  </script>
+</body>
+</html>

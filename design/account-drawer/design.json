@@ -1,0 +1,35 @@
+{
+  "title": "Customer & supplier drawer — information architecture",
+  "brief": "Improve how identity, contact metadata, KPIs, ledger tables, and account actions (collect/pay, credit refund, manual adjustment) are organized inside the responsive customer and supplier drawers.",
+  "feature": "frontend/src/lib/components/customer-drawer.svelte",
+  "artboards": [
+    {
+      "file": "01-tabs-first-profile-tab.html",
+      "title": "Account-first: move Details into its own tab",
+      "tradeoff": "Gives maximum vertical room to KPIs, open items, and the statement inside the 672px drawer; hides secondary metadata (Created, Updated, Deactivate) one click away in a Details tab.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "02-action-toolbar-clean-ledger.html",
+      "title": "Statement-first with Action Toolbar + inline form panel",
+      "tradeoff": "Cleanly separates reading the statement from recording mutations and scales to more actions without crowding a tab bar; opening an action form temporarily pushes the ledger down.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "03-two-column-summary-workspace.html",
+      "title": "Split desktop drawer: Profile rail + Account workspace",
+      "tradeoff": "Keeps identity, KPIs, contact info, and the full-height ledger/forms visible simultaneously with zero scrolling to reach actions; needs a wider drawer (~820px) on desktop and stacks on mobile.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "04-refined-no-tabs.html",
+      "title": "Refined 01 (no tabs): Details header box, 2 KPIs + actions, unified Balance ledger",
+      "tradeoff": "Removes all tabs and accordions: puts details in a bordered header box with Edit/Deactivate, focuses the middle on Balance & Available credit with inline action buttons, and combines sales/purchases (with nested credit notes/returns), payments, refunds, and adjustments into one unified Balance ledger.",
+      "width": 1440,
+      "height": 900
+    }
+  ]
+}
