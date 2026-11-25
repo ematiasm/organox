@@ -7,13 +7,17 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use organox::AppState;
 use organox::auth::model::Role;
-use organox::auth::repository::{self, NewUser};
-use organox::auth::service::{self, LoginOutcome, UpsertOutcome};
-use organox::auth::{password, validation};
+use organox::auth::password::{self, PasswordError};
+use organox::auth::repository::{self, NewUser, RepoError};
+use organox::auth::service::{self, AuthError, LoginOutcome, UpsertOutcome};
+use organox::auth::token::SessionToken;
+use organox::auth::validation::{self, MAX_PASSWORD_BYTES, ValidationError};
 use organox::ratelimit::{AccountLimiter, AccountPolicy};
 use organox::routes::router;
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
+use std::time::{Duration, Instant};
 use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
@@ -170,6 +174,88 @@ async fn login_with_malformed_email_returns_401(pool: sqlx::PgPool) {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+async fn login_rejects_oversized_password_consistently_without_recording_attempts(
+    pool: sqlx::PgPool,
+) {
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let oversized = "a".repeat(validation::MAX_PASSWORD_BYTES + 1);
+
+    let existing = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &oversized))
+        .await
+        .unwrap();
+    assert_eq!(existing.status(), StatusCode::UNAUTHORIZED);
+    let existing_body = body_json(existing).await;
+
+    let unknown = app(pool.clone())
+        .oneshot(login_request("nobody@pyme.com", &oversized))
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
+    let unknown_body = body_json(unknown).await;
+
+    assert_eq!(existing_body, unknown_body);
+    assert_eq!(
+        count_rows(&pool, "login_attempts").await,
+        0,
+        "oversized passwords must be rejected before hitting the limiter or Argon2"
+    );
+
+    // A 1 MiB password payload is also rejected immediately with 401.
+    let one_mib = "x".repeat(1024 * 1024);
+    let huge = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &one_mib))
+        .await
+        .unwrap();
+    assert_eq!(huge.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(count_rows(&pool, "login_attempts").await, 0);
+
+    // Real password still logs in cleanly.
+    let ok = app(pool)
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn login_and_change_password_accept_exact_max_password_bytes(pool: sqlx::PgPool) {
+    let max_pw = "a".repeat(validation::MAX_PASSWORD_BYTES);
+    let email = validation::ValidatedEmail::parse("max@pyme.com").expect("valid email");
+    let hash = password::hash(&max_pw).expect("hash");
+    repository::create_user(
+        &pool,
+        NewUser {
+            email: &email,
+            password_hash: &hash,
+            role: Role::Owner,
+        },
+    )
+    .await
+    .expect("create user");
+
+    let login = app(pool.clone())
+        .oneshot(login_request("max@pyme.com", &max_pw))
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = session_cookie(&login);
+
+    let new_max_pw = "b".repeat(validation::MAX_PASSWORD_BYTES);
+    let change = app(pool.clone())
+        .oneshot(change_password_request(&cookie, &max_pw, &new_max_pw))
+        .await
+        .unwrap();
+    assert_eq!(change.status(), StatusCode::NO_CONTENT);
+
+    let relogin = app(pool)
+        .oneshot(login_request("max@pyme.com", &new_max_pw))
+        .await
+        .unwrap();
+    assert_eq!(relogin.status(), StatusCode::OK);
 }
 
 // --- Session ------------------------------------------------------------
@@ -530,6 +616,10 @@ async fn count_rows(pool: &sqlx::PgPool, table: &str) -> i64 {
             .fetch_one(pool)
             .await
             .unwrap(),
+        "login_attempts" => sqlx::query_scalar("SELECT count(*) FROM login_attempts")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
         other => panic!("unknown table: {other}"),
     }
 }
@@ -711,6 +801,43 @@ async fn self_password_change_rejects_wrong_current_password_without_effects(poo
             .unwrap()
             .status(),
         StatusCode::UNAUTHORIZED
+    );
+}
+
+#[sqlx::test]
+async fn self_password_change_rejects_oversized_current_password_with_401(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+    let new = test_password();
+    let oversized = "a".repeat(validation::MAX_PASSWORD_BYTES + 1);
+    let hash_before = password_hash(&pool, "owner@pyme.com").await;
+    let sessions_before = count_rows(&pool, "sessions").await;
+
+    let response = app(pool.clone())
+        .oneshot(change_password_request(&cookie, &oversized, &new))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body_json(response).await["detail"],
+        "Invalid credentials or expired session."
+    );
+    assert_eq!(password_hash(&pool, "owner@pyme.com").await, hash_before);
+    assert_eq!(count_rows(&pool, "sessions").await, sessions_before);
+
+    // The old password still works.
+    assert_eq!(
+        app(pool)
+            .oneshot(login_request("owner@pyme.com", &password))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
     );
 }
 
@@ -1221,4 +1348,83 @@ fn dev_user_recipe_keeps_the_password_out_of_the_recipe_text() {
         "make would expand $(DEV_PASSWORD) into the recipe text, leaking the \
          password to `ps` and to `make -n` output"
     );
+}
+
+// --- Password length boundary regression probes --------------------------
+
+/// Byte boundary with a multi-byte character straddling the limit: the char
+/// count stays far below the limit while the byte count crosses it.
+#[test]
+fn hash_byte_boundary_with_multibyte_chars() {
+    let exact_multibyte = format!("{}é", "a".repeat(MAX_PASSWORD_BYTES - 2));
+    assert_eq!(exact_multibyte.len(), MAX_PASSWORD_BYTES);
+    let hash = password::hash(&exact_multibyte).expect("exact byte count must hash");
+    assert!(password::verify(&exact_multibyte, &hash).unwrap());
+
+    let over_multibyte = format!("{}{}", "a".repeat(MAX_PASSWORD_BYTES - 3), "\u{1F512}");
+    assert!(over_multibyte.chars().count() < MAX_PASSWORD_BYTES);
+    assert!(over_multibyte.len() > MAX_PASSWORD_BYTES);
+    match password::hash(&over_multibyte) {
+        Err(PasswordError::Invalid(ValidationError::PasswordTooLong { max })) => {
+            assert_eq!(max, MAX_PASSWORD_BYTES);
+        }
+        other => panic!("expected PasswordTooLong, got {other:?}"),
+    }
+}
+
+/// An oversized password must not pay an Argon2 round in `password::verify`.
+/// A full round costs hundreds of ms even in debug builds; the short-circuit
+/// is microseconds, so a 150 ms budget separates them by a wide margin.
+#[test]
+fn verify_oversized_short_circuits_before_argon2() {
+    let stored = password::hash(&format!("pw-{}", Uuid::new_v4())).expect("hash");
+    let oversized = "a".repeat(MAX_PASSWORD_BYTES + 1);
+
+    let start = Instant::now();
+    let matched = password::verify(&oversized, &stored).expect("oversized verify must not error");
+    let elapsed = start.elapsed();
+
+    assert!(!matched);
+    assert!(
+        elapsed.as_millis() < 150,
+        "oversized verify took {elapsed:?}; it must reject before Argon2"
+    );
+}
+
+/// The cut in `login`/`change_password` is exactly at MAX_PASSWORD_BYTES and
+/// happens before any database access: with an unreachable pool an oversized
+/// password still yields InvalidCredentials, while an exact-length password
+/// proceeds to the database and fails with a connection error.
+#[tokio::test]
+async fn login_and_change_password_cut_exactly_at_max_bytes() {
+    let pool = PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(1))
+        .connect_lazy("postgres://127.0.0.1:1/never_connected")
+        .expect("lazy pool");
+    let limiter = AccountLimiter::new(pool.clone(), AccountPolicy::default());
+    let exact = "a".repeat(MAX_PASSWORD_BYTES);
+    let over = format!("{exact}b");
+    let token_hash = SessionToken::generate().hash();
+    let new_valid = format!("pw-{}", Uuid::new_v4());
+
+    let outcome = service::login(&pool, &limiter, "owner@pyme.com", &over, None)
+        .await
+        .expect("oversized login must be InvalidCredentials, not a DB error");
+    assert!(matches!(outcome, LoginOutcome::InvalidCredentials));
+
+    let err = match service::login(&pool, &limiter, "owner@pyme.com", &exact, None).await {
+        Ok(_) => panic!("exact-length login must reach the database"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, AuthError::Internal(RepoError::Database(_))));
+
+    let err = service::change_password(&pool, Uuid::now_v7(), &over, &new_valid, &token_hash)
+        .await
+        .expect_err("oversized current_password must be rejected");
+    assert!(matches!(err, AuthError::InvalidCredentials));
+
+    let err = service::change_password(&pool, Uuid::now_v7(), &exact, &new_valid, &token_hash)
+        .await
+        .expect_err("exact-length current_password must reach the database");
+    assert!(matches!(err, AuthError::Internal(RepoError::Database(_))));
 }

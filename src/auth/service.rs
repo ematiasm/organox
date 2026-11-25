@@ -8,8 +8,17 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
+
+/// Maximum number of concurrent Argon2id evaluations per process.
+///
+/// Each evaluation allocates ~19 MiB (`m=19456` KiB) and burns CPU for
+/// hundreds of milliseconds. Bounding concurrency keeps bursts of login or
+/// password-change requests from exhausting memory or saturating Tokio's
+/// blocking pool.
+pub const MAX_CONCURRENT_HASHES: usize = 4;
 
 use crate::auth::model::{PasswordHash, Role, User};
 use crate::auth::password::{self, PasswordError};
@@ -198,6 +207,12 @@ pub async fn change_password(
 ) -> Result<(), AuthError> {
     validation::validate_password(new_password)?;
 
+    if current_password.len() > validation::MAX_PASSWORD_BYTES {
+        // No valid password can exceed `MAX_PASSWORD_BYTES`; reject before
+        // touching the database, the Argon2 semaphore, or Argon2 itself.
+        return Err(AuthError::InvalidCredentials);
+    }
+
     let found = repository::find_user_by_id(pool, user_id)
         .await?
         .ok_or(AuthError::NotFound)?;
@@ -275,6 +290,12 @@ pub async fn login(
         return Ok(LoginOutcome::InvalidCredentials);
     };
 
+    if password_plain.len() > validation::MAX_PASSWORD_BYTES {
+        // No valid password can exceed `MAX_PASSWORD_BYTES`; reject before
+        // touching the database, the Argon2 semaphore, or Argon2 itself.
+        return Ok(LoginOutcome::InvalidCredentials);
+    }
+
     // Check the lock BEFORE hashing: if the account is locked, there is no
     // reason to spend 400ms on argon2 or query the user. This also closes the
     // door to using login as a CPU amplifier.
@@ -287,17 +308,11 @@ pub async fn login(
         // otherwise an attacker could distinguish registered emails by the
         // difference between "locked" and "401".
         limiter.record_failure(&email).await?;
-        let dummy = dummy_hash();
-        let plain = password_plain.to_string();
-        let _ = tokio::task::spawn_blocking(move || password::verify(&plain, &dummy)).await;
+        let _ = verify_off_thread(password_plain.to_string(), dummy_hash()).await;
         return Ok(LoginOutcome::InvalidCredentials);
     };
 
-    let stored = found.password_hash.clone();
-    let plain = password_plain.to_string();
-    let matches = tokio::task::spawn_blocking(move || password::verify(&plain, &stored))
-        .await
-        .map_err(|_| AuthError::Internal(RepoError::Crypto))??;
+    let matches = verify_off_thread(password_plain.to_string(), found.password_hash).await?;
 
     if !matches {
         // Record the failure, but still return 401: the password WAS incorrect,
@@ -385,18 +400,42 @@ impl AuthenticatedUser {
     }
 }
 
-async fn hash_off_thread(plain: String) -> Result<PasswordHash, AuthError> {
-    tokio::task::spawn_blocking(move || password::hash(&plain))
+fn argon2_semaphore() -> &'static Arc<Semaphore> {
+    static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(MAX_CONCURRENT_HASHES)))
+}
+
+async fn run_argon2<T, F>(semaphore: &Arc<Semaphore>, work: F) -> Result<T, AuthError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, PasswordError> + Send + 'static,
+{
+    let permit = semaphore
+        .clone()
+        .acquire_owned()
         .await
-        .map_err(|_| AuthError::Internal(RepoError::Crypto))?
-        .map_err(AuthError::from)
+        .map_err(|_| AuthError::Internal(RepoError::Crypto))?;
+
+    tokio::task::spawn_blocking(move || {
+        // Hold the owned permit inside the blocking task so cancelling the
+        // caller's future cannot release the slot while Argon2 is still running.
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|_| AuthError::Internal(RepoError::Crypto))?
+    .map_err(AuthError::from)
+}
+
+async fn hash_off_thread(plain: String) -> Result<PasswordHash, AuthError> {
+    run_argon2(argon2_semaphore(), move || password::hash(&plain)).await
 }
 
 async fn verify_off_thread(plain: String, stored: PasswordHash) -> Result<bool, AuthError> {
-    tokio::task::spawn_blocking(move || password::verify(&plain, &stored))
-        .await
-        .map_err(|_| AuthError::Internal(RepoError::Crypto))?
-        .map_err(AuthError::from)
+    run_argon2(argon2_semaphore(), move || {
+        password::verify(&plain, &stored)
+    })
+    .await
 }
 
 /// Precompute the dummy hash.
@@ -486,5 +525,154 @@ mod tests {
             FALLBACK_HASH,
             "the dummy fell back to the fixed literal"
         );
+    }
+
+    #[tokio::test]
+    async fn run_argon2_caps_concurrency_to_semaphore_permits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let semaphore = Arc::new(Semaphore::new(2));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let sem = semaphore.clone();
+            let current = in_flight.clone();
+            let max_seen = peak.clone();
+            handles.push(tokio::spawn(async move {
+                run_argon2(&sem, move || {
+                    let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_seen.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(30));
+                    current.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+                .expect("work succeeds");
+            }));
+        }
+
+        for handle in handles {
+            handle.await.expect("task completes");
+        }
+
+        assert_eq!(in_flight.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            2,
+            "concurrency must reach but never exceed the semaphore permit limit"
+        );
+        assert_eq!(semaphore.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn run_argon2_holds_permit_until_blocking_work_finishes_after_cancel() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let semaphore = Arc::new(Semaphore::new(1));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let sem = semaphore.clone();
+        let handle = tokio::spawn(async move {
+            run_argon2(&sem, move || {
+                entered_tx.send(()).expect("signal entry");
+                release_rx.recv().expect("wait for release");
+                Ok(())
+            })
+            .await
+        });
+
+        // Wait until the blocking thread is actively running with the permit.
+        tokio::task::spawn_blocking(move || {
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("blocking task entered");
+        })
+        .await
+        .expect("entry wait");
+
+        // Cancel the caller's future (simulating a dropped HTTP request).
+        handle.abort();
+        let _ = handle.await;
+
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "cancelling the caller must not release the permit while blocking work is still running"
+        );
+
+        release_tx.send(()).expect("release blocking work");
+
+        let _permit = tokio::time::timeout(Duration::from_secs(2), semaphore.acquire())
+            .await
+            .expect("permit must be released once blocking work finishes")
+            .expect("semaphore open");
+    }
+
+    #[tokio::test]
+    async fn run_argon2_releases_permit_when_blocking_work_panics() {
+        let semaphore = Arc::new(Semaphore::new(1));
+
+        let err = run_argon2(&semaphore, || -> Result<(), PasswordError> {
+            panic!("simulated hashing panic");
+        })
+        .await
+        .expect_err("panic must map to an internal crypto error");
+
+        assert!(matches!(err, AuthError::Internal(RepoError::Crypto)));
+        assert_eq!(
+            semaphore.available_permits(),
+            1,
+            "a panic inside spawn_blocking must not leak the semaphore permit"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_and_change_password_reject_oversized_without_db_or_argon2_permit() {
+        use std::time::Duration;
+
+        // Drain every Argon2 permit and use an unreachable lazy pool: if either
+        // function touches Postgres or the Argon2 semaphore, the call will
+        // fail with a connection error or time out waiting for a permit.
+        let _permits = argon2_semaphore()
+            .acquire_many(MAX_CONCURRENT_HASHES as u32)
+            .await
+            .expect("acquire all permits");
+        let pool =
+            PgPool::connect_lazy("postgres://127.0.0.1:1/never_connected").expect("lazy pool");
+        let limiter = AccountLimiter::new(pool.clone(), crate::ratelimit::AccountPolicy::default());
+        let token_hash = SessionToken::generate().hash();
+        let valid_new = format!("pw-{}", Uuid::now_v7());
+
+        // Test both an ASCII byte-boundary overflow and a multi-byte UTF-8
+        // string with fewer than 1024 chars but more than 1024 bytes.
+        let ascii_oversized = "a".repeat(validation::MAX_PASSWORD_BYTES + 1);
+        let multibyte_oversized = "\u{1F512}".repeat(300);
+        assert!(multibyte_oversized.chars().count() < validation::MAX_PASSWORD_BYTES);
+        assert!(multibyte_oversized.len() > validation::MAX_PASSWORD_BYTES);
+
+        for oversized in [&ascii_oversized, &multibyte_oversized] {
+            let outcome = tokio::time::timeout(
+                Duration::from_millis(200),
+                login(&pool, &limiter, "owner@pyme.com", oversized, None),
+            )
+            .await
+            .expect("login must reject without waiting for an Argon2 permit")
+            .expect("login must return InvalidCredentials, not a DB error");
+            assert!(matches!(outcome, LoginOutcome::InvalidCredentials));
+
+            let change_err = tokio::time::timeout(
+                Duration::from_millis(200),
+                change_password(&pool, Uuid::now_v7(), oversized, &valid_new, &token_hash),
+            )
+            .await
+            .expect("change_password must reject without waiting for an Argon2 permit")
+            .expect_err("change_password must reject oversized current_password");
+            assert!(matches!(change_err, AuthError::InvalidCredentials));
+        }
     }
 }

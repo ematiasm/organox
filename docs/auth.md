@@ -31,8 +31,20 @@ calculated on every authenticated request and the token already has entropy.
 
 argon2id is the current standard (recommended by OWASP), and its cost parameters
 are in the PHC string itself: increasing the cost does not invalidate old
-hashes. Cost measured on this machine: ~390 ms per hash. That is intentional,
-and is why hashing runs in `spawn_blocking` rather than the tokio runtime.
+hashes. Cost measured on this machine: ~390 ms and ~19 MiB per hash. That is
+intentional, and is why hashing runs in `spawn_blocking` rather than the tokio
+runtime.
+
+To prevent authentication traffic from turning that cost into a memory or CPU
+denial of service:
+
+- Passwords exceeding `MAX_PASSWORD_BYTES` (1024 bytes) are rejected before
+  reaching Argon2 on every verification path (`login`, `change_password`, and
+  `password::verify` itself).
+- Concurrent Argon2 hashing and verification tasks are capped per process by a
+  Tokio semaphore (`MAX_CONCURRENT_HASHES`). Each task moves its owned permit
+  into `spawn_blocking`, so cancelling a caller's request future cannot free a
+  slot while hashing is still running.
 
 ## Preventing user enumeration
 
@@ -41,6 +53,7 @@ and is why hashing runs in `spawn_blocking` rather than the tokio runtime.
 - nonexistent email
 - incorrect password
 - malformed email
+- password exceeding `MAX_PASSWORD_BYTES`
 
 In addition, when the email does not exist, the password is checked against a
 dummy hash of equivalent cost, precomputed at server startup. Without this

@@ -11,7 +11,7 @@ use argon2::Argon2;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash as PhcHash};
 
 use super::model::PasswordHash;
-use super::validation::{ValidationError, validate_password};
+use super::validation::{MAX_PASSWORD_BYTES, ValidationError, validate_password};
 
 /// Minimum password length. No composition rules (uppercase/symbols): the
 /// evidence says they make passwords worse. What matters is length and that
@@ -45,9 +45,14 @@ pub fn hash(password: &str) -> Result<PasswordHash, PasswordError> {
 
 /// Verify a password against a stored hash.
 ///
-/// Returns `Ok(false)` if it does not match and `Err` only if the stored hash
-/// is corrupt (a bug, not a failed login attempt).
+/// Returns `Ok(false)` if it does not match (including passwords longer than
+/// `MAX_PASSWORD_BYTES`, which `hash` never accepts) and `Err` only if the
+/// stored hash is corrupt (a bug, not a failed login attempt).
 pub fn verify(password: &str, stored: &PasswordHash) -> Result<bool, PasswordError> {
+    if password.len() > MAX_PASSWORD_BYTES {
+        return Ok(false);
+    }
+
     let parsed = PhcHash::new(stored.as_str()).map_err(|_| PasswordError::Verify)?;
 
     match Argon2::default().verify_password(password.as_bytes(), &parsed) {
@@ -101,5 +106,27 @@ mod tests {
         let rendered = format!("{hash:?}");
 
         assert!(!rendered.contains("argon2"), "Debug leaked the hash");
+    }
+
+    #[test]
+    fn verify_rejects_oversized_password_without_invoking_argon2() {
+        // A malformed PHC string fails inside PhcHash::new if verify reaches
+        // Argon2 parsing; returning Ok(false) proves the length bound runs
+        // before PHC parsing and hashing.
+        let corrupt = PasswordHash::from_phc("$argon2id$corrupt".to_string());
+        let oversized = "a".repeat(super::super::validation::MAX_PASSWORD_BYTES + 1);
+
+        assert!(!verify(&oversized, &corrupt).unwrap());
+    }
+
+    #[test]
+    fn roundtrip_accepts_exact_max_password_bytes() {
+        let exact = "a".repeat(super::super::validation::MAX_PASSWORD_BYTES);
+        let hash = hash(&exact).expect("exact MAX_PASSWORD_BYTES must hash");
+
+        assert!(verify(&exact, &hash).unwrap());
+
+        let too_long = format!("{exact}b");
+        assert!(!verify(&too_long, &hash).unwrap());
     }
 }
