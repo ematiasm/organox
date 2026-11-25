@@ -1361,7 +1361,8 @@ fn hash_byte_boundary_with_multibyte_chars() {
     let hash = password::hash(&exact_multibyte).expect("exact byte count must hash");
     assert!(password::verify(&exact_multibyte, &hash).unwrap());
 
-    let over_multibyte = format!("{}{}", "a".repeat(MAX_PASSWORD_BYTES - 3), "\u{1F512}");
+    let mut over_multibyte = "a".repeat(MAX_PASSWORD_BYTES - 3);
+    over_multibyte.push('\u{1F512}');
     assert!(over_multibyte.chars().count() < MAX_PASSWORD_BYTES);
     assert!(over_multibyte.len() > MAX_PASSWORD_BYTES);
     match password::hash(&over_multibyte) {
