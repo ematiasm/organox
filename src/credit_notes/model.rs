@@ -120,31 +120,34 @@ pub struct ReturnLine {
     pub quantity: Decimal,
 }
 
-/// Split `total` across the tenders that collected money for a sale, in
-/// proportion to what each one collected.
+/// Split `total` across tenders in proportion to each tender's remaining
+/// refundable capacity (`capacities`).
 ///
-/// The result is aligned one-to-one with `collected`, so the caller knows
-/// which wallet each share belongs to. The arithmetic runs in integer
-/// cents: each share is the floor of its proportional part, and the cents
-/// the floors lost go to the largest fractional remainders, ties broken by
-/// index. No share is rounded on its own — per-share rounding is exactly
-/// how a sequence of notes drifts past what the sale charged — and no
-/// single tender absorbs the whole remainder, so the split never depends on
-/// which tender happens to be last.
+/// The result is aligned one-to-one with `capacities`, so the caller knows
+/// which wallet each share belongs to. The arithmetic runs in integer cents:
+/// each share is the floor of its proportional part, and the cents the floors
+/// lost go to the largest fractional remainders, ties broken by index. No
+/// share is rounded on its own — per-share rounding is how a sequence of notes
+/// drifts past what the sale charged — and no single tender absorbs the whole
+/// remainder, so the split never depends on which tender happens to be last.
+///
+/// Because callers pass each tender's remaining capacity (`collected -
+/// prior_refunded`) rather than subtracting two cumulative splits, every
+/// partial note produces strictly non-negative shares for any number of
+/// tenders (avoiding the Largest Remainder Alabama paradox on 3+ tenders).
 ///
 /// The shares add up to `total` exactly. When `total` is at most the sum of
-/// `collected` — the only case the refund path allows — no share exceeds its
-/// tender's collected amount either. Beyond that the shares are capped at
-/// what each tender collected, the sum falls short of `total`, and the
-/// caller refuses the note rather than refunding money nobody paid.
+/// `capacities` — the only case the refund path allows — no share exceeds its
+/// tender's remaining capacity either. Beyond that the shares are capped at
+/// each capacity, the sum falls short of `total`, and the caller refuses the
+/// note rather than refunding money nobody paid.
 ///
 /// A share of zero stays in place, so the alignment survives, but it is never
 /// written to the ledger (`wallet_movements.amount > 0`). An empty list has
 /// no alignment to keep, so it returns no shares at all; a list with nothing
-/// to split over returns aligned zeros, so a caller subtracting two splits
-/// stays aligned even on that branch.
-pub fn split_cash_refund(total: Decimal, collected: &[Decimal]) -> Vec<Decimal> {
-    if collected.is_empty() {
+/// to split over returns aligned zeros.
+pub fn split_cash_refund(total: Decimal, capacities: &[Decimal]) -> Vec<Decimal> {
+    if capacities.is_empty() {
         return Vec::new();
     }
 
@@ -155,7 +158,7 @@ pub fn split_cash_refund(total: Decimal, collected: &[Decimal]) -> Vec<Decimal> 
         |amount: Decimal| -> i128 { (amount * Decimal::from(100)).trunc().to_i128().unwrap_or(0) };
 
     let total_cents = cents(total);
-    let caps: Vec<i128> = collected.iter().copied().map(cents).collect();
+    let caps: Vec<i128> = capacities.iter().copied().map(cents).collect();
     let sum_caps: i128 = caps.iter().sum();
 
     // Nothing to split, or nothing any tender collected.
@@ -280,39 +283,70 @@ mod tests {
     }
 
     #[test]
-    fn the_cumulative_subtraction_property_holds_note_after_note() {
+    fn sequential_remaining_capacity_splits_hold_note_after_note() {
         // Three notes of 33.33 against two tenders of 50 each, applied the
-        // way the refund path applies them: each note writes the difference
-        // between the cumulative split after it and the one before it.
-        let tenders = [dec!(50.00), dec!(50.00)];
-        let mut cash_before = Decimal::ZERO;
+        // way the refund path applies them: each note allocates against each
+        // tender's remaining refundable capacity.
+        let mut remaining = [dec!(50.00), dec!(50.00)];
         let mut refunded_per_tender = [Decimal::ZERO, Decimal::ZERO];
 
         for _ in 0..3 {
-            let after = split_cash_refund(cash_before + dec!(33.33), &tenders);
-            let before = split_cash_refund(cash_before, &tenders);
-            let increments: Vec<Decimal> =
-                after.iter().zip(&before).map(|(a, b)| *a - *b).collect();
+            let shares = split_cash_refund(dec!(33.33), &remaining);
 
-            // No tender is ever asked to hand back a cent it did not take,
-            // and the two increments are this note's cash, to the cent.
-            assert!(
-                increments.iter().all(|share| *share >= Decimal::ZERO),
-                "a negative increment: {increments:?}"
-            );
-            assert_eq!(increments.iter().copied().sum::<Decimal>(), dec!(33.33));
-
-            for (tender, share) in refunded_per_tender.iter_mut().zip(increments) {
-                *tender += share;
+            // No tender is ever asked to hand back a cent it does not have
+            // left, and the shares equal this note's cash to the cent.
+            assert_eq!(shares.iter().copied().sum::<Decimal>(), dec!(33.33));
+            for ((rem, refunded), share) in remaining
+                .iter_mut()
+                .zip(refunded_per_tender.iter_mut())
+                .zip(shares)
+            {
+                assert!(share >= Decimal::ZERO, "negative share: {share}");
+                assert!(share <= *rem, "share {share} exceeded remaining {rem}");
+                *rem -= share;
+                *refunded += share;
             }
-            cash_before += dec!(33.33);
         }
 
         // 99.99 out of the 100 the sale charged — never a cent more — and
         // no tender refunded beyond what it collected.
-        assert_eq!(cash_before, dec!(99.99));
         assert_eq!(refunded_per_tender[0], dec!(50.00));
         assert_eq!(refunded_per_tender[1], dec!(49.99));
+        assert_eq!(remaining, [dec!(0.00), dec!(0.01)]);
+    }
+
+    #[test]
+    fn three_tenders_partial_refunds_avoid_alabama_paradox() {
+        // Classic Alabama paradox case (#95): $7.00 paid via [$3, $3, $1].
+        // Cumulative Largest Remainder gives [0.01, 0.01, 0.01] at $0.03 and
+        // [0.02, 0.02, 0.00] at $0.04, producing a -0.01 increment on tender 3.
+        // Splitting against remaining capacity stays non-negative on every step
+        // all the way through full drainage.
+        let mut remaining = [dec!(3.00), dec!(3.00), dec!(1.00)];
+
+        for step in [dec!(0.03), dec!(0.01), dec!(0.01), dec!(6.95)] {
+            let shares = split_cash_refund(step, &remaining);
+            assert_eq!(shares.iter().copied().sum::<Decimal>(), step);
+            for (rem, share) in remaining.iter_mut().zip(shares) {
+                assert!(share >= Decimal::ZERO);
+                assert!(share <= *rem);
+                *rem -= share;
+            }
+        }
+        assert_eq!(remaining, [dec!(0.00), dec!(0.00), dec!(0.00)]);
+
+        // Stress-test every single 1-cent step across the entire $7.00.
+        let mut remaining = [dec!(3.00), dec!(3.00), dec!(1.00)];
+        for _ in 0..700 {
+            let shares = split_cash_refund(dec!(0.01), &remaining);
+            assert_eq!(shares.iter().copied().sum::<Decimal>(), dec!(0.01));
+            for (rem, share) in remaining.iter_mut().zip(shares) {
+                assert!(share >= Decimal::ZERO);
+                assert!(share <= *rem);
+                *rem -= share;
+            }
+        }
+        assert_eq!(remaining, [dec!(0.00), dec!(0.00), dec!(0.00)]);
     }
 
     #[test]

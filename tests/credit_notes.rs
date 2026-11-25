@@ -2395,3 +2395,206 @@ async fn concurrent_credit_note_and_receipt_allocation_do_not_deadlock(pool: PgP
     assert_eq!(position.outstanding_total, dec!(20.00));
     assert!(position.is_consistent());
 }
+
+#[sqlx::test]
+async fn partial_refunds_across_three_tenders_do_not_fail_with_alabama_paradox(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Candy", dec!(0.01)).await;
+    stock(&pool, actor, product, dec!(700)).await;
+
+    let cash_method = cash(&pool).await;
+    let cash_wallet = wallet_of(&pool, cash_method).await;
+
+    let card_wallet = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Bank".to_string(),
+        },
+    )
+    .await
+    .expect("card wallet");
+    let card_method = payments::create_method(
+        &pool,
+        CreateMethodInput {
+            name: "Card".to_string(),
+            wallet_id: card_wallet,
+        },
+    )
+    .await
+    .expect("card method");
+
+    let digital_wallet = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Digital".to_string(),
+        },
+    )
+    .await
+    .expect("digital wallet");
+    let digital_method = payments::create_method(
+        &pool,
+        CreateMethodInput {
+            name: "Transfer".to_string(),
+            wallet_id: digital_wallet,
+        },
+    )
+    .await
+    .expect("digital method");
+
+    // $7.00 sale paid via 3 tenders: $3.00, $3.00, $1.00.
+    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    sales::add_item(&pool, sale, product, dec!(700))
+        .await
+        .expect("item");
+    sales::complete(
+        &pool,
+        sale,
+        actor,
+        &[
+            SalePaymentInput {
+                payment_method_id: cash_method,
+                amount: dec!(3.00),
+            },
+            SalePaymentInput {
+                payment_method_id: card_method,
+                amount: dec!(3.00),
+            },
+            SalePaymentInput {
+                payment_method_id: digital_method,
+                amount: dec!(1.00),
+            },
+        ],
+    )
+    .await
+    .expect("charge");
+
+    let cookie = login_cookie(&pool, &password).await;
+
+    // Credit Note 1 for $0.03: splits [0.01, 0.01, 0.01].
+    let (status1, body1) = note_http(&pool, &cookie, sale, product, dec!(3)).await;
+    assert_eq!(status1, axum::http::StatusCode::CREATED, "note 1: {body1}");
+    assert_eq!(body1["total"], "0.03");
+    let refunds1 = body1["refunds"].as_array().expect("refunds 1");
+    let sum1: Decimal = refunds1
+        .iter()
+        .map(|r| r["amount"].as_str().unwrap().parse::<Decimal>().unwrap())
+        .sum();
+    assert_eq!(sum1, dec!(0.03));
+
+    // Credit Note 2 for $0.01: under cumulative Largest Remainder, split(0.04)
+    // is [0.02, 0.02, 0.00], making the third tender's increment -0.01 and
+    // failing with HTTP 500. Allocating against remaining capacity must succeed.
+    let (status2, body2) = note_http(&pool, &cookie, sale, product, dec!(1)).await;
+    assert_eq!(status2, axum::http::StatusCode::CREATED, "note 2: {body2}");
+    assert_eq!(body2["total"], "0.01");
+    let refunds2 = body2["refunds"].as_array().expect("refunds 2");
+    assert_eq!(refunds2.len(), 1);
+    assert_eq!(refunds2[0]["amount"], "0.01");
+
+    // Credit Note 3 for the remaining $6.96: drains every tender back to zero.
+    let (status3, body3) = note_http(&pool, &cookie, sale, product, dec!(696)).await;
+    assert_eq!(status3, axum::http::StatusCode::CREATED, "note 3: {body3}");
+    assert_eq!(body3["total"], "6.96");
+
+    assert_eq!(balance(&pool, cash_wallet).await, Decimal::ZERO);
+    assert_eq!(balance(&pool, card_wallet).await, Decimal::ZERO);
+    assert_eq!(balance(&pool, digital_wallet).await, Decimal::ZERO);
+}
+
+#[sqlx::test]
+async fn partial_refunds_consolidate_till_and_receipt_on_same_tender_across_three_tenders(
+    pool: PgPool,
+) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let customer = seed_customer(&pool, "Ana").await;
+    let product = seed_product(&pool, "Candy", dec!(0.01)).await;
+    stock(&pool, actor, product, dec!(700)).await;
+
+    let cash_method = cash(&pool).await;
+    let cash_wallet = wallet_of(&pool, cash_method).await;
+
+    let card_wallet = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Bank".to_string(),
+        },
+    )
+    .await
+    .expect("card wallet");
+    let card_method = payments::create_method(
+        &pool,
+        CreateMethodInput {
+            name: "Card".to_string(),
+            wallet_id: card_wallet,
+        },
+    )
+    .await
+    .expect("card method");
+
+    let digital_wallet = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Digital".to_string(),
+        },
+    )
+    .await
+    .expect("digital wallet");
+    let digital_method = payments::create_method(
+        &pool,
+        CreateMethodInput {
+            name: "Transfer".to_string(),
+            wallet_id: digital_wallet,
+        },
+    )
+    .await
+    .expect("digital method");
+
+    // $7.00 sale: $1.00 Cash at till, $6.00 on account.
+    let sale = sale_part_on_account(
+        &pool,
+        actor,
+        product,
+        dec!(700),
+        Some(customer),
+        Some(cash_method),
+        dec!(1.00),
+    )
+    .await;
+    let cookie = login_cookie(&pool, &password).await;
+
+    // Customer pays the $6.00 debt across three receipts:
+    // +$2.00 Cash (bringing Cash total to $3.00), $3.00 Card, $1.00 Transfer.
+    for (method, amount) in [
+        (cash_method, "2.00"),
+        (card_method, "3.00"),
+        (digital_method, "1.00"),
+    ] {
+        let (status, body) = collect_http(
+            &pool,
+            &cookie,
+            customer,
+            method,
+            amount,
+            Some((sale, amount)),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CREATED, "collect: {body}");
+    }
+
+    // Sequential partial credit notes hitting the Alabama paradox step
+    // ($0.03 then $0.01), then draining the rest ($6.96).
+    let (s1, b1) = note_http(&pool, &cookie, sale, product, dec!(3)).await;
+    assert_eq!(s1, axum::http::StatusCode::CREATED, "note 1: {b1}");
+    // Cash till + Cash receipt consolidated into one Cash tender, so 3 refunds total.
+    assert_eq!(b1["refunds"].as_array().expect("refunds 1").len(), 3);
+
+    let (s2, b2) = note_http(&pool, &cookie, sale, product, dec!(1)).await;
+    assert_eq!(s2, axum::http::StatusCode::CREATED, "note 2: {b2}");
+
+    let (s3, b3) = note_http(&pool, &cookie, sale, product, dec!(696)).await;
+    assert_eq!(s3, axum::http::StatusCode::CREATED, "note 3: {b3}");
+
+    assert_eq!(balance(&pool, cash_wallet).await, Decimal::ZERO);
+    assert_eq!(balance(&pool, card_wallet).await, Decimal::ZERO);
+    assert_eq!(balance(&pool, digital_wallet).await, Decimal::ZERO);
+}

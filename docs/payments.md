@@ -172,8 +172,8 @@ writes `sale_refund` movements — outflows, never written by hand — naming th
 sale reversed, the payment method that collected the money, and the credit note
 that caused it. Money leaves the tenders that actually collected for that sale
 (its original `sale_payment` movements plus receipts allocated to it), split
-proportionally in integer cents with largest remainders computed cumulatively
-across notes. A fully unpaid credit sale therefore writes no `sale_refund`
+proportionally in integer cents with largest remainders across each tender's
+remaining refundable capacity. A fully unpaid credit sale therefore writes no `sale_refund`
 movement at all. The note reports the refunds it produced; see
 `docs/credit-notes.md` and `docs/customer-accounts.md`.
 
