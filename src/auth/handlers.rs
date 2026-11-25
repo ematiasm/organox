@@ -22,8 +22,13 @@ use crate::auth::service::{self, AuthError, LoginOutcome};
 use crate::error::AppError;
 
 pub fn router(state: AppState) -> Router<AppState> {
+    router_with_body_limit(state, crate::routes::AUTH_BODY_LIMIT_BYTES)
+}
+
+pub fn router_with_body_limit(state: AppState, body_limit_bytes: usize) -> Router<AppState> {
     use axum::middleware::from_fn_with_state;
     use axum::routing::{get, post, put};
+    use tower_http::limit::RequestBodyLimitLayer;
 
     // Apply the IP limit ONLY to login. Applying it to the entire API would
     // penalize a legitimate polling frontend and add nothing against brute force.
@@ -42,6 +47,9 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/auth/me", axum::routing::get(me))
         .route("/users", get(list_users).post(create_user))
         .route("/users/{id}/password", put(reset_password))
+        // Auth payloads carry at most an email and two bounded passwords, so
+        // cap them well below the global router limit before JSON buffering.
+        .route_layer(RequestBodyLimitLayer::new(body_limit_bytes))
 }
 
 // --- DTOs ---------------------------------------------------------------

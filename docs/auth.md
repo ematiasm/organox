@@ -38,6 +38,9 @@ runtime.
 To prevent authentication traffic from turning that cost into a memory or CPU
 denial of service:
 
+- Auth and user-management routes enforce a tighter HTTP request body cap
+  (`AUTH_BODY_LIMIT_BYTES`, 16 KiB) before JSON deserialization, rejecting
+  larger payloads with `413 Payload Too Large` (`application/problem+json`).
 - Passwords exceeding `MAX_PASSWORD_BYTES` (1024 bytes) are rejected before
   reaching Argon2 on every verification path (`login`, `change_password`, and
   `password::verify` itself).
