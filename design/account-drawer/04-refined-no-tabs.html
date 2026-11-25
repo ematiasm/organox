@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>04 — No tabs: Details header card, 2 KPIs + actions, Open sales &amp; credit notes</title>
+<style>
+  :root {
+    --bg: #0c0c09;
+    --card: #1d1d16;
+    --surface: #161610;
+    --muted: #2b2b22;
+    --fg: #fbfbf9;
+    --fg-muted: #abab9c;
+    --primary: #e8e8e3;
+    --primary-fg: #1d1d16;
+    --destructive: #ff6467;
+    --destructive-bg: rgba(255, 100, 103, 0.12);
+    --warn: #eba941;
+    --border: rgba(255, 255, 255, 0.1);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --radius: 10px;
+    --font: 'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  .backdrop-page {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    opacity: 0.28;
+    pointer-events: none;
+  }
+  .rail {
+    background: var(--card);
+    border-right: 1px solid var(--border);
+    padding: 16px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    align-items: center;
+  }
+  .rail-dot { width: 32px; height: 32px; border-radius: 8px; background: var(--muted); }
+  .rail-dot.active { background: rgba(232, 232, 227, 0.2); }
+  .bg-content { padding: 28px 32px; }
+  .bg-title { font-size: 20px; font-weight: 600; margin-bottom: 18px; }
+  .bg-table { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .bg-row { display: grid; grid-template-columns: 2fr 1fr 1.5fr 1fr 1fr; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 13px; color: var(--fg-muted); }
+  .bg-row:first-child { border-top: none; background: var(--surface); font-weight: 500; }
+
+  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.52); }
+
+  .drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 672px;
+    max-width: 92vw;
+    background: var(--card);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    box-shadow: -16px 0 48px rgba(0, 0, 0, 0.55);
+  }
+
+  .drawer-scroll {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 1. Header + boxed Details card */
+  .drawer-header {
+    padding: 20px 24px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .title-row { display: flex; align-items: center; gap: 8px; }
+  .title-row h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--fg);
+  }
+  .badge-warn {
+    border-color: rgba(235, 169, 65, 0.35);
+    background: rgba(235, 169, 65, 0.1);
+    color: var(--warn);
+  }
+  .badge-soft {
+    background: var(--muted);
+    border-color: transparent;
+    color: var(--fg-muted);
+  }
+
+  .details-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .details-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+  }
+  .details-actions { display: flex; align-items: center; gap: 6px; }
+  .details-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px 14px;
+    font-size: 12.5px;
+  }
+  .detail-item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .detail-item .k { font-size: 11px; color: var(--fg-muted); }
+  .detail-item .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .btn {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    height: 30px;
+    padding: 0 11px;
+    border-radius: 7px;
+    border: 1px solid var(--border-strong);
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+  .btn:hover { background: var(--muted); }
+  .btn-primary {
+    background: var(--primary);
+    color: var(--primary-fg);
+    border-color: var(--primary);
+  }
+  .btn-primary:hover { opacity: 0.92; background: var(--primary); }
+  .btn-active { background: var(--muted); border-color: var(--primary); }
+  .btn-ghost { border-color: transparent; color: var(--fg-muted); padding: 0 7px; }
+  .btn-danger {
+    background: var(--destructive-bg);
+    border-color: rgba(255, 100, 103, 0.3);
+    color: var(--destructive);
+  }
+  .btn-xs { height: 26px; font-size: 11.5px; padding: 0 9px; }
+
+  /* 2. Balance & Available credit + Payment actions */
+  .account-section {
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .kpi-pair {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  .kpi {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 12px 14px;
+  }
+  .kpi-label { font-size: 11.5px; color: var(--fg-muted); }
+  .kpi-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; letter-spacing: -0.02em; }
+  .kpi-sub { font-size: 11.5px; color: var(--fg-muted); margin-top: 2px; }
+
+  .action-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .inline-form {
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .inline-form.hidden { display: none; }
+  .inline-form-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .inline-form-head strong { font-size: 13px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11.5px; color: var(--fg-muted); }
+  .input {
+    height: 34px;
+    border-radius: 7px;
+    border: 1px solid var(--border-strong);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--fg);
+    padding: 0 10px;
+    font: inherit;
+    font-size: 13px;
+  }
+  .form-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-top: 2px;
+  }
+  .form-foot span { font-size: 11.5px; color: var(--fg-muted); }
+
+  /* 3. Separated Open sales + associated Credit notes */
+  .open-sales-section {
+    padding: 18px 24px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .sale-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    overflow: hidden;
+  }
+  .sale-main {
+    padding: 12px 14px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px 16px;
+    align-items: center;
+  }
+  .sale-id-row { display: flex; align-items: center; gap: 8px; }
+  .mono { font-family: var(--mono); font-size: 12.5px; font-weight: 500; }
+  .muted { color: var(--fg-muted); }
+  .sale-meta { font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
+  .sale-amounts { text-align: right; font-variant-numeric: tabular-nums; }
+  .sale-due { font-size: 15px; font-weight: 600; }
+  .sale-breakdown { font-size: 11.5px; color: var(--fg-muted); margin-top: 1px; }
+
+  .cn-list {
+    border-top: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.02);
+    padding: 8px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .cn-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+  }
+  .cn-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .cn-branch { color: var(--fg-muted); font-family: var(--mono); }
+  .cn-note { color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cn-amount { font-variant-numeric: tabular-nums; color: #b8d8a8; font-weight: 500; white-space: nowrap; }
+
+  details.history {
+    margin-top: 4px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface);
+  }
+  details.history summary {
+    padding: 10px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--fg-muted);
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  details.history summary::-webkit-details-marker { display: none; }
+</style>
+</head>
+<body>
+  <div class="backdrop-page">
+    <div class="rail">
+      <div class="rail-dot"></div>
+      <div class="rail-dot"></div>
+      <div class="rail-dot active"></div>
+      <div class="rail-dot"></div>
+    </div>
+    <div class="bg-content">
+      <div class="bg-title">Customers</div>
+      <div class="bg-table">
+        <div class="bg-row"><span>Name</span><span>Document</span><span>Email</span><span>Balance</span><span>Status</span></div>
+        <div class="bg-row"><span>Juan</span><span>11111111</span><span>juan@local.com</span><span>500.00</span><span>Active</span></div>
+        <div class="bg-row"><span>Mercado Norte</span><span>30-71234567-8</span><span>pagos@mnorte.com</span><span>-120.00</span><span>Active</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="scrim"></div>
+
+  <aside class="drawer" aria-label="Customer drawer">
+    <div class="drawer-scroll">
+      <!-- 1. HEADER + DETAILS BOX -->
+      <header class="drawer-header">
+        <div class="header-top">
+          <div class="title-row">
+            <h1>Juan</h1>
+            <span class="badge">Active</span>
+          </div>
+          <button class="btn btn-ghost" type="button" aria-label="Close">✕</button>
+        </div>
+
+        <div class="details-box">
+          <div class="details-head">
+            <span class="section-label">Customer details</span>
+            <div class="details-actions">
+              <button class="btn btn-xs" type="button">Edit</button>
+              <button class="btn btn-xs btn-danger" type="button">Deactivate</button>
+            </div>
+          </div>
+          <div class="details-grid">
+            <div class="detail-item">
+              <span class="k">Document</span>
+              <span class="v">11111111</span>
+            </div>
+            <div class="detail-item">
+              <span class="k">Email</span>
+              <span class="v">juan@local.com</span>
+            </div>
+            <div class="detail-item">
+              <span class="k">Phone</span>
+              <span class="v">3454343434</span>
+            </div>
+            <div class="detail-item">
+              <span class="k">Credit limit</span>
+              <span class="v">Unlimited</span>
+            </div>
+            <div class="detail-item">
+              <span class="k">Created</span>
+              <span class="v muted">11/20/26, 5:53 PM</span>
+            </div>
+            <div class="detail-item">
+              <span class="k">Updated</span>
+              <span class="v muted">11/20/26, 5:53 PM</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <!-- 2. BALANCE & AVAILABLE CREDIT + ACTION BUTTONS -->
+      <section class="account-section">
+        <div class="kpi-pair">
+          <div class="kpi">
+            <div class="kpi-label">Balance</div>
+            <div class="kpi-value">500.00</div>
+            <div class="kpi-sub">Customer owes</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">Available credit</div>
+            <div class="kpi-value">0.00</div>
+            <div class="kpi-sub">Unapplied receipts</div>
+          </div>
+        </div>
+
+        <div class="action-row">
+          <button class="btn btn-primary" type="button" onclick="toggleForm('collect', this)">Collect payment</button>
+          <button class="btn" type="button" onclick="toggleForm('refund', this)">Refund credit</button>
+          <button class="btn" type="button" onclick="toggleForm('adjust', this)">Manual adjustment</button>
+        </div>
+
+        <div id="form-collect" class="inline-form hidden">
+          <div class="inline-form-head">
+            <strong>Collect payment</strong>
+            <button class="btn btn-xs btn-ghost" type="button" onclick="closeForms()">Cancel</button>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label>Payment method</label><input class="input" value="Cash → Main till" readonly /></div>
+            <div class="field"><label>Amount</label><input class="input" placeholder="0.00" value="500.00" readonly /></div>
+          </div>
+          <div class="field"><label>Note</label><input class="input" placeholder="Optional reference or receipt note" readonly /></div>
+          <div class="form-foot">
+            <span>Allocations to open sales appear below (Oldest first / Clear).</span>
+            <button class="btn btn-primary btn-xs" type="button">Record receipt</button>
+          </div>
+        </div>
+
+        <div id="form-refund" class="inline-form hidden">
+          <div class="inline-form-head">
+            <strong>Refund credit</strong>
+            <button class="btn btn-xs btn-ghost" type="button" onclick="closeForms()">Cancel</button>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label>Payment method</label><input class="input" value="Cash ← Main till" readonly /></div>
+            <div class="field"><label>Amount</label><input class="input" placeholder="0.00" readonly /></div>
+          </div>
+          <div class="field"><label>Note</label><input class="input" placeholder="Reason for refunding credit" readonly /></div>
+          <div class="form-foot">
+            <span>Refundable credit: 0.00</span>
+            <button class="btn btn-primary btn-xs" type="button">Record credit refund</button>
+          </div>
+        </div>
+
+        <div id="form-adjust" class="inline-form hidden">
+          <div class="inline-form-head">
+            <strong>Manual adjustment</strong>
+            <button class="btn btn-xs btn-ghost" type="button" onclick="closeForms()">Cancel</button>
+          </div>
+          <div class="form-grid">
+            <div class="field"><label>Direction</label><input class="input" value="Increase debt (+)" readonly /></div>
+            <div class="field"><label>Amount</label><input class="input" placeholder="0.00" readonly /></div>
+          </div>
+          <div class="field"><label>Note</label><input class="input" placeholder="Reason for manual adjustment" readonly /></div>
+          <div class="form-foot">
+            <span>Touches no wallet. Balance must stay ≥ 0.00.</span>
+            <button class="btn btn-primary btn-xs" type="button">Record adjustment</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. UNIFIED BALANCE LEDGER (SALES + NESTED CREDIT NOTES, PAYMENTS, REFUNDS, ADJUSTMENTS) -->
+      <section class="open-sales-section">
+        <div class="section-head">
+          <span class="section-label">Balance ledger (5 movements)</span>
+          <span class="muted" style="font-size: 12px; font-variant-numeric: tabular-nums;">2 open sales · 500.00 due</span>
+        </div>
+
+        <div class="sale-card">
+          <div class="sale-main">
+            <div>
+              <div class="sale-id-row">
+                <span class="mono">Sale #01a1fc32</span>
+                <span class="badge badge-warn">Partially paid</span>
+              </div>
+              <div class="sale-meta">11/21/26, 9:58 PM · Due 350.00 (Paid 500.00 · Credited 150.00)</div>
+            </div>
+            <div class="sale-amounts">
+              <div class="sale-due">+1000.00</div>
+              <div class="sale-breakdown">Bal 1000.00</div>
+            </div>
+          </div>
+          <div class="cn-list">
+            <div class="cn-row">
+              <div class="cn-left">
+                <span class="cn-branch">↳</span>
+                <span class="badge">Credit note</span>
+                <span class="mono muted">#c84f19a0</span>
+                <span class="cn-note">11/22/26 · Damaged unit returned</span>
+              </div>
+              <span class="cn-amount">-150.00 <span class="muted" style="font-weight:400;">· Bal 350.00</span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sale-card">
+          <div class="sale-main">
+            <div>
+              <div class="sale-id-row">
+                <span class="badge">Receipt</span>
+                <span class="sale-meta" style="margin:0;">11/21/26, 9:59 PM</span>
+              </div>
+              <div class="sale-meta">Cash partial payment</div>
+            </div>
+            <div class="sale-amounts">
+              <div class="sale-due" style="color:#b8d8a8;">-500.00</div>
+              <div class="sale-breakdown">Bal 500.00</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sale-card">
+          <div class="sale-main">
+            <div>
+              <div class="sale-id-row">
+                <span class="badge">Adjustment (+)</span>
+                <span class="sale-meta" style="margin:0;">11/22/26, 6:10 PM</span>
+              </div>
+              <div class="sale-meta">Opening balance migration</div>
+            </div>
+            <div class="sale-amounts">
+              <div class="sale-due">+150.00</div>
+              <div class="sale-breakdown">Bal 500.00</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sale-card">
+          <div class="sale-main">
+            <div>
+              <div class="sale-id-row">
+                <span class="mono">Sale #7b93de10</span>
+                <span class="badge badge-soft">Unpaid</span>
+              </div>
+              <div class="sale-meta">11/23/26, 4:15 PM · Due 150.00</div>
+            </div>
+            <div class="sale-amounts">
+              <div class="sale-due">+150.00</div>
+              <div class="sale-breakdown">Bal 650.00</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </aside>
+
+  <script>
+    function closeForms() {
+      ['collect', 'refund', 'adjust'].forEach((k) => {
+        document.getElementById('form-' + k).classList.add('hidden');
+      });
+      document.querySelectorAll('.action-row .btn').forEach((b) => b.classList.remove('btn-active'));
+    }
+    function toggleForm(name, btn) {
+      const target = document.getElementById('form-' + name);
+      const wasOpen = !target.classList.contains('hidden');
+      closeForms();
+      if (!wasOpen) {
+        target.classList.remove('hidden');
+        btn.classList.add('btn-active');
+      }
+    }
+  </script>
+</body>
+</html>
