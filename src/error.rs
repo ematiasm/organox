@@ -35,6 +35,12 @@ pub enum AppError {
     #[error("invalid input: {0}")]
     Validation(String),
 
+    #[error("request body exceeds maximum allowed size")]
+    PayloadTooLarge,
+
+    #[error("request timed out")]
+    GatewayTimeout,
+
     #[error("database unavailable: {0}")]
     DatabaseUnavailable(String),
 
@@ -75,6 +81,16 @@ impl IntoResponse for AppError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Validation Error",
                 msg.clone(),
+            ),
+            AppError::PayloadTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Payload Too Large",
+                "The request body exceeds the maximum allowed size.".to_string(),
+            ),
+            AppError::GatewayTimeout => (
+                StatusCode::GATEWAY_TIMEOUT,
+                "Gateway Timeout",
+                "The request timed out.".to_string(),
             ),
             // Do not leak the sqlx message to the client: it may contain a host,
             // user or infrastructure details.
@@ -153,5 +169,35 @@ mod translation_tests {
         assert_eq!(body["title"], "Configuration Error");
         assert_eq!(body["status"], 500);
         assert_eq!(body["type"], "about:blank");
+    }
+
+    #[tokio::test]
+    async fn middleware_errors_use_problem_json() {
+        for (err, expected_status, expected_title) in [
+            (
+                AppError::PayloadTooLarge,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Payload Too Large",
+            ),
+            (
+                AppError::GatewayTimeout,
+                StatusCode::GATEWAY_TIMEOUT,
+                "Gateway Timeout",
+            ),
+        ] {
+            let response = err.into_response();
+            assert_eq!(response.status(), expected_status);
+            assert_eq!(
+                response.headers()[axum::http::header::CONTENT_TYPE],
+                "application/problem+json"
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["title"], expected_title);
+            assert_eq!(body["status"], expected_status.as_u16());
+            assert_eq!(body["type"], "about:blank");
+        }
     }
 }

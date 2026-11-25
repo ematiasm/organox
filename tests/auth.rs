@@ -204,13 +204,24 @@ async fn login_rejects_oversized_password_consistently_without_recording_attempt
         "oversized passwords must be rejected before hitting the limiter or Argon2"
     );
 
-    // A 1 MiB password payload is also rejected immediately with 401.
+    // An 8 KiB password still passes the 16 KiB auth body limit and is rejected
+    // by `service::login` with 401 before Argon2 or rate-limit recording.
+    let eight_kib = "x".repeat(8 * 1024);
+    let large = app(pool.clone())
+        .oneshot(login_request("owner@pyme.com", &eight_kib))
+        .await
+        .unwrap();
+    assert_eq!(large.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(count_rows(&pool, "login_attempts").await, 0);
+
+    // A 1 MiB login payload exceeds the tighter auth body limit (16 KiB) and is
+    // rejected by middleware with 413 Payload Too Large before reaching login.
     let one_mib = "x".repeat(1024 * 1024);
     let huge = app(pool.clone())
         .oneshot(login_request("owner@pyme.com", &one_mib))
         .await
         .unwrap();
-    assert_eq!(huge.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(huge.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(count_rows(&pool, "login_attempts").await, 0);
 
     // Real password still logs in cleanly.
