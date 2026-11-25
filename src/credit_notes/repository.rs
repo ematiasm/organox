@@ -488,22 +488,33 @@ async fn load_notes(
 
 /// Issue a credit note: validate against the sale, then write both ledgers.
 ///
-/// The sale row is locked `FOR UPDATE` first. Two cashiers returning the last
-/// unit at the same time would otherwise both pass the "still returnable"
-/// check and both write the return; serializing on the sale makes the second
-/// one see the first one's note.
+/// The sale row is locked `FOR NO KEY UPDATE` first. Two cashiers returning
+/// the last unit at the same time would otherwise both pass the "still
+/// returnable" check and both write the return; serializing on the sale makes
+/// the second one see the first one's note, while staying compatible with
+/// PostgreSQL's `FOR KEY SHARE` FK checks from concurrent receipt allocations.
 ///
 /// The products are NOT locked: a return adds stock, so it can never leave the
 /// catalog negative and needs no availability check.
 pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCreditNote, RepoError> {
     let mut tx = pool.begin().await?;
 
+    // Lock 1: sale row `FOR NO KEY UPDATE` (never `FOR UPDATE`).
+    //
+    // `FOR NO KEY UPDATE` still serializes concurrent `credit_notes::create`
+    // and `sales::complete`/`sales::cancel` on the same sale, while remaining
+    // compatible with PostgreSQL's `FOR KEY SHARE` FK RI lock acquired when a
+    // concurrent `customer_accounts::service::collect` or
+    // `customer_accounts::repository::allocate` inserts into
+    // `customer_account_allocations (sale_id)` while holding the customer
+    // advisory lock. Using `FOR UPDATE` here would AB-BA deadlock with
+    // `collect`/`allocate` (sales lock <-> customer advisory lock).
     let sale = sqlx::query!(
         r#"
         SELECT status AS "status: SaleStatus", total, customer_id
         FROM sales
         WHERE id = $1
-        FOR UPDATE
+        FOR NO KEY UPDATE
         "#,
         new.sale_id
     )
@@ -611,12 +622,12 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
 
     let created_at: DateTime<Utc> = match insert {
         Ok(created_at) => created_at,
-        // The sale row is locked `FOR UPDATE` before the replay pre-check, so
-        // a keyed create always serializes behind the winner and the pre-check
-        // above already serves the replay: this arm only runs if that lock
-        // ordering ever changes. It exists so that a future caller without
-        // that sale lock cannot double-write — the unique index turns the
-        // second insert into a replay of the first note instead.
+        // The sale row is locked `FOR NO KEY UPDATE` before the replay
+        // pre-check, so a keyed create always serializes behind the winner and
+        // the pre-check above already serves the replay: this arm only runs if
+        // that lock ordering ever changes. It exists so that a future caller
+        // without that sale lock cannot double-write — the unique index turns
+        // the second insert into a replay of the first note instead.
         Err(err) if violated_constraint(&err) == Some(IDEMPOTENCY_KEY_UNIQUE) => {
             // Two callers with the same key both found no note. The loser's
             // transaction is aborted by the unique index, so it must roll back
@@ -694,14 +705,15 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
         None => Decimal::ZERO,
         Some(customer) => {
             // One lock for the whole account phase, before any account state
-            // is read. The transaction already holds the sale row lock; taking
-            // the customer's advisory lock now fixes the order sale →
-            // customer — the same order the completion established, and a
-            // collection takes only the advisory lock, so the two cannot
-            // deadlock. The lock also freezes the account between the reads
-            // below and the writes they justify: a collection allocating to
-            // this sale cannot change the outstanding or the tender list
-            // under us.
+            // is read. The transaction already holds `FOR NO KEY UPDATE` on
+            // the sale row; taking the customer's advisory lock now fixes the
+            // order sale → customer, and a collection or allocation holds the
+            // customer advisory lock while its `customer_account_allocations`
+            // FK check takes `FOR KEY SHARE` on `sales`, which is compatible
+            // with `FOR NO KEY UPDATE`, so the two cannot deadlock. The lock
+            // also freezes the account between the reads below and the writes
+            // they justify: a collection allocating to this sale cannot change
+            // the outstanding or the tender list under us.
             customer_accounts::lock_customer(&mut tx, customer)
                 .await
                 .map_err(map_account_error)?;
