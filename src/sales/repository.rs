@@ -34,6 +34,9 @@ pub enum RepoError {
     #[error("the sale is no longer editable")]
     NotEditable,
 
+    #[error("the sale is empty")]
+    EmptySale,
+
     #[error("the payment amount must be greater than zero")]
     PaymentAmountNotPositive,
 
@@ -98,26 +101,34 @@ pub async fn create_draft(pool: &PgPool, new: NewSaleDraft) -> Result<Uuid, Repo
 ///
 /// Always recalculated on the server: the client's total is only for display.
 /// Returning a browser-calculated total would trust the browser to charge.
-async fn refresh_total(pool: &PgPool, sale_id: Uuid) -> Result<Decimal, RepoError> {
-    let total: Decimal = sqlx::query_scalar!(
+/// Runs inside the caller's transaction (which already holds `FOR UPDATE` on
+/// the `sales` row) and keeps `AND status = 'draft'` as defense-in-depth.
+async fn refresh_total(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sale_id: Uuid,
+) -> Result<Decimal, RepoError> {
+    let total = sqlx::query_scalar!(
         r#"
         UPDATE sales
         SET total = COALESCE((
             SELECT SUM(quantity * unit_price) FROM sale_items WHERE sale_id = $1
         ), 0)
-        WHERE id = $1
+        WHERE id = $1 AND status = 'draft'
         RETURNING COALESCE(total, 0) AS "total!"
         "#,
         sale_id
     )
-    .fetch_one(pool)
-    .await?;
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(RepoError::NotEditable)?;
 
     Ok(total)
 }
 
 /// Add a product to the draft.
 ///
+/// Runs in a transaction that locks the `sales` row `FOR UPDATE` so completion
+/// or cancellation cannot commit between the status check and the item write.
 /// If already present, ADD the quantity. Uniqueness is guaranteed by the
 /// `(sale_id, product_id)` index with `ON CONFLICT`, not a prior read: two
 /// concurrent requests from the same cashier (double-clicking "add") must not
@@ -128,11 +139,13 @@ pub async fn upsert_item(
     product_id: Uuid,
     quantity: Decimal,
 ) -> Result<(), RepoError> {
+    let mut tx = pool.begin().await?;
+
     let sale_status = sqlx::query_scalar!(
-        r#"SELECT status AS "status: SaleStatus" FROM sales WHERE id = $1"#,
+        r#"SELECT status AS "status: SaleStatus" FROM sales WHERE id = $1 FOR UPDATE"#,
         sale_id
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(RepoError::NotFound)?;
 
@@ -149,7 +162,7 @@ pub async fn upsert_item(
         "#,
         product_id
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(RepoError::ProductNotFound)?;
 
@@ -174,25 +187,32 @@ pub async fn upsert_item(
         quantity,
         unit_price,
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
-    refresh_total(pool, sale_id).await?;
+    refresh_total(&mut tx, sale_id).await?;
+    tx.commit().await?;
     Ok(())
 }
 
 /// Set an item's quantity. Quantity 0 removes it.
+///
+/// Locks the `sales` row `FOR UPDATE` in a transaction so completion or
+/// cancellation cannot race between the draft check, item mutation, and total
+/// recalculation.
 pub async fn set_item_quantity(
     pool: &PgPool,
     sale_id: Uuid,
     product_id: Uuid,
     quantity: Decimal,
 ) -> Result<(), RepoError> {
+    let mut tx = pool.begin().await?;
+
     let sale_status = sqlx::query_scalar!(
-        r#"SELECT status AS "status: SaleStatus" FROM sales WHERE id = $1"#,
+        r#"SELECT status AS "status: SaleStatus" FROM sales WHERE id = $1 FOR UPDATE"#,
         sale_id
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(RepoError::NotFound)?;
 
@@ -206,7 +226,7 @@ pub async fn set_item_quantity(
             sale_id,
             product_id
         )
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     } else {
         let result = sqlx::query!(
@@ -215,7 +235,7 @@ pub async fn set_item_quantity(
             product_id,
             quantity
         )
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -223,7 +243,8 @@ pub async fn set_item_quantity(
         }
     }
 
-    refresh_total(pool, sale_id).await?;
+    refresh_total(&mut tx, sale_id).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -245,7 +266,8 @@ pub async fn set_customer(
     // completed in between, and a customer attached after completion would land
     // on a closed sale with no snapshot — a sale whose name could still change.
     // The draft guard therefore lives in the WHERE clause. The item mutations
-    // above read the status first because they branch on it; this one does not.
+    // above lock the row in a transaction because they span multiple tables;
+    // this one does not.
     let result = sqlx::query!(
         "UPDATE sales SET customer_id = $2 WHERE id = $1 AND status = 'draft'",
         sale_id,
@@ -591,7 +613,7 @@ pub async fn complete(
     .await?;
 
     if items.is_empty() {
-        return Err(RepoError::NotFound);
+        return Err(RepoError::EmptySale);
     }
 
     // Pass 1: lock each product, check stock and compute the total. Nothing is

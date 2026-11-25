@@ -2274,18 +2274,12 @@ async fn a_note_refuses_cash_no_tender_collected(pool: PgPool) {
     // has a tender somewhere. The refusal below is the guard for a ledger
     // that has drifted, and drift must be reported, not papered over.
     let sale = Uuid::now_v7();
-    sqlx::query(
-        r#"
-        INSERT INTO sales (id, status, total, created_by, completed_by, completed_at)
-        VALUES ($1, 'completed', $2, $3, $3, now())
-        "#,
-    )
-    .bind(sale)
-    .bind(dec!(100.00))
-    .bind(actor)
-    .execute(&pool)
-    .await
-    .expect("sale");
+    sqlx::query("INSERT INTO sales (id, status, created_by) VALUES ($1, 'draft', $2)")
+        .bind(sale)
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .expect("draft sale");
     sqlx::query(
         "INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price)
          VALUES ($1, $2, $3, $4, $5)",
@@ -2298,6 +2292,19 @@ async fn a_note_refuses_cash_no_tender_collected(pool: PgPool) {
     .execute(&pool)
     .await
     .expect("sale item");
+    sqlx::query(
+        r#"
+        UPDATE sales
+        SET status = 'completed', total = $2, completed_by = $3, completed_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(sale)
+    .bind(dec!(100.00))
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .expect("complete sale");
 
     let cookie = login_cookie(&pool, &password).await;
     let (status, _) = note_http(&pool, &cookie, sale, product, dec!(10)).await;

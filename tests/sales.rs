@@ -2338,3 +2338,545 @@ async fn a_sale_without_available_credit_applies_nothing(pool: PgPool) {
     assert_eq!(account_balance(&pool, customer).await, dec!(60.00));
     assert_eq!(sale_outstanding(&pool, customer, draft).await, dec!(60.00));
 }
+
+// --- Closed-sale immutability & concurrent item-mutation races (#94) -----
+
+/// Closed sales (`completed` and `cancelled`) and their `sale_items` must be
+/// immutable at the database level so no stray query or bug can alter a closed
+/// sale's lines or total after the fact.
+#[sqlx::test]
+async fn closed_sales_and_their_items_are_immutable_in_db(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let flour = seed_product(&pool, "Flour", dec!(100.00)).await;
+    let sugar = seed_product(&pool, "Sugar", dec!(50.00)).await;
+    stock(&pool, actor, flour, dec!(10)).await;
+    stock(&pool, actor, sugar, dec!(10)).await;
+
+    // 1. Completed sale with one item.
+    let completed = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, completed, flour, dec!(1))
+        .await
+        .unwrap();
+    complete(&pool, completed, actor, dec!(100.00))
+        .await
+        .unwrap();
+
+    // Another open draft to test cross-sale item reassignment.
+    let open_draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, open_draft, sugar, dec!(1))
+        .await
+        .unwrap();
+
+    let completed_item_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM sale_items WHERE sale_id = $1")
+            .bind(completed)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let draft_item_id: Uuid = sqlx::query_scalar("SELECT id FROM sale_items WHERE sale_id = $1")
+        .bind(open_draft)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Direct mutations on the completed sale row are rejected.
+    let err = sqlx::query("UPDATE sales SET total = 999.00 WHERE id = $1")
+        .bind(completed)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject updating a completed sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    let err = sqlx::query("DELETE FROM sales WHERE id = $1")
+        .bind(completed)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject deleting a completed sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    // Direct mutations on sale_items belonging to the completed sale are rejected.
+    let err = sqlx::query(
+        "INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(completed)
+    .bind(sugar)
+    .bind(dec!(2))
+    .bind(dec!(50.00))
+    .execute(&pool)
+    .await
+    .expect_err("DB must reject inserting an item into a completed sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    let err = sqlx::query("UPDATE sale_items SET quantity = 5 WHERE id = $1")
+        .bind(completed_item_id)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject updating an item on a completed sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    let err = sqlx::query("DELETE FROM sale_items WHERE id = $1")
+        .bind(completed_item_id)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject deleting an item from a completed sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    // Reassigning an item into or out of a completed sale is also rejected.
+    let err = sqlx::query("UPDATE sale_items SET sale_id = $1 WHERE id = $2")
+        .bind(completed)
+        .bind(draft_item_id)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject moving an item into a completed sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    let err = sqlx::query("UPDATE sale_items SET sale_id = $1 WHERE id = $2")
+        .bind(open_draft)
+        .bind(completed_item_id)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject moving an item out of a completed sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    // Completed sale remains completely intact.
+    let stored_total: Decimal = sqlx::query_scalar("SELECT total FROM sales WHERE id = $1")
+        .bind(completed)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored_total, dec!(100.00));
+    let completed_sale = sales::get(&pool, completed).await.unwrap();
+    assert_eq!(completed_sale.items.len(), 1);
+    assert_eq!(completed_sale.items[0].quantity, dec!(1));
+
+    // 2. Cancelled sale and its items are also immutable.
+    sales::cancel(&pool, open_draft).await.unwrap();
+
+    let err = sqlx::query("UPDATE sales SET total = 0 WHERE id = $1")
+        .bind(open_draft)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject updating a cancelled sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    let err = sqlx::query("DELETE FROM sales WHERE id = $1")
+        .bind(open_draft)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject deleting a cancelled sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    let err = sqlx::query(
+        "INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(open_draft)
+    .bind(flour)
+    .bind(dec!(1))
+    .bind(dec!(100.00))
+    .execute(&pool)
+    .await
+    .expect_err("DB must reject inserting an item into a cancelled sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    let err = sqlx::query("UPDATE sale_items SET quantity = 9 WHERE id = $1")
+        .bind(draft_item_id)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject updating an item on a cancelled sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+
+    let err = sqlx::query("DELETE FROM sale_items WHERE id = $1")
+        .bind(draft_item_id)
+        .execute(&pool)
+        .await
+        .expect_err("DB must reject deleting an item from a cancelled sale");
+    assert!(
+        err.to_string().contains("immutable"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Edge cases for the DB immutability triggers: draft deletion cascade still
+/// works, non-existent `sale_id` still surfaces FK violation `23503`,
+/// `ON CONFLICT DO UPDATE` and status reopen are rejected, and a raw
+/// `sale_items` write racing with cancellation serializes via `FOR SHARE`.
+#[sqlx::test]
+async fn sales_immutability_trigger_edge_cases(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let flour = seed_product(&pool, "Flour", dec!(100.00)).await;
+    let sugar = seed_product(&pool, "Sugar", dec!(50.00)).await;
+    stock(&pool, actor, flour, dec!(10)).await;
+
+    // 1. Deleting a draft sale with items still cascades cleanly.
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, flour, dec!(1)).await.unwrap();
+    sqlx::query("DELETE FROM sales WHERE id = $1")
+        .bind(draft)
+        .execute(&pool)
+        .await
+        .expect("draft deletion must cascade cleanly through sale_items trigger");
+    let remaining_items: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sale_items WHERE sale_id = $1")
+            .bind(draft)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining_items, 0);
+
+    // 2. Non-existent sale_id still surfaces standard FK violation (23503).
+    let err = sqlx::query(
+        "INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(Uuid::now_v7())
+    .bind(flour)
+    .bind(dec!(1))
+    .bind(dec!(100.00))
+    .execute(&pool)
+    .await
+    .expect_err("non-existent sale_id must fail FK check");
+    assert_eq!(
+        err.as_database_error().and_then(|e| e.code()).as_deref(),
+        Some("23503")
+    );
+
+    // 3. ON CONFLICT DO UPDATE and status reopen on a completed sale are rejected.
+    let completed = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, completed, flour, dec!(1))
+        .await
+        .unwrap();
+    complete(&pool, completed, actor, dec!(100.00))
+        .await
+        .unwrap();
+
+    let upsert_err = sqlx::query(
+        "INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (sale_id, product_id) DO UPDATE
+         SET quantity = sale_items.quantity + EXCLUDED.quantity",
+    )
+    .bind(Uuid::now_v7())
+    .bind(completed)
+    .bind(flour)
+    .bind(dec!(1))
+    .bind(dec!(100.00))
+    .execute(&pool)
+    .await
+    .expect_err("ON CONFLICT DO UPDATE on completed sale must be rejected");
+    assert!(upsert_err.to_string().contains("immutable"));
+
+    let reopen_err = sqlx::query("UPDATE sales SET status = 'draft' WHERE id = $1")
+        .bind(completed)
+        .execute(&pool)
+        .await
+        .expect_err("reopening a completed sale must be rejected");
+    assert!(reopen_err.to_string().contains("immutable"));
+
+    // 4. Raw sale_items INSERT racing with cancellation (FOR NO KEY UPDATE)
+    // serializes via the trigger's FOR SHARE lock and fails after commit.
+    let cancelling = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, cancelling, flour, dec!(1))
+        .await
+        .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("UPDATE sales SET status = 'cancelled' WHERE id = $1 AND status = 'draft'")
+        .bind(cancelling)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    let pool_clone = pool.clone();
+    let raw_insert = tokio::spawn(async move {
+        sqlx::query(
+            "INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(cancelling)
+        .bind(sugar)
+        .bind(dec!(1))
+        .bind(dec!(50.00))
+        .execute(&pool_clone)
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    tx.commit().await.unwrap();
+
+    let race_err = raw_insert
+        .await
+        .unwrap()
+        .expect_err("raw sale_items INSERT racing with cancel must fail after commit");
+    assert!(race_err.to_string().contains("immutable"));
+}
+
+/// Deterministic reproduction of the check-then-act race (#94): while a
+/// completion transaction holds `FOR UPDATE` on `sales`, concurrent
+/// `add_item`, `set_item_quantity`, and `remove_item` calls must block on the
+/// row lock instead of reading `status = 'draft'` unlocked and mutating the
+/// sale after completion commits.
+#[sqlx::test]
+async fn item_mutations_serialize_with_completion_lock(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let flour = seed_product(&pool, "Flour", dec!(100.00)).await;
+    let sugar = seed_product(&pool, "Sugar", dec!(50.00)).await;
+    stock(&pool, actor, flour, dec!(20)).await;
+    stock(&pool, actor, sugar, dec!(20)).await;
+
+    for mode in ["add_item", "set_item_quantity", "remove_item"] {
+        let draft = sales::open_draft(&pool, actor).await.unwrap();
+        sales::add_item(&pool, draft, flour, dec!(1)).await.unwrap();
+
+        // Hold `FOR UPDATE` on the draft, mirroring `sales::repository::complete`
+        // between its row lock and its final `UPDATE sales SET status = 'completed'`.
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM sales WHERE id = $1 FOR UPDATE")
+            .bind(draft)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+
+        let pool_clone = pool.clone();
+        let mutation = tokio::spawn(async move {
+            match mode {
+                "add_item" => sales::add_item(&pool_clone, draft, sugar, dec!(2)).await,
+                "set_item_quantity" => {
+                    sales::set_item_quantity(&pool_clone, draft, flour, dec!(5)).await
+                }
+                "remove_item" => sales::remove_item(&pool_clone, draft, flour).await,
+                _ => unreachable!(),
+            }
+        });
+
+        // Give the concurrent item mutation time to reach its status check.
+        // Without `FOR UPDATE`, it passes the unlocked status read and writes
+        // to `sale_items` before this transaction closes the sale.
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        sqlx::query(
+            "UPDATE sales
+             SET status = 'completed', total = $2, completed_by = $3, completed_at = now()
+             WHERE id = $1",
+        )
+        .bind(draft)
+        .bind(dec!(100.00))
+        .bind(actor)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let err = mutation
+            .await
+            .unwrap()
+            .expect_err(&format!("{mode} must fail after completion commits"));
+        assert!(
+            matches!(err, SalesError::NotEditable),
+            "{mode} returned {err:?}, expected NotEditable"
+        );
+
+        let sale = sales::get(&pool, draft).await.unwrap();
+        assert_eq!(sale.status, SaleStatus::Completed);
+        assert_eq!(sale.items.len(), 1, "{mode} mutated completed sale items");
+        assert_eq!(sale.items[0].product_id, flour);
+        assert_eq!(sale.items[0].quantity, dec!(1));
+        assert_eq!(sale.total(), dec!(100.00));
+
+        let stored_total: Decimal = sqlx::query_scalar("SELECT total FROM sales WHERE id = $1")
+            .bind(draft)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_total,
+            dec!(100.00),
+            "{mode} overwrote completed sales.total"
+        );
+    }
+}
+
+/// Racing HTTP item mutations (`POST /items`, `PUT /items/{product_id}`,
+/// `DELETE /items/{product_id}`) against `POST /complete` must never leave a
+/// completed sale whose items or `total` diverge from its recorded payments and
+/// stock movements.
+#[sqlx::test]
+async fn concurrent_http_item_mutations_and_complete_preserve_invariants(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let flour = seed_product(&pool, "Flour", dec!(100.00)).await;
+    let sugar = seed_product(&pool, "Sugar", dec!(50.00)).await;
+    stock(&pool, actor, flour, dec!(50)).await;
+    stock(&pool, actor, sugar, dec!(50)).await;
+    let method = cash(&pool).await;
+    let cookie = login_cookie(&pool, &password).await;
+
+    let mut completed_rounds = 0_u32;
+    for round in 0..6 {
+        let draft = sales::open_draft(&pool, actor).await.unwrap();
+        sales::add_item(&pool, draft, flour, dec!(1)).await.unwrap();
+
+        let complete_req = http_complete(
+            &pool,
+            &cookie,
+            draft,
+            serde_json::json!({
+                "payments": [{ "payment_method_id": method, "amount": "100.00" }]
+            }),
+        );
+
+        let mutate_req = async {
+            let req = match round % 3 {
+                0 => with_session("POST", &format!("/api/v1/sales/{draft}/items"), &cookie)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({
+                            "product_id": sugar,
+                            "quantity": "1"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+                1 => with_session(
+                    "PUT",
+                    &format!("/api/v1/sales/{draft}/items/{flour}"),
+                    &cookie,
+                )
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "quantity": "2" }).to_string(),
+                ))
+                .unwrap(),
+                _ => with_session(
+                    "DELETE",
+                    &format!("/api/v1/sales/{draft}/items/{flour}"),
+                    &cookie,
+                )
+                .body(axum::body::Body::empty())
+                .unwrap(),
+            };
+            app(pool.clone()).oneshot(req).await.unwrap()
+        };
+
+        let (complete_res, mutate_res) = tokio::join!(complete_req, mutate_req);
+        let complete_status = complete_res.status();
+        let mutate_status = mutate_res.status();
+
+        assert!(
+            !complete_status.is_server_error(),
+            "round {round}: complete returned 5xx: {complete_status}"
+        );
+        assert!(
+            !mutate_status.is_server_error(),
+            "round {round}: item mutation returned 5xx: {mutate_status}"
+        );
+
+        let sale = sales::get(&pool, draft).await.unwrap();
+        let stored_total: Decimal =
+            sqlx::query_scalar("SELECT COALESCE(total, 0) FROM sales WHERE id = $1")
+                .bind(draft)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        if complete_status == axum::http::StatusCode::OK {
+            completed_rounds += 1;
+            // Completion won: the mutation must have been rejected with 409,
+            // and items, stored total, payments, and stock must all match 100.00.
+            assert_eq!(
+                mutate_status,
+                axum::http::StatusCode::CONFLICT,
+                "round {round}: mutation succeeded on a completed sale"
+            );
+            assert_eq!(sale.status, SaleStatus::Completed);
+            assert_eq!(sale.items.len(), 1);
+            assert_eq!(sale.items[0].product_id, flour);
+            assert_eq!(sale.items[0].quantity, dec!(1));
+            assert_eq!(sale.total(), dec!(100.00));
+            assert_eq!(stored_total, dec!(100.00));
+
+            let paid: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(amount), 0)
+                 FROM wallet_movements
+                 WHERE sale_id = $1 AND kind = 'sale_payment'",
+            )
+            .bind(draft)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(paid, stored_total);
+        } else {
+            // Mutation won before completion: completion must have failed with
+            // 422 (payment mismatch or empty sale), leaving the sale as a draft
+            // with zero wallet movements.
+            assert_eq!(
+                complete_status,
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY
+            );
+            assert_eq!(mutate_status, axum::http::StatusCode::OK);
+            assert_eq!(sale.status, SaleStatus::Draft);
+            assert_eq!(stored_total, sale.total());
+
+            let paid: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(amount), 0)
+                 FROM wallet_movements
+                 WHERE sale_id = $1 AND kind = 'sale_payment'",
+            )
+            .bind(draft)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(paid, Decimal::ZERO);
+
+            // Clean up the open draft so the next round opens a fresh one.
+            sales::cancel(&pool, draft).await.unwrap();
+        }
+    }
+
+    // Stock deducted across all rounds matches completed sales exactly:
+    // 1 unit of flour per completed round, 0 units of sugar ever deducted.
+    assert_eq!(
+        current_stock(&pool, flour).await,
+        dec!(50) - Decimal::from(completed_rounds)
+    );
+    assert_eq!(current_stock(&pool, sugar).await, dec!(50));
+}
