@@ -35,6 +35,30 @@ fn app(pool: PgPool) -> axum::Router {
     router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
 }
 
+/// Test-only helper to age a completed sale for receivables aging-bucket tests.
+/// Temporarily disables the closed-sale immutability trigger inside a single
+/// transaction so production keeps strict immutability without loopholes.
+async fn backdate_completed_sale(pool: &PgPool, sale_id: Uuid, days_ago: i32) {
+    let mut tx = pool.begin().await.expect("begin backdate tx");
+    sqlx::query("ALTER TABLE sales DISABLE TRIGGER sales_prevent_closed_mutation")
+        .execute(&mut *tx)
+        .await
+        .expect("disable immutability trigger");
+    sqlx::query(
+        "UPDATE sales SET completed_at = NOW() - ($1::int * INTERVAL '1 day') WHERE id = $2",
+    )
+    .bind(days_ago)
+    .bind(sale_id)
+    .execute(&mut *tx)
+    .await
+    .expect("backdate sale");
+    sqlx::query("ALTER TABLE sales ENABLE TRIGGER sales_prevent_closed_mutation")
+        .execute(&mut *tx)
+        .await
+        .expect("re-enable immutability trigger");
+    tx.commit().await.expect("commit backdate tx");
+}
+
 async fn seed_owner(pool: &PgPool) -> (Uuid, String) {
     let password = test_password();
     let email = validation::ValidatedEmail::parse("owner@pyme.com").expect("email");
@@ -674,14 +698,7 @@ async fn receivables_filters_open_positions_and_buckets_aging_from_sale_date(poo
         let (sale_id, _) =
             complete_on_account_sale(&app, &cookie, aging_id, product_id, qty, total, None).await;
         if days_ago > 0 {
-            sqlx::query(
-                "UPDATE sales SET completed_at = NOW() - ($1::int * INTERVAL '1 day') WHERE id = $2",
-            )
-            .bind(days_ago)
-            .bind(sale_id)
-            .execute(&pool)
-            .await
-            .expect("backdate sale");
+            backdate_completed_sale(&pool, sale_id, days_ago).await;
         }
     }
     let (st, _) = send(
@@ -706,11 +723,7 @@ async fn receivables_filters_open_positions_and_buckets_aging_from_sale_date(poo
         None,
     )
     .await;
-    sqlx::query("UPDATE sales SET completed_at = NOW() - INTERVAL '45 days' WHERE id = $1")
-        .bind(offset_sale)
-        .execute(&pool)
-        .await
-        .expect("backdate offsetting sale");
+    backdate_completed_sale(&pool, offset_sale, 45).await;
     let (st, _) = send(
         &app,
         "POST",
@@ -1041,11 +1054,7 @@ async fn statement_and_receivables_cover_credit_refunds_partial_aging_empty_and_
         &app, &cookie, partial_id, product_id, "4.00", "200.00", None,
     )
     .await;
-    sqlx::query("UPDATE sales SET completed_at = NOW() - INTERVAL '75 days' WHERE id = $1")
-        .bind(sale_id)
-        .execute(&pool)
-        .await
-        .expect("backdate");
+    backdate_completed_sale(&pool, sale_id, 75).await;
     let (st, _) = send(
         &app,
         "POST",

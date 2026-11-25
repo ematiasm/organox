@@ -105,6 +105,7 @@ fn map_repo_error(err: RepoError) -> SalesError {
             requested,
         },
         RepoError::NotEditable => SalesError::NotEditable,
+        RepoError::EmptySale => SalesError::EmptySale,
         RepoError::PaymentAmountNotPositive => SalesError::PaymentAmountNotPositive,
         RepoError::PaymentAmountPrecision => SalesError::PaymentAmountPrecision,
         RepoError::PaymentMismatch {
