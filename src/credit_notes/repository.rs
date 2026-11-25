@@ -114,16 +114,101 @@ fn map_account_error(err: customer_accounts::RepoError) -> RepoError {
 }
 
 /// One tender that collected money for the sale: where the money went, and
-/// how much of it this sale's refunds may hand back.
-struct Tender {
+/// how much of it this sale's refunds may still hand back.
+struct RemainingTender {
     wallet_id: Uuid,
     wallet_name: String,
     payment_method_id: Uuid,
     payment_method_name: String,
-    collected: Decimal,
+    remaining: Decimal,
 }
 
 const IDEMPOTENCY_KEY_UNIQUE: &str = "credit_notes_sale_idempotency_key_unique";
+
+/// Remaining refundable capacity per `(wallet_id, payment_method_id)` that
+/// collected money for this sale (upfront `sale_payment` movements plus
+/// allocated `receipt` entries, minus prior `sale_refund` movements).
+///
+/// Ordered deterministically: till payments first, then receipts, ordered by
+/// their earliest timestamp and leg id so tie-breaking is stable across notes.
+async fn remaining_tenders<'e, E>(
+    executor: E,
+    sale_id: Uuid,
+) -> Result<Vec<RemainingTender>, RepoError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let rows = sqlx::query!(
+        r#"
+        WITH collected_legs AS (
+            SELECT m.wallet_id,
+                   m.payment_method_id,
+                   m.amount,
+                   0 AS source_rank,
+                   m.created_at,
+                   m.id::text AS leg_id
+            FROM wallet_movements m
+            WHERE m.sale_id = $1 AND m.kind = 'sale_payment'
+            UNION ALL
+            SELECT m.wallet_id,
+                   m.payment_method_id,
+                   a.amount,
+                   1 AS source_rank,
+                   e.created_at,
+                   e.id::text AS leg_id
+            FROM customer_account_allocations a
+            JOIN customer_account_entries e ON e.id = a.entry_id
+            JOIN wallet_movements m ON m.id = e.wallet_movement_id
+            WHERE a.sale_id = $1 AND e.kind = 'receipt'
+        ),
+        collected_by_tender AS (
+            SELECT wallet_id,
+                   payment_method_id,
+                   SUM(amount) AS collected,
+                   MIN(source_rank) AS min_rank,
+                   MIN(created_at) AS first_at,
+                   MIN(leg_id) AS first_leg_id
+            FROM collected_legs
+            GROUP BY wallet_id, payment_method_id
+        ),
+        refunded_by_tender AS (
+            SELECT wallet_id,
+                   payment_method_id,
+                   SUM(amount) AS refunded
+            FROM wallet_movements
+            WHERE sale_id = $1 AND kind = 'sale_refund'
+            GROUP BY wallet_id, payment_method_id
+        )
+        SELECT c.wallet_id AS "wallet_id!: Uuid",
+               w.name AS "wallet_name!",
+               c.payment_method_id AS "payment_method_id!: Uuid",
+               pm.name AS "payment_method_name!",
+               GREATEST(c.collected - COALESCE(r.refunded, 0), 0)::numeric(14, 2)
+                   AS "remaining!: Decimal"
+        FROM collected_by_tender c
+        JOIN wallets w ON w.id = c.wallet_id
+        JOIN payment_methods pm ON pm.id = c.payment_method_id
+        LEFT JOIN refunded_by_tender r
+               ON r.wallet_id = c.wallet_id AND r.payment_method_id = c.payment_method_id
+        WHERE c.collected - COALESCE(r.refunded, 0) > 0
+        ORDER BY c.min_rank, c.first_at, c.first_leg_id, c.wallet_id, c.payment_method_id
+        "#,
+        sale_id
+    )
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| RemainingTender {
+            wallet_id: row.wallet_id,
+            wallet_name: row.wallet_name,
+            payment_method_id: row.payment_method_id,
+            payment_method_name: row.payment_method_name,
+            remaining: row.remaining,
+        })
+        .collect())
+}
 
 /// The sale's lines with what each one has already given back.
 ///
@@ -753,113 +838,26 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
     let mut refunds = Vec::new();
 
     if cash > Decimal::ZERO {
-        // The tenders, in one deterministic order: the payments taken at the
-        // till first, then the receipts whose allocations paid this sale —
-        // for those, what was collected FOR THIS SALE is the allocation
-        // amount, not the receipt's paper total. Ordered by `created_at, id`
-        // within each group, so the split is stable across notes.
-        let mut tenders: Vec<Tender> = sqlx::query!(
-            r#"
-            SELECT m.wallet_id,
-                   w.name AS "wallet_name!",
-                   m.payment_method_id AS "payment_method_id!",
-                   pm.name AS "payment_method_name!",
-                   m.amount
-            FROM wallet_movements m
-            JOIN wallets w ON w.id = m.wallet_id
-            JOIN payment_methods pm ON pm.id = m.payment_method_id
-            WHERE m.sale_id = $1 AND m.kind = 'sale_payment'
-            ORDER BY m.created_at, m.id
-            "#,
-            new.sale_id
-        )
-        .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .map(|payment| Tender {
-            wallet_id: payment.wallet_id,
-            wallet_name: payment.wallet_name,
-            payment_method_id: payment.payment_method_id,
-            payment_method_name: payment.payment_method_name,
-            collected: payment.amount,
-        })
-        .collect();
+        // Allocate this note's cash refund proportionally across each tender's
+        // remaining refundable capacity (`collected - prior_refunded`). Unlike
+        // subtracting two cumulative Largest Remainder splits — which can go
+        // negative with 3+ tenders (the Alabama paradox) — allocating directly
+        // against remaining capacities is strictly non-negative for any number
+        // of tenders and never exceeds what any tender collected.
+        let tenders = remaining_tenders(&mut *tx, new.sale_id).await?;
+        let caps: Vec<Decimal> = tenders.iter().map(|t| t.remaining).collect();
+        let shares = split_cash_refund(cash, &caps);
 
-        let collected_by_receipt = sqlx::query!(
-            r#"
-            SELECT m.wallet_id,
-                   w.name AS "wallet_name!",
-                   m.payment_method_id AS "payment_method_id!",
-                   pm.name AS "payment_method_name!",
-                   a.amount
-            FROM customer_account_allocations a
-            JOIN customer_account_entries e ON e.id = a.entry_id
-            JOIN wallet_movements m ON m.id = e.wallet_movement_id
-            JOIN wallets w ON w.id = m.wallet_id
-            JOIN payment_methods pm ON pm.id = m.payment_method_id
-            WHERE a.sale_id = $1 AND e.kind = 'receipt'
-            ORDER BY e.created_at, e.id
-            "#,
-            new.sale_id
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-
-        tenders.extend(collected_by_receipt.into_iter().map(|receipt| Tender {
-            wallet_id: receipt.wallet_id,
-            wallet_name: receipt.wallet_name,
-            payment_method_id: receipt.payment_method_id,
-            payment_method_name: receipt.payment_method_name,
-            collected: receipt.amount,
-        }));
-
-        // The cash the earlier notes already refunded for this sale: notes
-        // carry `total`, the ledger's `credit_note` entries carry the
-        // cancelled part, so the difference is what already left the wallets.
-        // Both sums exclude the note being created — its row exists, its
-        // cancellation may already exist too, and counting either would
-        // subtract this note from itself.
-        let cash_before = sqlx::query_scalar!(
-            r#"
-            SELECT (COALESCE((SELECT SUM(total) FROM credit_notes
-                              WHERE sale_id = $1 AND id <> $2), 0)
-                  - COALESCE((SELECT -SUM(amount) FROM customer_account_entries
-                              WHERE sale_id = $1 AND kind = 'credit_note'
-                                AND credit_note_id <> $2), 0))::numeric(14, 2)
-                   AS "cash_before!: Decimal"
-            "#,
-            new.sale_id,
-            note_id
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-
-        // Refunds are not tagged with the tender they came from, so the
-        // split cannot be recomputed per note: it is computed cumulatively
-        // and subtracted. `after` is every note so far including this one,
-        // `before` every note before it, and the difference is what THIS
-        // note adds per tender. Three notes of 33.33 on a 100 sale refund
-        // 99.99 whatever order they arrive in, and never a cent more.
-        let collected: Vec<Decimal> = tenders.iter().map(|t| t.collected).collect();
-        let after = split_cash_refund(cash_before + cash, &collected);
-        let before = split_cash_refund(cash_before, &collected);
-
-        let increments: Vec<Decimal> = after
-            .iter()
-            .zip(&before)
-            .map(|(after_share, before_share)| *after_share - *before_share)
-            .collect();
-
-        // The increments must be this note's cash, to the cent, and each one
-        // must be writable: a negative increment would ask a wallet to take
-        // money back, and a short sum means no tender collected what the
-        // note promises in cash. Refusing whole is the only honest answer.
-        let refunded: Decimal = increments.iter().copied().sum();
-        if refunded != cash || increments.iter().any(|share| *share < Decimal::ZERO) {
+        // The shares must add up to this note's cash, to the cent, and each
+        // one must be non-negative: a short sum means the tenders do not hold
+        // what the note promises in cash. Refusing whole is the only honest
+        // answer.
+        let refunded: Decimal = shares.iter().copied().sum();
+        if refunded != cash || shares.iter().any(|share| *share < Decimal::ZERO) {
             return Err(RepoError::RefundDoesNotAddUp { cash, refunded });
         }
 
-        for (tender, share) in tenders.iter().zip(increments) {
+        for (tender, share) in tenders.iter().zip(shares) {
             // A zero share would violate `wallet_movements.amount > 0`, and a
             // movement of nothing explains nothing.
             if share <= Decimal::ZERO {
