@@ -116,7 +116,7 @@ async function openCustomer(page, name) {
 		// --- C2: edit one field, reload, still there ---------------------------
 		try {
 			await openCustomer(page, NAME);
-			await page.getByRole('button', { name: 'Edit' }).click();
+			await page.getByRole('button', { name: 'Edit', exact: true }).click();
 			await page.waitForSelector('#phone', { timeout: 5000 });
 			const newPhone = `${PHONE}9`;
 			await page.fill('#phone', newPhone);

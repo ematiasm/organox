@@ -172,16 +172,10 @@
 		if (limit === '0.00' || limit === '0') return '0.00 (cash only)';
 		return limit;
 	}
-
-	function balanceHint(balance: string): string {
-		if (balance.startsWith('-')) return 'Credit with supplier';
-		if (balance === '0.00' || balance === '0') return 'Settled';
-		return 'We owe supplier';
-	}
 </script>
 
 <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
-	<SheetContent side="right" class="overflow-y-auto sm:max-w-xl">
+	<SheetContent side="right" class="overflow-y-auto sm:max-w-xl lg:max-w-2xl">
 		{#if creating || (supplier && editing)}
 			<SheetHeader>
 				<SheetTitle>{creating ? 'New supplier' : 'Edit supplier'}</SheetTitle>
@@ -265,81 +259,86 @@
 				</div>
 			</form>
 		{:else if supplier}
-			<SheetHeader>
-				<SheetTitle>{supplier.name}</SheetTitle>
-				<SheetDescription>{supplier.tax_id ?? 'No document'}</SheetDescription>
-			</SheetHeader>
-
-			<div class="flex items-center gap-2 px-4">
-				<Button variant="outline" size="sm" onclick={startEdit}>Edit</Button>
-				{#if supplier.is_active}
-					{#if confirmDeactivate}
-						<Button
-							variant="destructive"
-							size="sm"
-							disabled={deactivating}
-							onclick={deactivate}
-						>
-							{deactivating ? 'Deactivating…' : 'Confirm deactivation'}
-						</Button>
-						<Button variant="ghost" size="sm" onclick={() => (confirmDeactivate = false)}>
-							Cancel
-						</Button>
-					{:else}
-						<Button
-							variant="destructive"
-							size="sm"
-							onclick={() => (confirmDeactivate = true)}>Deactivate</Button
-						>
-					{/if}
-				{/if}
-				{#if formError}
-					<p class="text-sm text-destructive">{formError}</p>
-				{/if}
-			</div>
-
-			<div class="grid grid-cols-3 gap-2 px-4">
-				<div class="rounded-md border border-border p-2.5">
-					<div class="text-xs text-muted-foreground">Balance</div>
-					<div class="mt-0.5 text-base font-semibold tabular-nums">{supplier.balance}</div>
-					<div class="text-[11px] text-muted-foreground">{balanceHint(supplier.balance)}</div>
-				</div>
-				<div class="rounded-md border border-border p-2.5">
-					<div class="text-xs text-muted-foreground">Available credit</div>
-					<div class="mt-0.5 text-base font-semibold tabular-nums">
-						{supplier.available_credit}
-					</div>
-					<div class="text-[11px] text-muted-foreground">Unapplied payments</div>
-				</div>
-				<div class="rounded-md border border-border p-2.5">
-					<div class="text-xs text-muted-foreground">Credit limit</div>
-					<div class="mt-0.5 text-base font-semibold tabular-nums">
-						{creditLimitLabel(supplier.credit_limit)}
-					</div>
-					<div class="text-[11px] text-muted-foreground">Max exposure</div>
-				</div>
-			</div>
-
-			<dl class="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-2 px-4 text-sm">
-				<dt class="text-muted-foreground">Document</dt>
-				<dd>{supplier.tax_id ?? '—'}</dd>
-				<dt class="text-muted-foreground">Email</dt>
-				<dd>{supplier.email ?? '—'}</dd>
-				<dt class="text-muted-foreground">Phone</dt>
-				<dd>{supplier.phone ?? '—'}</dd>
-				<dt class="text-muted-foreground">Status</dt>
-				<dd>
+			<SheetHeader class="gap-3 border-b border-border pb-4">
+				<div class="flex items-center gap-2 pr-8">
+					<SheetTitle>{supplier.name}</SheetTitle>
 					<Badge variant={supplier.is_active ? 'outline' : 'secondary'}>
 						{supplier.is_active ? 'Active' : 'Inactive'}
 					</Badge>
-				</dd>
-				<dt class="text-muted-foreground">Created</dt>
-				<dd class="text-muted-foreground">{when(supplier.created_at)}</dd>
-				<dt class="text-muted-foreground">Updated</dt>
-				<dd class="text-muted-foreground">{when(supplier.updated_at)}</dd>
-			</dl>
+				</div>
 
-			<SupplierAccountPanel supplierId={supplier.id} onMutated={onSaved} />
+				<div class="rounded-lg border border-border bg-muted/30 p-3">
+					<div class="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+						<span class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+							Supplier details
+						</span>
+						<div class="flex items-center gap-1.5">
+							<Button variant="outline" size="xs" onclick={startEdit}>Edit</Button>
+							{#if supplier.is_active}
+								{#if confirmDeactivate}
+									<Button
+										variant="destructive"
+										size="xs"
+										disabled={deactivating}
+										onclick={deactivate}
+									>
+										{deactivating ? 'Deactivating…' : 'Confirm deactivation'}
+									</Button>
+									<Button variant="ghost" size="xs" onclick={() => (confirmDeactivate = false)}>
+										Cancel
+									</Button>
+								{:else}
+									<Button
+										variant="destructive"
+										size="xs"
+										onclick={() => (confirmDeactivate = true)}>Deactivate</Button
+									>
+								{/if}
+							{/if}
+						</div>
+					</div>
+
+					{#if formError}
+						<p class="mb-2 text-xs text-destructive" role="alert">{formError}</p>
+					{/if}
+
+					<dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Document</dt>
+							<dd class="truncate font-medium">{supplier.tax_id ?? '—'}</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Email</dt>
+							<dd class="truncate">{supplier.email ?? '—'}</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Phone</dt>
+							<dd class="truncate">{supplier.phone ?? '—'}</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Credit limit</dt>
+							<dd class="truncate tabular-nums font-medium">
+								{creditLimitLabel(supplier.credit_limit)}
+							</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Created</dt>
+							<dd class="truncate text-muted-foreground">{when(supplier.created_at)}</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Updated</dt>
+							<dd class="truncate text-muted-foreground">{when(supplier.updated_at)}</dd>
+						</div>
+					</dl>
+				</div>
+			</SheetHeader>
+
+			<SupplierAccountPanel
+				supplierId={supplier.id}
+				balance={supplier.balance}
+				availableCredit={supplier.available_credit}
+				onMutated={onSaved}
+			/>
 		{:else}
 			<SheetHeader>
 				<SheetTitle>Supplier not found</SheetTitle>

@@ -236,9 +236,5 @@ participate in the same ledger and are summarized in their own docs.
 - **Interest or late fees**: balances do not accrue interest automatically.
 - **Store credit from cash returns**: a credit note's cash surplus above debt
   always refunds the original tenders rather than turning into `U`.
-- **Credit refund and adjustment UI forms**: the frontend covers on-account
-  POS checkout, customer list balances, customer drawer credit limit /
-  statement / receipt form, and the `/receivables` aging screen; credit refunds
-  and manual adjustments are API-only in this delivery.
 - **Statement export**: statements and receivables are viewed in the UI or via
   JSON, not exported to PDF or CSV.

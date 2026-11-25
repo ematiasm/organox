@@ -255,10 +255,5 @@ are summarized in `docs/purchases.md` and `docs/suppliers.md`.
   `purchases.completed_at`; there is no per-supplier term or per-purchase due
   date.
 - **Interest or late fees**: balances do not accrue interest automatically.
-- **Credit refund and adjustment UI forms**: the frontend covers on-account
-  purchase completion (`/operations/purchases`), supplier list balances and
-  credit limits (`/suppliers`), supplier drawer credit limit / statement /
-  pay-supplier form, and the `/payables` aging screen; credit refunds and
-  manual adjustments are API-only in this delivery.
 - **Statement export**: statements and payables are viewed in the UI or via
   JSON, not exported to PDF or CSV.

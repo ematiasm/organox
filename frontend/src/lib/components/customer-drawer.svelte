@@ -192,16 +192,10 @@
 		if (limit === '0.00' || limit === '0') return '0.00 (cash only)';
 		return limit;
 	}
-
-	function balanceHint(balance: string): string {
-		if (balance.startsWith('-')) return 'In customer favor';
-		if (balance === '0.00' || balance === '0') return 'Settled';
-		return 'Customer owes';
-	}
 </script>
 
 <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
-	<SheetContent side="right" class="overflow-y-auto sm:max-w-xl">
+	<SheetContent side="right" class="overflow-y-auto sm:max-w-xl lg:max-w-2xl">
 		{#if creating || (customer && editing)}
 			<SheetHeader>
 				<SheetTitle>{creating ? 'New customer' : 'Edit customer'}</SheetTitle>
@@ -272,76 +266,81 @@
 				</div>
 			</form>
 		{:else if customer}
-			<SheetHeader>
-				<SheetTitle>{customer.name}</SheetTitle>
-				<SheetDescription>{customer.tax_id ?? 'No document'}</SheetDescription>
-			</SheetHeader>
-
-			<div class="flex items-center gap-2 px-4">
-				<Button variant="outline" size="sm" onclick={startEdit}>Edit</Button>
-				{#if confirmDeactivate}
-					<Button variant="destructive" size="sm" disabled={deactivating} onclick={deactivate}>
-						{deactivating ? 'Deactivating…' : 'Confirm deactivation'}
-					</Button>
-					<Button variant="ghost" size="sm" onclick={() => (confirmDeactivate = false)}>
-						Cancel
-					</Button>
-				{:else}
-					<!-- Two steps instead of a dialog: one extra click, no new component,
-					     and the destructive button stays visible as the price of the action. -->
-					<Button
-						variant="destructive"
-						size="sm"
-						onclick={() => (confirmDeactivate = true)}>Deactivate</Button
-					>
-				{/if}
-				{#if formError}
-					<p class="text-sm text-destructive">{formError}</p>
-				{/if}
-			</div>
-
-			<div class="grid grid-cols-3 gap-2 px-4">
-				<div class="rounded-md border border-border p-2.5">
-					<div class="text-xs text-muted-foreground">Balance</div>
-					<div class="mt-0.5 text-base font-semibold tabular-nums">{customer.balance}</div>
-					<div class="text-[11px] text-muted-foreground">{balanceHint(customer.balance)}</div>
-				</div>
-				<div class="rounded-md border border-border p-2.5">
-					<div class="text-xs text-muted-foreground">Available credit</div>
-					<div class="mt-0.5 text-base font-semibold tabular-nums">
-						{customer.available_credit}
-					</div>
-					<div class="text-[11px] text-muted-foreground">Unapplied receipts</div>
-				</div>
-				<div class="rounded-md border border-border p-2.5">
-					<div class="text-xs text-muted-foreground">Credit limit</div>
-					<div class="mt-0.5 text-base font-semibold tabular-nums">
-						{creditLimitLabel(customer.credit_limit)}
-					</div>
-					<div class="text-[11px] text-muted-foreground">Max exposure</div>
-				</div>
-			</div>
-
-			<dl class="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-2 px-4 text-sm">
-				<dt class="text-muted-foreground">Document</dt>
-				<dd>{customer.tax_id ?? '—'}</dd>
-				<dt class="text-muted-foreground">Email</dt>
-				<dd>{customer.email ?? '—'}</dd>
-				<dt class="text-muted-foreground">Phone</dt>
-				<dd>{customer.phone ?? '—'}</dd>
-				<dt class="text-muted-foreground">Status</dt>
-				<dd>
+			<SheetHeader class="gap-3 border-b border-border pb-4">
+				<div class="flex items-center gap-2 pr-8">
+					<SheetTitle>{customer.name}</SheetTitle>
 					<Badge variant={customer.is_active ? 'outline' : 'secondary'}>
 						{customer.is_active ? 'Active' : 'Inactive'}
 					</Badge>
-				</dd>
-				<dt class="text-muted-foreground">Created</dt>
-				<dd class="text-muted-foreground">{when(customer.created_at)}</dd>
-				<dt class="text-muted-foreground">Updated</dt>
-				<dd class="text-muted-foreground">{when(customer.updated_at)}</dd>
-			</dl>
+				</div>
 
-			<CustomerAccountPanel customerId={customer.id} onMutated={onSaved} />
+				<div class="rounded-lg border border-border bg-muted/30 p-3">
+					<div class="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+						<span class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+							Customer details
+						</span>
+						<div class="flex items-center gap-1.5">
+							<Button variant="outline" size="xs" onclick={startEdit}>Edit</Button>
+							{#if confirmDeactivate}
+								<Button variant="destructive" size="xs" disabled={deactivating} onclick={deactivate}>
+									{deactivating ? 'Deactivating…' : 'Confirm deactivation'}
+								</Button>
+								<Button variant="ghost" size="xs" onclick={() => (confirmDeactivate = false)}>
+									Cancel
+								</Button>
+							{:else}
+								<!-- Two steps instead of a dialog: one extra click, no new component,
+								     and the destructive button stays visible as the price of the action. -->
+								<Button
+									variant="destructive"
+									size="xs"
+									onclick={() => (confirmDeactivate = true)}>Deactivate</Button
+								>
+							{/if}
+						</div>
+					</div>
+
+					{#if formError}
+						<p class="mb-2 text-xs text-destructive" role="alert">{formError}</p>
+					{/if}
+
+					<dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Document</dt>
+							<dd class="truncate font-medium">{customer.tax_id ?? '—'}</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Email</dt>
+							<dd class="truncate">{customer.email ?? '—'}</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Phone</dt>
+							<dd class="truncate">{customer.phone ?? '—'}</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Credit limit</dt>
+							<dd class="truncate tabular-nums font-medium">
+								{creditLimitLabel(customer.credit_limit)}
+							</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Created</dt>
+							<dd class="truncate text-muted-foreground">{when(customer.created_at)}</dd>
+						</div>
+						<div class="min-w-0">
+							<dt class="text-[11px] text-muted-foreground">Updated</dt>
+							<dd class="truncate text-muted-foreground">{when(customer.updated_at)}</dd>
+						</div>
+					</dl>
+				</div>
+			</SheetHeader>
+
+			<CustomerAccountPanel
+				customerId={customer.id}
+				balance={customer.balance}
+				availableCredit={customer.available_credit}
+				onMutated={onSaved}
+			/>
 		{:else}
 			<SheetHeader>
 				<SheetTitle>Customer not found</SheetTitle>

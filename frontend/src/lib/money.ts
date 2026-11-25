@@ -83,3 +83,15 @@ export function allocatePurchasesOldestFirst(
 ): Record<string, string> {
 	return allocateByOldest(amountCents, purchases, (purchase) => purchase.purchase_id);
 }
+
+/**
+ * Maximum credit eligible for refund (`min(unappliedCredit, -balance)` when
+ * both are positive, else `0n`). Mirrors the server invariant
+ * `amount <= U && balance + amount <= 0`.
+ */
+export function maxRefundableCents(balance: string, unappliedCredit: string): bigint {
+	const bal = parseCents(balance);
+	const unapplied = parseCents(unappliedCredit);
+	if (bal === null || unapplied === null || bal >= 0n || unapplied <= 0n) return 0n;
+	return maxCents(0n, minCents(unapplied, -bal));
+}
