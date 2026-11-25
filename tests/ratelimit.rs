@@ -354,3 +354,246 @@ async fn blocking_one_account_does_not_block_another(pool: PgPool) {
     let (status, _) = attempt(&pool, "b@pyme.com", &password_b).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+// --- Concurrency and edge-case regressions (issue #98) -----------------
+
+fn state_with_max_failures(pool: PgPool, max_failures: i32) -> AppState {
+    AppState::with_policies(
+        pool,
+        false,
+        AccountPolicy {
+            max_failures,
+            window: Duration::from_secs(15 * 60),
+            block_duration: Duration::from_secs(5 * 60),
+        },
+        IpPolicy {
+            max_requests: 100,
+            window: Duration::from_secs(60),
+            burst: 100,
+        },
+    )
+}
+
+/// `APP_LOGIN_MAX_FAILURES=1` must lock on the very first failed login,
+/// while still allowing a valid first login without leaving a lock behind.
+#[sqlx::test]
+async fn max_failures_one_locks_on_first_failure(pool: PgPool) {
+    let password = seed_user(&pool, "one@pyme.com").await;
+    let wrong = test_password();
+    let app = router(state_with_max_failures(pool.clone(), 1)).layer(CookieManagerLayer::new());
+
+    // A valid first login succeeds and clears any attempt state.
+    let ok = app
+        .clone()
+        .oneshot(login_request("one@pyme.com", &password))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+
+    // First failed login returns 401 and immediately arms the lockout.
+    let first_fail = app
+        .clone()
+        .oneshot(login_request("one@pyme.com", &wrong))
+        .await
+        .unwrap();
+    assert_eq!(first_fail.status(), StatusCode::UNAUTHORIZED);
+
+    // Second attempt is blocked with 429 + Retry-After (even with valid password).
+    let second = app
+        .oneshot(login_request("one@pyme.com", &password))
+        .await
+        .unwrap();
+    assert_eq!(
+        second.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "max_failures=1 must block the second attempt after a single failure"
+    );
+    assert!(
+        second.headers().get("retry-after").is_some(),
+        "429 must include Retry-After"
+    );
+
+    // Direct AccountLimiter::record_failure also arms the lock on the first insert.
+    let email = ValidatedEmail::parse("direct-one@pyme.com").unwrap();
+    let limiter = state_with_max_failures(pool, 1).account_limiter;
+    let after_one = limiter.record_failure(&email).await.unwrap();
+    assert!(
+        after_one.is_blocked(),
+        "record_failure with max_failures=1 must return Blocked on first insert, got: {after_one:?}"
+    );
+    assert!(
+        limiter.check(&email).await.unwrap().is_blocked(),
+        "check must observe the active lock immediately after 1 failure"
+    );
+}
+
+/// Deterministic proof of the expired-lock wipe race:
+///
+/// 1. Row starts with an expired lock (`blocked_until < now()`).
+/// 2. Tx A locks the row (`FOR UPDATE`) and writes a fresh active lock
+///    (`blocked_until = now() + 5 min`), without committing yet.
+/// 3. `AccountLimiter::check` reads the committed expired row under MVCC, then
+///    blocks on its reset `UPDATE` waiting for Tx A.
+/// 4. Tx A commits the fresh active lock.
+/// 5. `check`'s reset `UPDATE` must NOT wipe the fresh active lock and `check`
+///    must report `Decision::Blocked`.
+#[sqlx::test]
+async fn expired_lock_reset_cannot_wipe_fresh_active_lock(pool: PgPool) {
+    let email = ValidatedEmail::parse("race-wipe@pyme.com").unwrap();
+    let limiter = strict_state(pool.clone()).account_limiter;
+
+    // Seed an expired lock row.
+    sqlx::query(
+        "INSERT INTO login_attempts (email, failed_count, window_start, blocked_until, updated_at)
+         VALUES ($1, 3, now() - interval '6 minutes', now() - interval '1 second', now() - interval '6 minutes')",
+    )
+    .bind(email.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Tx A holds the row lock and installs a fresh active lock (uncommitted).
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        "UPDATE login_attempts
+         SET failed_count = 3,
+             window_start = now(),
+             blocked_until = now() + interval '5 minutes',
+             updated_at = now()
+         WHERE email = $1",
+    )
+    .bind(email.as_str())
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    // Start `check()` concurrently: its SELECT sees the old expired lock, then
+    // its UPDATE blocks waiting for `tx` to commit.
+    let check_limiter = limiter.clone();
+    let check_email = email.clone();
+    let check_task = tokio::spawn(async move { check_limiter.check(&check_email).await });
+
+    // Give `check_task` time to complete its SELECT and block on the row lock.
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    // Commit the fresh active lock, releasing `check_task`'s UPDATE.
+    tx.commit().await.unwrap();
+
+    let decision = check_task.await.unwrap().unwrap();
+    assert!(
+        decision.is_blocked(),
+        "stale check must observe the newly committed active lock, got: {decision:?}"
+    );
+
+    // And the row in Postgres must STILL be actively locked.
+    let still_blocked: bool = sqlx::query_scalar(
+        "SELECT blocked_until IS NOT NULL AND blocked_until > now()
+         FROM login_attempts WHERE email = $1",
+    )
+    .bind(email.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        still_blocked,
+        "expired-lock reset must not wipe a freshly written active lock"
+    );
+}
+
+/// Concurrent burst of bad-password logins for the same email must not bypass
+/// `max_failures`: with `max_failures = 3` and 8 concurrent requests, exactly
+/// 3 are evaluated (401) and 5 are blocked immediately (429).
+#[sqlx::test]
+async fn concurrent_login_burst_cannot_bypass_max_failures(pool: PgPool) {
+    seed_user(&pool, "burst@pyme.com").await;
+    let state = state_with_max_failures(pool.clone(), 3);
+    let app = router(state).layer(CookieManagerLayer::new());
+
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let app = app.clone();
+        let wrong = test_password();
+        set.spawn(async move {
+            app.oneshot(login_request("burst@pyme.com", &wrong))
+                .await
+                .unwrap()
+                .status()
+        });
+    }
+
+    let mut unauthorized = 0;
+    let mut too_many = 0;
+    while let Some(res) = set.join_next().await {
+        match res.unwrap() {
+            StatusCode::UNAUTHORIZED => unauthorized += 1,
+            StatusCode::TOO_MANY_REQUESTS => too_many += 1,
+            other => panic!("unexpected status in concurrent burst: {other}"),
+        }
+    }
+
+    assert_eq!(
+        unauthorized, 3,
+        "at most max_failures (3) attempts may reach password verification"
+    );
+    assert_eq!(
+        too_many, 5,
+        "the remaining 5 concurrent attempts must be rejected with 429"
+    );
+}
+
+/// Same concurrent burst guarantee for nonexistent emails (no enumeration oracle).
+#[sqlx::test]
+async fn concurrent_burst_on_unknown_email_respects_max_failures(pool: PgPool) {
+    let state = state_with_max_failures(pool, 3);
+    let app = router(state).layer(CookieManagerLayer::new());
+
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let app = app.clone();
+        let wrong = test_password();
+        set.spawn(async move {
+            app.oneshot(login_request("ghost-burst@pyme.com", &wrong))
+                .await
+                .unwrap()
+                .status()
+        });
+    }
+
+    let mut unauthorized = 0;
+    let mut too_many = 0;
+    while let Some(res) = set.join_next().await {
+        match res.unwrap() {
+            StatusCode::UNAUTHORIZED => unauthorized += 1,
+            StatusCode::TOO_MANY_REQUESTS => too_many += 1,
+            other => panic!("unexpected status in unknown-email burst: {other}"),
+        }
+    }
+
+    assert_eq!(unauthorized, 3);
+    assert_eq!(too_many, 5);
+}
+
+/// After a lock expires (even while still inside the 15-minute counting
+/// window), a direct `record_failure` must start a fresh count at 1 rather
+/// than immediately re-locking the account.
+#[sqlx::test]
+async fn record_failure_after_expired_lock_starts_fresh_window(pool: PgPool) {
+    let email = ValidatedEmail::parse("expired-direct@pyme.com").unwrap();
+    let limiter = strict_state(pool.clone()).account_limiter;
+
+    sqlx::query(
+        "INSERT INTO login_attempts (email, failed_count, window_start, blocked_until, updated_at)
+         VALUES ($1, 3, now() - interval '6 minutes', now() - interval '1 second', now() - interval '6 minutes')",
+    )
+    .bind(email.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let decision = limiter.record_failure(&email).await.unwrap();
+    assert_eq!(
+        decision,
+        Decision::Allowed { remaining: 2 },
+        "first failure after an expired lock must start a fresh count at 1"
+    );
+}

@@ -28,7 +28,7 @@ pub mod account;
 pub mod ip;
 pub mod middleware;
 
-pub use account::{AccountLimiter, Decision};
+pub use account::{AccountLimiter, AttemptReservation, Decision};
 pub use ip::IpLimiter;
 
 use std::net::IpAddr;

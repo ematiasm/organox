@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO login_attempts (email, failed_count, window_start, blocked_until, updated_at)\n                VALUES (\n                    $1,\n                    1,\n                    now(),\n                    CASE WHEN 1 >= $3 THEN now() + make_interval(secs => $4) ELSE NULL END,\n                    now()\n                )\n                ON CONFLICT (email) DO UPDATE\n                SET failed_count = CASE\n                        WHEN login_attempts.window_start + make_interval(secs => $2) < now()\n                          OR (login_attempts.blocked_until IS NOT NULL AND login_attempts.blocked_until <= now())\n                            THEN 1\n                        ELSE login_attempts.failed_count + 1\n                    END,\n                    window_start = CASE\n                        WHEN login_attempts.window_start + make_interval(secs => $2) < now()\n                          OR (login_attempts.blocked_until IS NOT NULL AND login_attempts.blocked_until <= now())\n                            THEN now()\n                        ELSE login_attempts.window_start\n                    END,\n                    blocked_until = CASE\n                        WHEN (CASE\n                                WHEN login_attempts.window_start + make_interval(secs => $2) < now()\n                                  OR (login_attempts.blocked_until IS NOT NULL AND login_attempts.blocked_until <= now())\n                                    THEN 1\n                                ELSE login_attempts.failed_count + 1\n                            END) >= $3\n                            THEN now() + make_interval(secs => $4)\n                        ELSE NULL\n                    END,\n                    updated_at = now()\n                WHERE login_attempts.blocked_until IS NULL\n                   OR login_attempts.blocked_until <= now()\n                RETURNING failed_count, blocked_until\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failed_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "failed_count"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "blocked_until",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "login_attempts",
+            "name": "blocked_until"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        },
+        "Float8",
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "50b6e0db97cd7186e4eec86818ce126165ecdbe7caa90abd3a4ce51e8a3bb6af"
+}

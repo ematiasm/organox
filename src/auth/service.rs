@@ -25,7 +25,7 @@ use crate::auth::password::{self, PasswordError};
 use crate::auth::repository::{self, NewUser, RepoError};
 use crate::auth::token::{SessionToken, TokenHash};
 use crate::auth::validation::{self, ValidatedEmail, ValidationError};
-use crate::ratelimit::{AccountLimiter, Decision};
+use crate::ratelimit::{AccountLimiter, AttemptReservation};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -296,18 +296,26 @@ pub async fn login(
         return Ok(LoginOutcome::InvalidCredentials);
     }
 
-    // Check the lock BEFORE hashing: if the account is locked, there is no
-    // reason to spend 400ms on argon2 or query the user. This also closes the
-    // door to using login as a CPU amplifier.
-    if let Decision::Blocked { until } = limiter.check(&email).await? {
-        return Ok(LoginOutcome::Locked { until });
-    }
+    // Atomically reserve an attempt BEFORE querying the user or running
+    // Argon2: checking first and incrementing after ~390 ms of hashing would
+    // let a concurrent burst for the same email bypass `max_failures`.
+    // If the account is already locked, no DB user lookup or hash is spent.
+    let locked_until = match limiter.begin_attempt(&email).await? {
+        AttemptReservation::Blocked { until } => return Ok(LoginOutcome::Locked { until }),
+        AttemptReservation::Allowed { locked_until, .. } => locked_until,
+    };
 
     let Some(found) = repository::find_user_by_email(pool, &email).await? else {
-        // Same cost as a real login, same result. The attempt still counts:
-        // otherwise an attacker could distinguish registered emails by the
-        // difference between "locked" and "401".
-        limiter.record_failure(&email).await?;
+        // Same cost as a real login, same result. The attempt was already
+        // reserved above: otherwise an attacker could distinguish registered
+        // emails by the difference between "locked" and "401".
+        if let Some(until) = locked_until {
+            tracing::warn!(
+                email = %email,
+                blocked_until = %until,
+                "account locked by failed attempts; applies from the next attempt"
+            );
+        }
         let _ = verify_off_thread(password_plain.to_string(), dummy_hash()).await;
         return Ok(LoginOutcome::InvalidCredentials);
     };
@@ -315,14 +323,14 @@ pub async fn login(
     let matches = verify_off_thread(password_plain.to_string(), found.password_hash).await?;
 
     if !matches {
-        // Record the failure, but still return 401: the password WAS incorrect,
-        // and telling the user "too many attempts" on the attempt that locked
-        // them would be a lie.
+        // The attempt was already counted in `begin_attempt`, yet we still
+        // return 401: the password WAS incorrect, and telling the user "too
+        // many attempts" on the attempt that locked them would be a lie.
         //
         // The lock applies from the NEXT attempt, which returns 429. Thus
         // `max_failures = 3` means 3 incorrect passwords; the fourth is not
         // even evaluated.
-        if let Decision::Blocked { until } = limiter.record_failure(&email).await? {
+        if let Some(until) = locked_until {
             tracing::warn!(
                 email = %email,
                 blocked_until = %until,
@@ -332,9 +340,10 @@ pub async fn login(
         return Ok(LoginOutcome::InvalidCredentials);
     }
 
-    // Successful login proves this is not an attacker, so clear the count.
-    // Without this, someone who made 5 mistakes and then remembered their
-    // password would still be locked out.
+    // Successful login proves this is not an attacker, so clear the count
+    // (including any lockout armed by this attempt). Without this, someone who
+    // made 2 mistakes and then remembered their password on attempt 3 would
+    // still be locked out.
     limiter.record_success(&email).await?;
 
     let token = SessionToken::generate();

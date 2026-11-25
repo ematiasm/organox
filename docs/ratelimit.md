@@ -77,9 +77,13 @@ The limit does not stop the attack; it makes it **irrelevant in volume**.
 
 ### A successful login clears the counter
 
-Without this, someone who makes 3 mistakes and then remembers their password
-would still be locked out. A successful login is sufficient proof that it is not
-an attacker.
+Each login atomically reserves its attempt slot in Postgres **before** running
+Argon2 (`AccountLimiter::begin_attempt`), so concurrent bursts for the same
+email cannot slip past `APP_LOGIN_MAX_FAILURES` during the ~390 ms hash window.
+If the password succeeds, `record_success` deletes the row immediately (even if
+that attempt was the final slot in the window). Without this, someone who makes
+mistakes and then remembers their password would still be locked out. A
+successful login is sufficient proof that it is not an attacker.
 
 ### Window and cleanup
 
