@@ -2315,3 +2315,76 @@ async fn a_note_refuses_cash_no_tender_collected(pool: PgPool) {
     assert_eq!(current_stock(&pool, product).await, dec!(10));
     assert_eq!(return_movement_count(&pool, product).await, 0);
 }
+
+#[sqlx::test]
+async fn concurrent_credit_note_and_receipt_allocation_do_not_deadlock(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let customer = seed_customer(&pool, "Ana").await;
+    let product = seed_product(&pool, "Flour", dec!(10.00)).await;
+    stock(&pool, actor, product, dec!(20)).await;
+    let method = cash(&pool).await;
+    let wallet = wallet_of(&pool, method).await;
+
+    // 10 @ 10.00 = 100.00 wholly on account.
+    let sale = sale_part_on_account(
+        &pool,
+        actor,
+        product,
+        dec!(10),
+        Some(customer),
+        None,
+        Decimal::ZERO,
+    )
+    .await;
+
+    let cookie = login_cookie(&pool, &password).await;
+
+    // Race 1-unit (10.00) credit notes against 10.00 customer receipt
+    // allocations targeting the SAME sale. `credit_notes::repository::create`
+    // locks `sales` `FOR NO KEY UPDATE` (compatible with PostgreSQL's implicit
+    // `FOR KEY SHARE` FK check on `customer_account_allocations.sale_id`), so
+    // both transactions serialize cleanly without an AB-BA 40P01 deadlock.
+    for round in 0..4 {
+        let (note_res, collect_res) = tokio::join!(
+            note_http(&pool, &cookie, sale, product, dec!(1)),
+            collect_http(
+                &pool,
+                &cookie,
+                customer,
+                method,
+                "10.00",
+                Some((sale, "10.00")),
+            ),
+        );
+
+        assert_eq!(
+            note_res.0,
+            axum::http::StatusCode::CREATED,
+            "round {round} credit note failed: {note_res:?}"
+        );
+        assert_eq!(
+            collect_res.0,
+            axum::http::StatusCode::CREATED,
+            "round {round} receipt allocation failed: {collect_res:?}"
+        );
+    }
+
+    assert_eq!(note_count(&pool, sale).await, 4);
+    assert_eq!(current_stock(&pool, product).await, dec!(14));
+    assert_eq!(balance(&pool, wallet).await, dec!(40.00));
+
+    let owed = ledger::outstanding_by_sale(&pool, customer)
+        .await
+        .expect("outstanding");
+    assert_eq!(owed.len(), 1);
+    assert_eq!(owed[0].sale_id, sale);
+    assert_eq!(owed[0].outstanding, dec!(20.00));
+
+    let position = ledger::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.balance, dec!(20.00));
+    assert_eq!(position.unapplied_credit, dec!(0.00));
+    assert_eq!(position.outstanding_total, dec!(20.00));
+    assert!(position.is_consistent());
+}
