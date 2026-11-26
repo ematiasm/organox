@@ -2640,3 +2640,216 @@ async fn account_movements_cannot_back_entries_of_the_opposite_direction(pool: P
     ));
     tx.rollback().await.expect("rollback");
 }
+
+#[sqlx::test]
+async fn adjustment_in_respects_non_credit_drift_across_mixed_states(pool: PgPool) {
+    let actor = Uuid::now_v7();
+
+    // Case A: O > 0, U > 0, A < 0, B < 0 with O + A < 0.
+    // Sales 100 + 50, adjustment_out 140, receipt 100 allocated to sale 1,
+    // unallocated receipt 20 -> B = -110, U = 20, O = 50, A = -140, drift = 90.
+    let ana = seed_customer(&pool, "Ana Mixed").await;
+    let s1 = seed_completed_sale(&pool, ana, dec!(100.00)).await;
+    let s2 = seed_completed_sale(&pool, ana, dec!(50.00)).await;
+    let m1 = seed_account_payment(&pool, ana, dec!(100.00)).await;
+    let m2 = seed_account_payment(&pool, ana, dec!(20.00)).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    repository::record_charge(&mut tx, ana, s1, dec!(100.00), actor)
+        .await
+        .unwrap();
+    repository::record_charge(&mut tx, ana, s2, dec!(50.00), actor)
+        .await
+        .unwrap();
+    repository::record_adjustment(
+        &mut tx,
+        ana,
+        CustomerAccountEntryKind::AdjustmentOut,
+        dec!(140.00),
+        "over-adjustment",
+        actor,
+    )
+    .await
+    .unwrap();
+    repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: m1,
+            amount: dec!(100.00),
+            allocations: &[(s1, dec!(100.00))],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap();
+    repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: m2,
+            amount: dec!(20.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // 90.01 exceeds non-credit drift (90.00) -> rejected.
+    let mut tx = pool.begin().await.unwrap();
+    let err = repository::record_adjustment(
+        &mut tx,
+        ana,
+        CustomerAccountEntryKind::AdjustmentIn,
+        dec!(90.01),
+        "exceeds drift",
+        actor,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        repository::RepoError::AdjustmentCrossesZero { balance } if balance == dec!(-110.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    // Exact 90.00 drift succeeds -> B = -20, U = 20, O = 50, A = -50.
+    let mut tx = pool.begin().await.unwrap();
+    repository::record_adjustment(
+        &mut tx,
+        ana,
+        CustomerAccountEntryKind::AdjustmentIn,
+        dec!(90.00),
+        "reconcile drift",
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let pos = repository::account_position(&pool, ana).await.unwrap();
+    assert_eq!(pos.balance, dec!(-20.00));
+    assert_eq!(pos.unapplied_credit, dec!(20.00));
+    assert_eq!(pos.outstanding_total, dec!(50.00));
+    assert!(pos.is_consistent());
+
+    // Refunding the full 20.00 real credit remains possible (0 cents buried).
+    let wallet: Uuid = sqlx::query_scalar("SELECT wallet_id FROM wallet_movements WHERE id = $1")
+        .bind(m2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let method: Uuid =
+        sqlx::query_scalar("SELECT payment_method_id FROM wallet_movements WHERE id = $1")
+            .bind(m2)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let refund_mv = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO wallet_movements
+            (id, wallet_id, kind, amount, payment_method_id, customer_id)
+         VALUES ($1, $2, 'account_payment_refund', $3, $4, $5)",
+    )
+    .bind(refund_mv)
+    .bind(wallet)
+    .bind(dec!(20.00))
+    .bind(method)
+    .bind(ana)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    repository::record_credit_refund(&mut tx, ana, refund_mv, dec!(20.00), Some("refund"), actor)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let pos = repository::account_position(&pool, ana).await.unwrap();
+    assert_eq!(pos.balance, Decimal::ZERO);
+    assert_eq!(pos.unapplied_credit, Decimal::ZERO);
+    assert!(pos.is_consistent());
+
+    // Case B: O > 0, U > 0, A < 0, B < 0 with O + A >= 0.
+    // Sale 100, adjustment_out 10, unallocated receipt 120 -> B = -30, U = 120, O = 100.
+    // non_credit_drift = (30 - 120).max(0) = 0 -> rejected until allocated.
+    let beto = seed_customer(&pool, "Beto Mixed").await;
+    let bs1 = seed_completed_sale(&pool, beto, dec!(100.00)).await;
+    let bm1 = seed_account_payment(&pool, beto, dec!(120.00)).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    repository::record_charge(&mut tx, beto, bs1, dec!(100.00), actor)
+        .await
+        .unwrap();
+    repository::record_adjustment(
+        &mut tx,
+        beto,
+        CustomerAccountEntryKind::AdjustmentOut,
+        dec!(10.00),
+        "discount",
+        actor,
+    )
+    .await
+    .unwrap();
+    let receipt = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: beto,
+            wallet_movement_id: bm1,
+            amount: dec!(120.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = repository::record_adjustment(
+        &mut tx,
+        beto,
+        CustomerAccountEntryKind::AdjustmentIn,
+        dec!(0.01),
+        "cannot shrink refundable -B",
+        actor,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        repository::RepoError::AdjustmentCrossesZero { balance } if balance == dec!(-30.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    // Allocate 100 to the sale -> B = -30, U = 20, O = 0, drift = 10 -> unlocks reconciliation.
+    let mut tx = pool.begin().await.unwrap();
+    repository::allocate(&mut tx, receipt.entry_id, bs1, dec!(100.00))
+        .await
+        .unwrap();
+    repository::record_adjustment(
+        &mut tx,
+        beto,
+        CustomerAccountEntryKind::AdjustmentIn,
+        dec!(10.00),
+        "reconcile drift after allocation",
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let pos = repository::account_position(&pool, beto).await.unwrap();
+    assert_eq!(pos.balance, dec!(-20.00));
+    assert_eq!(pos.unapplied_credit, dec!(20.00));
+    assert_eq!(pos.outstanding_total, Decimal::ZERO);
+    assert!(pos.is_consistent());
+}

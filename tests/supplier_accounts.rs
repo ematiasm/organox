@@ -1392,3 +1392,144 @@ async fn supplier_payment_allocation_rejects_decimal_max_without_panicking(pool:
         organox::supplier_accounts::repository::RepoError::AmountTooLarge { .. }
     ));
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn adjustment_in_reconciles_over_adjusted_supplier_account_and_preserves_advance_credit(
+    pool: PgPool,
+) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let (_wallet_id, method_id) = seed_method(&pool, "Bank").await;
+    let product_id = seed_good(&pool, "Flour").await;
+    let app = app(pool.clone());
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    let supplier_id = create_supplier(&app, &cookie, "Mill Co", None, None).await;
+    let (purchase_id, _) = complete_on_account_purchase(
+        &app,
+        &cookie,
+        supplier_id,
+        product_id,
+        "2",
+        "50.00",
+        "100.00",
+    )
+    .await;
+
+    // 1. adjustment_out $30 -> balance = 70, outstanding = 100.
+    let (st, _, adj_out) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/adjustments"),
+        Some(&cookie),
+        Some(json!({
+            "direction": "out",
+            "amount": "30.00",
+            "note": "manual payable correction",
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "adj_out: {adj_out}");
+    assert_eq!(adj_out["balance"], "70.00");
+
+    // 2. Pay the full $100 purchase -> balance = -30, U = 0, outstanding = 0.
+    let (st, _, pay) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/payments"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method_id,
+            "amount": "100.00",
+            "allocations": [{ "purchase_id": purchase_id, "amount": "100.00" }],
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "payment: {pay}");
+    assert_eq!(pay["balance"], "-30.00");
+    assert_eq!(pay["unapplied_credit"], "0.00");
+
+    // 3. Add $20 unallocated advance -> balance = -50, U = 20, non_credit_drift = 30.
+    let (st, _, _) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/payments"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method_id,
+            "amount": "20.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    // adjustment_out and adjustment_in > 30.00 are rejected with 422.
+    for (direction, amount) in [("out", "1.00"), ("in", "30.01")] {
+        let (st, _, _) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/suppliers/{supplier_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": direction, "amount": amount, "note": "must fail" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // Reconciling the exact 30.00 non-credit drift succeeds and preserves 20.00 advance credit.
+    let (st, _, adj_in) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/adjustments"),
+        Some(&cookie),
+        Some(json!({
+            "direction": "in",
+            "amount": "30.00",
+            "note": "reconcile over-adjustment",
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "reconcile: {adj_in}");
+    assert_eq!(adj_in["balance"], "-20.00");
+    assert_eq!(adj_in["unapplied_credit"], "20.00");
+
+    // Once only real advance credit remains (drift = 0), adjustment_in is refused again.
+    let (st, _, _) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/adjustments"),
+        Some(&cookie),
+        Some(json!({
+            "direction": "in",
+            "amount": "0.01",
+            "note": "cannot bury advance credit",
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Refund the 20.00 advance credit -> balance = 0 -> deactivate succeeds (204).
+    let (st, _, _) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/credit-refunds"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method_id,
+            "amount": "20.00",
+            "note": "supplier refunded advance",
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    let (st, _, _) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/deactivate"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+}

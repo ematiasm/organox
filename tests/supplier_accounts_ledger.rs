@@ -1078,3 +1078,156 @@ async fn purchase_return_and_return_credit_preserve_invariants_and_apply_to_futu
     .unwrap();
     assert!(tx.commit().await.is_err());
 }
+
+#[sqlx::test]
+async fn supplier_adjustment_in_reconciles_after_purchase_return_and_protects_return_credit(
+    pool: PgPool,
+) {
+    let actor = Uuid::now_v7();
+    let (wallet, method) = setup_method(&pool, "Bank").await;
+    let supplier = setup_supplier(&pool, "ReturnParityCo", None).await;
+    let purchase =
+        setup_completed_purchase(&pool, supplier, "ReturnParityCo", dec!(100.00), actor).await;
+
+    // 1. Charge $100, adjustment_out $30 -> B = 70, O = 100.
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, purchase, dec!(100.00), actor)
+        .await
+        .unwrap();
+    ledger::record_adjustment(
+        &mut tx,
+        supplier,
+        SupplierAccountEntryKind::AdjustmentOut,
+        dec!(30.00),
+        "over-adjustment",
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // 2. Full purchase_return ($100) + purchase_return_credit ($40) -> B = -70, U = 40, O = 0.
+    let ret = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchase_returns (id, purchase_id, total, surplus_mode, reason, created_by)
+         VALUES ($1, $2, 140.00, 'supplier_credit', 'Return parity probe', $3)",
+    )
+    .bind(ret)
+    .bind(purchase)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_purchase_return(
+        &mut tx,
+        supplier,
+        purchase,
+        ret,
+        dec!(100.00),
+        Some("ret cancel"),
+        actor,
+    )
+    .await
+    .unwrap();
+    ledger::record_purchase_return_credit(
+        &mut tx,
+        supplier,
+        ret,
+        dec!(40.00),
+        Some("ret credit"),
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // 30.01 exceeds non-credit drift (30.00) -> rejected.
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_adjustment(
+        &mut tx,
+        supplier,
+        SupplierAccountEntryKind::AdjustmentIn,
+        dec!(30.01),
+        "would bury purchase_return_credit",
+        actor,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        RepoError::AdjustmentCrossesZero { balance } if balance == dec!(-70.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    // Exact 30.00 drift succeeds -> B = -40, U = 40, consistent.
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_adjustment(
+        &mut tx,
+        supplier,
+        SupplierAccountEntryKind::AdjustmentIn,
+        dec!(30.00),
+        "reconcile drift",
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let pos = ledger::account_position(&pool, supplier).await.unwrap();
+    assert_eq!(pos.balance, dec!(-40.00));
+    assert_eq!(pos.unapplied_credit, dec!(40.00));
+    assert_eq!(pos.outstanding_total, Decimal::ZERO);
+    assert!(pos.is_consistent());
+
+    // Any further adjustment_in is refused (drift = 0).
+    let mut tx = pool.begin().await.unwrap();
+    let err = ledger::record_adjustment(
+        &mut tx,
+        supplier,
+        SupplierAccountEntryKind::AdjustmentIn,
+        dec!(0.01),
+        "drift is now zero",
+        actor,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        RepoError::AdjustmentCrossesZero { balance } if balance == dec!(-40.00)
+    ));
+    tx.rollback().await.unwrap();
+
+    // Refund the 40.00 return credit -> B = 0, U = 0.
+    let refund_mv = insert_supplier_movement(
+        &pool,
+        wallet,
+        method,
+        supplier,
+        WalletMovementKind::SupplierAccountRefund,
+        dec!(40.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_credit_refund(
+        &mut tx,
+        ledger::NewSupplierCreditRefund {
+            supplier_id: supplier,
+            wallet_movement_id: refund_mv,
+            amount: dec!(40.00),
+            idempotency_key: None,
+            note: Some("refund return credit"),
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let pos = ledger::account_position(&pool, supplier).await.unwrap();
+    assert_eq!(pos.balance, Decimal::ZERO);
+    assert_eq!(pos.unapplied_credit, Decimal::ZERO);
+    assert!(pos.is_consistent());
+}

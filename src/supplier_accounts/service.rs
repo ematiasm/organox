@@ -367,7 +367,9 @@ pub struct RecordedAdjustment {
 }
 
 /// Record a manual `adjustment_in` or `adjustment_out` without touching any
-/// wallet. The ledger enforces that the balance stays non-negative.
+/// wallet. The ledger prevents `adjustment_out` from crossing zero and limits
+/// `adjustment_in` on a negative balance to non-credit drift so refundable
+/// `unapplied_credit` is never buried.
 pub async fn adjust(
     pool: &PgPool,
     supplier_id: Uuid,
