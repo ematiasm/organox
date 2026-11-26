@@ -2620,3 +2620,98 @@ async fn credit_note_rejects_quantity_above_numeric_ceiling_with_422(pool: PgPoo
     let (status, _) = note_http(&pool, &cookie, sale, product, dec!(1_000_000_000)).await;
     assert_eq!(status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[sqlx::test]
+async fn refunded_receipt_does_not_back_future_sale_or_misroute_credit_note_refund(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let customer = seed_customer(&pool, "Ana").await;
+    let product = seed_product(&pool, "Flour", dec!(50.00)).await;
+    stock(&pool, actor, product, dec!(5)).await;
+
+    let cash_method = cash(&pool).await;
+    let cash_wallet = wallet_of(&pool, cash_method).await;
+
+    let card_wallet = payments::create_wallet(
+        &pool,
+        CreateWalletInput {
+            name: "Bank".to_string(),
+        },
+    )
+    .await
+    .expect("card wallet");
+    let card_method = payments::create_method(
+        &pool,
+        CreateMethodInput {
+            name: "Card".to_string(),
+            wallet_id: card_wallet,
+        },
+    )
+    .await
+    .expect("card method");
+
+    let cookie = login_cookie(&pool, &password).await;
+
+    // 1. Receipt 1: $100 Cash (Wallet A), unallocated advance.
+    let (status, body) = collect_http(&pool, &cookie, customer, cash_method, "100.00", None).await;
+    assert_eq!(status, axum::http::StatusCode::CREATED, "receipt 1: {body}");
+    assert_eq!(balance(&pool, cash_wallet).await, dec!(100.00));
+
+    // 2. Refund $100 of unapplied credit via Cash (Wallet A).
+    let response = app(pool.clone())
+        .oneshot(
+            with_session(
+                "POST",
+                &format!("/api/v1/customers/{customer}/credit-refunds"),
+                &cookie,
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "payment_method_id": cash_method,
+                    "amount": "100.00",
+                    "note": "Return unapplied advance",
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+    assert_eq!(balance(&pool, cash_wallet).await, Decimal::ZERO);
+
+    // 3. Receipt 2: $50 Card (Wallet B), unallocated advance.
+    let (status, body) = collect_http(&pool, &cookie, customer, card_method, "50.00", None).await;
+    assert_eq!(status, axum::http::StatusCode::CREATED, "receipt 2: {body}");
+    assert_eq!(balance(&pool, card_wallet).await, dec!(50.00));
+
+    // 4. Complete an on-account sale for $50; apply_available_credit must
+    //    allocate from Receipt 2 (Card / Wallet B), never refunded Receipt 1.
+    let sale = sale_part_on_account(
+        &pool,
+        actor,
+        product,
+        dec!(1),
+        Some(customer),
+        None,
+        Decimal::ZERO,
+    )
+    .await;
+
+    // 5. Issue a $50 credit note on that sale — refund must leave Wallet B
+    //    (Card), keeping Wallet A (Cash) untouched at $0.
+    let (status, body) = note_http(&pool, &cookie, sale, product, dec!(1)).await;
+    assert_eq!(status, axum::http::StatusCode::CREATED, "note: {body}");
+
+    let refunds = body["refunds"].as_array().expect("refunds array");
+    assert_eq!(refunds.len(), 1, "expected one refund leg: {body}");
+    assert_eq!(
+        refunds[0]["payment_method_id"].as_str(),
+        Some(card_method.to_string().as_str()),
+        "credit note refunded wrong payment method: {body}"
+    );
+    assert_eq!(balance(&pool, cash_wallet).await, Decimal::ZERO);
+    assert_eq!(balance(&pool, card_wallet).await, Decimal::ZERO);
+}

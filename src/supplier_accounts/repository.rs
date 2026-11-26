@@ -765,9 +765,9 @@ async fn ensure_movement_backing(
     wallet_movement_id: Uuid,
     amount: Decimal,
     expected_kind: &str,
-) -> Result<(), RepoError> {
+) -> Result<Uuid, RepoError> {
     let movement = sqlx::query!(
-        r#"SELECT amount, supplier_id, kind::text AS "kind!" FROM wallet_movements WHERE id = $1"#,
+        r#"SELECT amount, supplier_id, wallet_id, kind::text AS "kind!" FROM wallet_movements WHERE id = $1"#,
         wallet_movement_id
     )
     .fetch_optional(&mut *conn)
@@ -791,7 +791,7 @@ async fn ensure_movement_backing(
         return Err(RepoError::MovementOfAnotherSupplier);
     }
 
-    Ok(())
+    Ok(movement.wallet_id)
 }
 
 /// Charge one completed purchase's unpaid part to the supplier account.
@@ -1085,11 +1085,28 @@ pub async fn allocate(
         });
     }
 
+    let refunded = sqlx::query_scalar!(
+        r#"
+        SELECT COALESCE(SUM(amount), 0)::numeric(14, 2) AS "refunded!: Decimal"
+        FROM supplier_account_credit_refund_allocations
+        WHERE source_entry_id = $1
+        "#,
+        entry_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+
     let position = account_position_in(conn, entry.supplier_id).await?;
-    if amount > position.unapplied_credit {
+    let entry_available = paid
+        .checked_sub(already)
+        .and_then(|rem| rem.checked_sub(refunded))
+        .unwrap_or(Decimal::ZERO)
+        .max(Decimal::ZERO);
+    let available = position.unapplied_credit.min(entry_available);
+    if amount > available {
         return Err(RepoError::AllocationExceedsCredit {
             requested: amount,
-            available: position.unapplied_credit,
+            available,
         });
     }
 
@@ -1135,14 +1152,26 @@ pub async fn apply_available_credit(
 
     let payments = sqlx::query!(
         r#"
-        SELECT e.id                                              AS "entry_id!: Uuid",
-               (-e.amount - COALESCE(SUM(a.amount), 0))::numeric(14, 2)
-                                                                 AS "available!: Decimal"
+        SELECT e.id AS "entry_id!: Uuid",
+               (
+                   -e.amount
+                   - COALESCE(alloc.total, 0)
+                   - COALESCE(ref_alloc.total, 0)
+               )::numeric(14, 2) AS "available!: Decimal"
         FROM supplier_account_entries e
-        LEFT JOIN supplier_account_allocations a ON a.entry_id = e.id
-        WHERE e.supplier_id = $1 AND e.kind IN ('payment', 'purchase_return_credit')
-        GROUP BY e.id
-        HAVING -e.amount - COALESCE(SUM(a.amount), 0) > 0
+        LEFT JOIN LATERAL (
+            SELECT SUM(a.amount) AS total
+            FROM supplier_account_allocations a
+            WHERE a.entry_id = e.id
+        ) alloc ON true
+        LEFT JOIN LATERAL (
+            SELECT SUM(ra.amount) AS total
+            FROM supplier_account_credit_refund_allocations ra
+            WHERE ra.source_entry_id = e.id
+        ) ref_alloc ON true
+        WHERE e.supplier_id = $1
+          AND e.kind IN ('payment', 'purchase_return_credit')
+          AND -e.amount - COALESCE(alloc.total, 0) - COALESCE(ref_alloc.total, 0) > 0
         ORDER BY e.created_at, e.id
         LIMIT 100
         "#,
@@ -1222,7 +1251,7 @@ pub async fn record_credit_refund(
     ensure_cents(refund.amount)?;
     lock_supplier(conn, refund.supplier_id).await?;
 
-    ensure_movement_backing(
+    let refund_wallet_id = ensure_movement_backing(
         conn,
         refund.supplier_id,
         refund.wallet_movement_id,
@@ -1279,6 +1308,66 @@ pub async fn record_credit_refund(
         | Some("supplier_account_entries_idempotency") => RepoError::AlreadyRecorded,
         _ => RepoError::Database(err),
     })?;
+
+    // Attribute the refunded credit to the advance payments or return credits
+    // that hold unapplied credit: prefer entries backed by the same wallet
+    // first, then oldest-first across remaining sources.
+    let sources = sqlx::query!(
+        r#"
+        SELECT e.id AS "entry_id!: Uuid",
+               (
+                   -e.amount
+                   - COALESCE(alloc.total, 0)
+                   - COALESCE(ref_alloc.total, 0)
+               )::numeric(14, 2) AS "available!: Decimal"
+        FROM supplier_account_entries e
+        LEFT JOIN wallet_movements wm ON wm.id = e.wallet_movement_id
+        LEFT JOIN LATERAL (
+            SELECT SUM(a.amount) AS total
+            FROM supplier_account_allocations a
+            WHERE a.entry_id = e.id
+        ) alloc ON true
+        LEFT JOIN LATERAL (
+            SELECT SUM(ra.amount) AS total
+            FROM supplier_account_credit_refund_allocations ra
+            WHERE ra.source_entry_id = e.id
+        ) ref_alloc ON true
+        WHERE e.supplier_id = $1
+          AND e.kind IN ('payment', 'purchase_return_credit')
+          AND -e.amount - COALESCE(alloc.total, 0) - COALESCE(ref_alloc.total, 0) > 0
+        ORDER BY CASE WHEN wm.wallet_id = $2 THEN 0 ELSE 1 END, e.created_at, e.id
+        "#,
+        refund.supplier_id,
+        refund_wallet_id,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut remaining = refund.amount;
+    for source in sources {
+        if remaining.is_zero() {
+            break;
+        }
+        let take = remaining.min(source.available);
+        sqlx::query!(
+            r#"
+            INSERT INTO supplier_account_credit_refund_allocations
+                (id, refund_entry_id, source_entry_id, amount)
+            VALUES ($1, $2, $3, $4)
+            "#,
+            Uuid::now_v7(),
+            id,
+            source.entry_id,
+            take,
+        )
+        .execute(&mut *conn)
+        .await?;
+        remaining -= take;
+    }
+
+    if !remaining.is_zero() {
+        return Err(RepoError::CreditApplicationBroken);
+    }
 
     Ok(id)
 }

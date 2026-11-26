@@ -2853,3 +2853,909 @@ async fn adjustment_in_respects_non_credit_drift_across_mixed_states(pool: PgPoo
     assert_eq!(pos.outstanding_total, Decimal::ZERO);
     assert!(pos.is_consistent());
 }
+
+#[sqlx::test]
+async fn credit_refund_attribution_blocks_manual_allocate_prefers_same_wallet_and_enforces_triggers(
+    pool: PgPool,
+) {
+    let actor = Uuid::now_v7();
+    let ana = seed_customer(&pool, "Ana Refund Attribution").await;
+
+    let wallet_a = Uuid::now_v7();
+    let method_a = Uuid::now_v7();
+    let wallet_b = Uuid::now_v7();
+    let method_b = Uuid::now_v7();
+    for (w, w_name, m, m_name) in [
+        (wallet_a, "Cash A", method_a, "Cash Method A"),
+        (wallet_b, "Card B", method_b, "Card Method B"),
+    ] {
+        sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, $2)")
+            .bind(w)
+            .bind(w_name)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, $2, $3)")
+            .bind(m)
+            .bind(m_name)
+            .bind(w)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let insert_mv = |wallet: Uuid, method: Uuid, kind: &'static str, amount: Decimal| {
+        let pool = pool.clone();
+        async move {
+            let id = Uuid::now_v7();
+            sqlx::query(
+                r#"
+                INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, customer_id)
+                VALUES ($1, $2, $3::wallet_movement_kind, $4, $5, $6)
+                "#,
+            )
+            .bind(id)
+            .bind(wallet)
+            .bind(kind)
+            .bind(amount)
+            .bind(method)
+            .bind(ana)
+            .execute(&pool)
+            .await
+            .unwrap();
+            id
+        }
+    };
+
+    // Case 1: Receipt 1 ($100, Wallet A) refunded in full, then Receipt 2 ($50, Wallet B).
+    // Manual allocate() on refunded Receipt 1 MUST fail with available = 0 even though
+    // account-level unapplied_credit is 50.
+    let mv_r1 = insert_mv(wallet_a, method_a, "account_payment", dec!(100.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    let r1 = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: mv_r1,
+            amount: dec!(100.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    let mv_ref1 = insert_mv(wallet_a, method_a, "account_payment_refund", dec!(100.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    let ref1 = repository::record_credit_refund(
+        &mut tx,
+        ana,
+        mv_ref1,
+        dec!(100.00),
+        Some("full refund"),
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mv_r2 = insert_mv(wallet_b, method_b, "account_payment", dec!(50.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    let r2 = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: mv_r2,
+            amount: dec!(50.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    let sale1 = seed_completed_sale(&pool, ana, dec!(50.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    repository::record_charge(&mut tx, ana, sale1, dec!(50.00), actor)
+        .await
+        .unwrap();
+    let err = repository::allocate(&mut tx, r1, sale1, dec!(50.00))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        repository::RepoError::AllocationExceedsCredit {
+            requested,
+            available
+        } if requested == dec!(50.00) && available == Decimal::ZERO
+    ));
+
+    // Direct SQL insert bypassing repository must also be rejected by Postgres trigger.
+    let raw_res = sqlx::query(
+        "INSERT INTO customer_account_allocations (id, entry_id, sale_id, amount) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(r1)
+    .bind(sale1)
+    .bind(dec!(50.00))
+    .execute(&mut *tx)
+    .await;
+    assert!(raw_res.is_ok(), "deferred trigger runs at commit");
+    let commit_err = tx.commit().await.unwrap_err();
+    assert!(
+        commit_err
+            .to_string()
+            .contains("allocations (50.00) plus refunds (100.00) exceed"),
+        "expected receipt ceiling trigger error, got: {commit_err}"
+    );
+
+    // Append-only trigger on customer_account_credit_refund_allocations.
+    let del_err = sqlx::query(
+        "DELETE FROM customer_account_credit_refund_allocations WHERE refund_entry_id = $1",
+    )
+    .bind(ref1)
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert!(
+        del_err.to_string().contains("append-only"),
+        "expected append-only error, got: {del_err}"
+    );
+
+    // Unattributed credit_refund raw SQL insert must fail at COMMIT.
+    let mv_orphan = insert_mv(wallet_b, method_b, "account_payment_refund", dec!(10.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO customer_account_entries (id, customer_id, kind, amount, wallet_movement_id, created_by)
+         VALUES ($1, $2, 'credit_refund', $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(ana)
+    .bind(dec!(10.00))
+    .bind(mv_orphan)
+    .bind(actor)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let orphan_err = tx.commit().await.unwrap_err();
+    assert!(
+        orphan_err.to_string().contains("must be fully attributed"),
+        "expected completeness trigger error, got: {orphan_err}"
+    );
+
+    // Allocating from Receipt 2 succeeds and settles sale1.
+    let mut tx = pool.begin().await.unwrap();
+    repository::record_charge(&mut tx, ana, sale1, dec!(50.00), actor)
+        .await
+        .unwrap();
+    repository::allocate(&mut tx, r2, sale1, dec!(50.00))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Case 2: Both Receipt 3 ($100, Wallet A) and Receipt 4 ($50, Wallet B) are open.
+    // Refunding $50 via Wallet B prefers Receipt 4 (same wallet), leaving Receipt 3 ($100)
+    // fully intact; then refunding $40 via Wallet A leaves $60 on Receipt 3.
+    let mv_r3 = insert_mv(wallet_a, method_a, "account_payment", dec!(100.00)).await;
+    let mv_r4 = insert_mv(wallet_b, method_b, "account_payment", dec!(50.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    let r3 = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: mv_r3,
+            amount: dec!(100.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    let r4 = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: mv_r4,
+            amount: dec!(50.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    let mv_ref_b = insert_mv(wallet_b, method_b, "account_payment_refund", dec!(50.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    let ref_b = repository::record_credit_refund(
+        &mut tx,
+        ana,
+        mv_ref_b,
+        dec!(50.00),
+        Some("refund card"),
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let consumed_by_b: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT receipt_entry_id, amount FROM customer_account_credit_refund_allocations WHERE refund_entry_id = $1",
+    )
+    .bind(ref_b)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(consumed_by_b, vec![(r4, dec!(50.00))]);
+
+    let mv_ref_a = insert_mv(wallet_a, method_a, "account_payment_refund", dec!(40.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    repository::record_credit_refund(
+        &mut tx,
+        ana,
+        mv_ref_a,
+        dec!(40.00),
+        Some("partial cash refund"),
+        actor,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let sale2 = seed_completed_sale(&pool, ana, dec!(80.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    repository::record_charge(&mut tx, ana, sale2, dec!(80.00), actor)
+        .await
+        .unwrap();
+    let applied = repository::apply_available_credit(&mut tx, ana, sale2, dec!(80.00))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(applied, dec!(60.00));
+
+    let alloc_entries: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT entry_id, amount FROM customer_account_allocations WHERE sale_id = $1",
+    )
+    .bind(sale2)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(alloc_entries, vec![(r3, dec!(60.00))]);
+}
+
+#[sqlx::test]
+async fn credit_refund_cross_wallet_split_idempotency_and_negative_triggers(pool: PgPool) {
+    let actor = Uuid::now_v7();
+    let ana = seed_customer(&pool, "Ana Split").await;
+    let beto = seed_customer(&pool, "Beto Other").await;
+
+    let wallet_a = Uuid::now_v7();
+    let method_a = Uuid::now_v7();
+    let wallet_b = Uuid::now_v7();
+    let method_b = Uuid::now_v7();
+    for (w, w_name, m, m_name) in [
+        (wallet_a, "Cash Split A", method_a, "Cash Split Method A"),
+        (wallet_b, "Card Split B", method_b, "Card Split Method B"),
+    ] {
+        sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, $2)")
+            .bind(w)
+            .bind(w_name)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, $2, $3)")
+            .bind(m)
+            .bind(m_name)
+            .bind(w)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let insert_mv = |customer: Uuid,
+                     wallet: Uuid,
+                     method: Uuid,
+                     kind: &'static str,
+                     amount: Decimal| {
+        let pool = pool.clone();
+        async move {
+            let id = Uuid::now_v7();
+            sqlx::query(
+                r#"
+                INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, customer_id)
+                VALUES ($1, $2, $3::wallet_movement_kind, $4, $5, $6)
+                "#,
+            )
+            .bind(id)
+            .bind(wallet)
+            .bind(kind)
+            .bind(amount)
+            .bind(method)
+            .bind(customer)
+            .execute(&pool)
+            .await
+            .unwrap();
+            id
+        }
+    };
+
+    // R1 ($40, Wallet A), R2 ($30, Wallet B), R3 ($50, Wallet A).
+    let mv_r1 = insert_mv(ana, wallet_a, method_a, "account_payment", dec!(40.00)).await;
+    let mv_r2 = insert_mv(ana, wallet_b, method_b, "account_payment", dec!(30.00)).await;
+    let mv_r3 = insert_mv(ana, wallet_a, method_a, "account_payment", dec!(50.00)).await;
+    let mv_beto = insert_mv(beto, wallet_a, method_a, "account_payment", dec!(20.00)).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let r1 = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: mv_r1,
+            amount: dec!(40.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    let r2 = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: mv_r2,
+            amount: dec!(30.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    let r3 = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: mv_r3,
+            amount: dec!(50.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    let beto_r = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: beto,
+            wallet_movement_id: mv_beto,
+            amount: dec!(20.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    // Refund $100 via Wallet A: must consume R1 ($40, Wallet A), R3 ($50, Wallet A),
+    // then spill $10 into R2 (Wallet B), leaving $20 on R2.
+    let refund_out = organox::customer_accounts::service::refund_credit(
+        &pool,
+        ana,
+        organox::customer_accounts::service::RefundCreditInput {
+            payment_method_id: method_a,
+            amount: dec!(100.00),
+            note: "split refund",
+            idempotency_key: Some("split-ref-key"),
+            actor,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!refund_out.replayed);
+
+    let rows: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT receipt_entry_id, amount
+         FROM customer_account_credit_refund_allocations
+         WHERE refund_entry_id = $1
+         ORDER BY id",
+    )
+    .bind(refund_out.entry_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![(r1, dec!(40.00)), (r3, dec!(50.00)), (r2, dec!(10.00))]
+    );
+
+    // Idempotent replay writes no duplicate attribution rows.
+    let replay = organox::customer_accounts::service::refund_credit(
+        &pool,
+        ana,
+        organox::customer_accounts::service::RefundCreditInput {
+            payment_method_id: method_a,
+            amount: dec!(100.00),
+            note: "split refund",
+            idempotency_key: Some("split-ref-key"),
+            actor,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.entry_id, refund_out.entry_id);
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customer_account_credit_refund_allocations WHERE refund_entry_id = $1",
+    )
+    .bind(refund_out.entry_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 3);
+
+    // Remaining $20 on R2 can be allocated, nothing more.
+    let sale = seed_completed_sale(&pool, ana, dec!(50.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    let charge_id = repository::record_charge(&mut tx, ana, sale, dec!(50.00), actor)
+        .await
+        .unwrap();
+    let applied = repository::apply_available_credit(&mut tx, ana, sale, dec!(50.00))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(applied, dec!(20.00));
+
+    // UPDATE append-only trigger.
+    let upd_err = sqlx::query(
+        "UPDATE customer_account_credit_refund_allocations SET amount = 1.00 WHERE refund_entry_id = $1",
+    )
+    .bind(refund_out.entry_id)
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert!(upd_err.to_string().contains("append-only"));
+
+    // Cross-customer attribution rejected by BEFORE INSERT trigger.
+    let cross_err = sqlx::query(
+        "INSERT INTO customer_account_credit_refund_allocations (id, refund_entry_id, receipt_entry_id, amount)
+         VALUES ($1, $2, $3, 1.00)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(refund_out.entry_id)
+    .bind(beto_r)
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert!(cross_err.to_string().contains("another customer"));
+
+    // Wrong kinds rejected by BEFORE INSERT trigger.
+    let bad_receipt_err = sqlx::query(
+        "INSERT INTO customer_account_credit_refund_allocations (id, refund_entry_id, receipt_entry_id, amount)
+         VALUES ($1, $2, $3, 1.00)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(refund_out.entry_id)
+    .bind(charge_id)
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert!(
+        bad_receipt_err
+            .to_string()
+            .contains("only consume a receipt")
+    );
+
+    let bad_refund_err = sqlx::query(
+        "INSERT INTO customer_account_credit_refund_allocations (id, refund_entry_id, receipt_entry_id, amount)
+         VALUES ($1, $2, $3, 1.00)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(r1)
+    .bind(r2)
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert!(bad_refund_err.to_string().contains("only a credit_refund"));
+
+    // Over-attributing an already-committed refund rejected at commit by fit_refund trigger.
+    let mv_r4 = insert_mv(ana, wallet_b, method_b, "account_payment", dec!(15.00)).await;
+    let mut tx = pool.begin().await.unwrap();
+    let r4 = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: mv_r4,
+            amount: dec!(15.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO customer_account_credit_refund_allocations (id, refund_entry_id, receipt_entry_id, amount)
+         VALUES ($1, $2, $3, 1.00)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(refund_out.entry_id)
+    .bind(r4)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let over_err = tx.commit().await.unwrap_err();
+    assert!(
+        over_err
+            .to_string()
+            .contains("exceed the credit_refund amount"),
+        "expected fit_refund trigger error, got: {over_err}"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn migration_0033_backfill_handles_clean_and_pre_fix_corrupted_ledgers(pool: PgPool) {
+    let mut pre_0033: Vec<_> = std::fs::read_dir("migrations")
+        .expect("read migrations dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.ends_with(".sql") && !name.ends_with(".down.sql") && name.as_str() < "0033_"
+        })
+        .collect();
+    pre_0033.sort_by_key(|e| e.file_name());
+    assert!(!pre_0033.is_empty(), "expected migrations 0001..0032");
+
+    for entry in pre_0033 {
+        let sql = std::fs::read_to_string(entry.path()).expect("read migration");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|err| panic!("failed migration {:?}: {err}", entry.file_name()));
+    }
+
+    let actor = Uuid::now_v7();
+    let wallet_a = Uuid::now_v7();
+    let method_a = Uuid::now_v7();
+    let wallet_b = Uuid::now_v7();
+    let method_b = Uuid::now_v7();
+    for (w, wn, m, mn) in [
+        (wallet_a, "Backfill Cash", method_a, "Backfill Cash M"),
+        (wallet_b, "Backfill Bank", method_b, "Backfill Bank M"),
+    ] {
+        sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, $2)")
+            .bind(w)
+            .bind(wn)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, $2, $3)")
+            .bind(m)
+            .bind(mn)
+            .bind(w)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    // Customer A: pre-0033 Issue #102 bug state + adjustment_out.
+    // R1 ($100, Wallet A, t1), Refund ($100, Wallet A, t2), R2 ($50, Wallet B, t3),
+    // Sale 1 ($50) allocated to R1 ($50), plus adjustment_out ($10).
+    let cust_a = seed_customer(&pool, "Pre0033 Bug Customer").await;
+    let sale_a = seed_completed_sale(&pool, cust_a, dec!(50.00)).await;
+    let mv_ca_r1 = Uuid::now_v7();
+    let mv_ca_ref = Uuid::now_v7();
+    let mv_ca_r2 = Uuid::now_v7();
+    for (id, w, m, kind, amt) in [
+        (
+            mv_ca_r1,
+            wallet_a,
+            method_a,
+            "account_payment",
+            dec!(100.00),
+        ),
+        (
+            mv_ca_ref,
+            wallet_a,
+            method_a,
+            "account_payment_refund",
+            dec!(100.00),
+        ),
+        (mv_ca_r2, wallet_b, method_b, "account_payment", dec!(50.00)),
+    ] {
+        sqlx::query(
+            "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, customer_id)
+             VALUES ($1, $2, $3::wallet_movement_kind, $4, $5, $6)",
+        )
+        .bind(id)
+        .bind(w)
+        .bind(kind)
+        .bind(amt)
+        .bind(m)
+        .bind(cust_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let ca_r1 = Uuid::now_v7();
+    let ca_ref = Uuid::now_v7();
+    let ca_r2 = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO customer_account_entries (id, customer_id, kind, amount, wallet_movement_id, created_by, created_at)
+         VALUES ($1, $2, 'receipt', -100.00, $3, $4, now() - interval '3 hours'),
+                ($5, $2, 'credit_refund', 100.00, $6, $4, now() - interval '2 hours'),
+                ($7, $2, 'receipt', -50.00, $8, $4, now() - interval '1 hour')",
+    )
+    .bind(ca_r1)
+    .bind(cust_a)
+    .bind(mv_ca_r1)
+    .bind(actor)
+    .bind(ca_ref)
+    .bind(mv_ca_ref)
+    .bind(ca_r2)
+    .bind(mv_ca_r2)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO customer_account_entries (id, customer_id, kind, amount, sale_id, created_by)
+         VALUES ($1, $2, 'sale_charge', 50.00, $3, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(cust_a)
+    .bind(sale_a)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO customer_account_entries (id, customer_id, kind, amount, note, created_by)
+         VALUES ($1, $2, 'adjustment_out', -10.00, 'pre-fix adj', $3)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(cust_a)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO customer_account_allocations (id, entry_id, sale_id, amount)
+         VALUES ($1, $2, $3, 50.00)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(ca_r1)
+    .bind(sale_a)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Customer B: clean multi-receipt with same-wallet refund.
+    // R1 ($40, Wallet A, t1), R2 ($60, Wallet B, t2), Refund ($60, Wallet B, t3).
+    let cust_b = seed_customer(&pool, "Pre0033 Clean Customer").await;
+    let mv_cb_r1 = Uuid::now_v7();
+    let mv_cb_r2 = Uuid::now_v7();
+    let mv_cb_ref = Uuid::now_v7();
+    for (id, w, m, kind, amt) in [
+        (mv_cb_r1, wallet_a, method_a, "account_payment", dec!(40.00)),
+        (mv_cb_r2, wallet_b, method_b, "account_payment", dec!(60.00)),
+        (
+            mv_cb_ref,
+            wallet_b,
+            method_b,
+            "account_payment_refund",
+            dec!(60.00),
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, customer_id)
+             VALUES ($1, $2, $3::wallet_movement_kind, $4, $5, $6)",
+        )
+        .bind(id)
+        .bind(w)
+        .bind(kind)
+        .bind(amt)
+        .bind(m)
+        .bind(cust_b)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let cb_r1 = Uuid::now_v7();
+    let cb_r2 = Uuid::now_v7();
+    let cb_ref = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO customer_account_entries (id, customer_id, kind, amount, wallet_movement_id, created_by, created_at)
+         VALUES ($1, $2, 'receipt', -40.00, $3, $4, now() - interval '3 hours'),
+                ($5, $2, 'receipt', -60.00, $6, $4, now() - interval '2 hours'),
+                ($7, $2, 'credit_refund', 60.00, $8, $4, now() - interval '1 hour')",
+    )
+    .bind(cb_r1)
+    .bind(cust_b)
+    .bind(mv_cb_r1)
+    .bind(actor)
+    .bind(cb_r2)
+    .bind(mv_cb_r2)
+    .bind(cb_ref)
+    .bind(mv_cb_ref)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Supplier S: pre-0033 Issue #102 bug state + purchase_return_credit.
+    let supp_s = Uuid::now_v7();
+    sqlx::query("INSERT INTO suppliers (id, name) VALUES ($1, 'Pre0033 Supplier')")
+        .bind(supp_s)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let purch_s = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchases (id, status, supplier_id, supplier_name, total, created_by, completed_by, completed_at)
+         VALUES ($1, 'completed', $2, 'Pre0033 Supplier', 50.00, $3, $3, now())",
+    )
+    .bind(purch_s)
+    .bind(supp_s)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let ret_s = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchase_returns (id, purchase_id, total, surplus_mode, reason, created_by)
+         VALUES ($1, $2, 50.00, 'supplier_credit', 'pre-0033 credit', $3)",
+    )
+    .bind(ret_s)
+    .bind(purch_s)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mv_sp1 = Uuid::now_v7();
+    let mv_sref = Uuid::now_v7();
+    for (id, kind) in [
+        (mv_sp1, "supplier_account_payment"),
+        (mv_sref, "supplier_account_refund"),
+    ] {
+        sqlx::query(
+            "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, supplier_id)
+             VALUES ($1, $2, $3::wallet_movement_kind, 100.00, $4, $5)",
+        )
+        .bind(id)
+        .bind(wallet_a)
+        .bind(kind)
+        .bind(method_a)
+        .bind(supp_s)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let sp1 = Uuid::now_v7();
+    let sref = Uuid::now_v7();
+    let src = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, wallet_movement_id, created_by, created_at)
+         VALUES ($1, $2, 'payment', -100.00, $3, $4, now() - interval '3 hours'),
+                ($5, $2, 'credit_refund', 100.00, $6, $4, now() - interval '2 hours')",
+    )
+    .bind(sp1)
+    .bind(supp_s)
+    .bind(mv_sp1)
+    .bind(actor)
+    .bind(sref)
+    .bind(mv_sref)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, purchase_return_id, created_by, created_at)
+         VALUES ($1, $2, 'purchase_return_credit', -50.00, $3, $4, now() - interval '1 hour')",
+    )
+    .bind(src)
+    .bind(supp_s)
+    .bind(ret_s)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, purchase_id, created_by)
+         VALUES ($1, $2, 'purchase_charge', 50.00, $3, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(supp_s)
+    .bind(purch_s)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO supplier_account_allocations (id, entry_id, purchase_id, amount)
+         VALUES ($1, $2, $3, 50.00)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(sp1)
+    .bind(purch_s)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Now run migration 0033 on top of the populated pre-0033 database!
+    let sql_0033 = std::fs::read_to_string("migrations/0033_credit_refund_allocations.sql")
+        .expect("read migration 0033");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql_0033))
+        .execute(&pool)
+        .await
+        .expect("migration 0033 backfill must succeed");
+
+    // Verify Customer A backfill: $50 on R1 (remaining unallocated) + $50 on R2.
+    let ca_attrs: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT receipt_entry_id, amount
+         FROM customer_account_credit_refund_allocations
+         WHERE refund_entry_id = $1
+         ORDER BY receipt_entry_id",
+    )
+    .bind(ca_ref)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut expected_ca = vec![(ca_r1, dec!(50.00)), (ca_r2, dec!(50.00))];
+    expected_ca.sort_by_key(|(id, _)| *id);
+    assert_eq!(ca_attrs, expected_ca);
+
+    // Verify Customer B backfill: $60 on R2 (same wallet), leaving R1 ($40) intact.
+    let cb_attrs: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT receipt_entry_id, amount
+         FROM customer_account_credit_refund_allocations
+         WHERE refund_entry_id = $1",
+    )
+    .bind(cb_ref)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(cb_attrs, vec![(cb_r2, dec!(60.00))]);
+
+    // Verify Supplier S backfill: $50 on Payment 1 + $50 on purchase_return_credit.
+    let s_attrs: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT source_entry_id, amount
+         FROM supplier_account_credit_refund_allocations
+         WHERE refund_entry_id = $1
+         ORDER BY source_entry_id",
+    )
+    .bind(sref)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut expected_s = vec![(sp1, dec!(50.00)), (src, dec!(50.00))];
+    expected_s.sort_by_key(|(id, _)| *id);
+    assert_eq!(s_attrs, expected_s);
+}

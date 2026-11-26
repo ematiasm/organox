@@ -856,9 +856,9 @@ async fn ensure_movement_backing(
     wallet_movement_id: Uuid,
     amount: Decimal,
     forbidden_account_kind: &str,
-) -> Result<(), RepoError> {
+) -> Result<Uuid, RepoError> {
     let movement = sqlx::query!(
-        r#"SELECT amount, customer_id, kind::text AS "kind!" FROM wallet_movements WHERE id = $1"#,
+        r#"SELECT amount, customer_id, wallet_id, kind::text AS "kind!" FROM wallet_movements WHERE id = $1"#,
         wallet_movement_id
     )
     .fetch_optional(&mut *conn)
@@ -888,7 +888,7 @@ async fn ensure_movement_backing(
         });
     }
 
-    Ok(())
+    Ok(movement.wallet_id)
 }
 
 /// Charge one sale's unpaid part to the account. The unique partial index is
@@ -1220,18 +1220,33 @@ pub async fn allocate(
         });
     }
 
-    // The receipt-level ceiling above is not enough on its own: money already
-    // handed back as a credit refund still sits inside a receipt that its
-    // per-receipt sum cannot see. Allocating it would dispose of the same money
-    // twice — once as cash leaving a wallet, once as a settled sale — and the
-    // balance identity would still hold, so only this customer-level ceiling
-    // catches it. `unapplied_credit` is exactly `collected - allocated -
-    // refunded`, which is what an allocation may still consume.
+    // Both the account-level `unapplied_credit` ceiling and this receipt's own
+    // unrefunded remainder must cover the allocation: money handed back via a
+    // `credit_refund` is attributed to specific receipts, so a refunded receipt
+    // cannot be reused to back future sales even when newer receipts keep
+    // account-level `unapplied_credit` positive.
+    let refunded = sqlx::query_scalar!(
+        r#"
+        SELECT COALESCE(SUM(amount), 0)::numeric(14, 2) AS "refunded!: Decimal"
+        FROM customer_account_credit_refund_allocations
+        WHERE receipt_entry_id = $1
+        "#,
+        entry_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+
     let position = account_position_in(conn, entry.customer_id).await?;
-    if amount > position.unapplied_credit {
+    let entry_available = collected
+        .checked_sub(already)
+        .and_then(|rem| rem.checked_sub(refunded))
+        .unwrap_or(Decimal::ZERO)
+        .max(Decimal::ZERO);
+    let available = position.unapplied_credit.min(entry_available);
+    if amount > available {
         return Err(RepoError::AllocationExceedsCredit {
             requested: amount,
-            available: position.unapplied_credit,
+            available,
         });
     }
 
@@ -1279,11 +1294,10 @@ pub async fn apply_available_credit(
     sale_id: Uuid,
     up_to: Decimal,
 ) -> Result<Decimal, RepoError> {
-    // Two ceilings decide before any receipt is even read: what the caller
-    // asked for, and what the account can actually pay with. Capping by
-    // `unapplied_credit` up front is what keeps a refunded receipt's paper
-    // remainder from being spent — the per-receipt remainder below cannot see
-    // a refund, but this sum can.
+    // Two ceilings decide before any receipt is read: what the caller asked
+    // for, and what the account can actually pay with. Per-receipt refund
+    // attributions below also exclude refunded receipts so credit-note refunds
+    // route through the wallet that actually holds the remaining credit.
     let position = account_position_in(conn, customer_id).await?;
     let cap = up_to.min(position.unapplied_credit);
     if cap <= Decimal::ZERO {
@@ -1298,24 +1312,36 @@ pub async fn apply_available_credit(
         return Ok(Decimal::ZERO);
     }
 
-    // The receipts that still carry unallocated money, oldest first. The `id`
-    // tiebreaker keeps the order total: two receipts created in the same
-    // instant are still one before the other, and the ids are time-ordered.
-    // The bound is deliberate: a fragmented account applies at most this many
-    // receipts per completion and the rest stays usable credit, so one
-    // checkout cannot hold the account lock for an unbounded time — and the
-    // next completion spends the remainder oldest-first again, so nothing is
-    // lost, only deferred.
+    // The receipts that still carry unallocated and unrefunded money, oldest
+    // first. The `id` tiebreaker keeps the order total: two receipts created in
+    // the same instant are still one before the other, and the ids are
+    // time-ordered. The bound is deliberate: a fragmented account applies at
+    // most this many receipts per completion and the rest stays usable credit,
+    // so one checkout cannot hold the account lock for an unbounded time — and
+    // the next completion spends the remainder oldest-first again, so nothing
+    // is lost, only deferred.
     let receipts = sqlx::query!(
         r#"
-        SELECT e.id                                          AS "entry_id!: Uuid",
-               (-e.amount - COALESCE(SUM(a.amount), 0))::numeric(14, 2)
-                                                          AS "available!: Decimal"
+        SELECT e.id AS "entry_id!: Uuid",
+               (
+                   -e.amount
+                   - COALESCE(alloc.total, 0)
+                   - COALESCE(ref_alloc.total, 0)
+               )::numeric(14, 2) AS "available!: Decimal"
         FROM customer_account_entries e
-        LEFT JOIN customer_account_allocations a ON a.entry_id = e.id
-        WHERE e.customer_id = $1 AND e.kind = 'receipt'
-        GROUP BY e.id
-        HAVING -e.amount - COALESCE(SUM(a.amount), 0) > 0
+        LEFT JOIN LATERAL (
+            SELECT SUM(a.amount) AS total
+            FROM customer_account_allocations a
+            WHERE a.entry_id = e.id
+        ) alloc ON true
+        LEFT JOIN LATERAL (
+            SELECT SUM(ra.amount) AS total
+            FROM customer_account_credit_refund_allocations ra
+            WHERE ra.receipt_entry_id = e.id
+        ) ref_alloc ON true
+        WHERE e.customer_id = $1
+          AND e.kind = 'receipt'
+          AND -e.amount - COALESCE(alloc.total, 0) - COALESCE(ref_alloc.total, 0) > 0
         ORDER BY e.created_at, e.id
         LIMIT 100
         "#,
@@ -1516,7 +1542,7 @@ pub async fn record_credit_refund_with_key(
     // carried what the entry claims, it belongs to this customer, it is not a
     // sale's own till money, and an inflow (`account_payment`) cannot back an
     // outflow refund.
-    ensure_movement_backing(
+    let refund_wallet_id = ensure_movement_backing(
         conn,
         refund.customer_id,
         refund.wallet_movement_id,
@@ -1584,6 +1610,66 @@ pub async fn record_credit_refund_with_key(
         | Some("customer_account_entries_receipt_idempotency") => RepoError::AlreadyRecorded,
         _ => RepoError::Database(err),
     })?;
+
+    // Attribute the refunded credit to the receipts that hold unapplied credit:
+    // consume receipts from the same wallet first (preserving physical wallet
+    // correspondence), then oldest-first across remaining receipts.
+    let receipts = sqlx::query!(
+        r#"
+        SELECT e.id AS "entry_id!: Uuid",
+               (
+                   -e.amount
+                   - COALESCE(alloc.total, 0)
+                   - COALESCE(ref_alloc.total, 0)
+               )::numeric(14, 2) AS "available!: Decimal"
+        FROM customer_account_entries e
+        LEFT JOIN wallet_movements wm ON wm.id = e.wallet_movement_id
+        LEFT JOIN LATERAL (
+            SELECT SUM(a.amount) AS total
+            FROM customer_account_allocations a
+            WHERE a.entry_id = e.id
+        ) alloc ON true
+        LEFT JOIN LATERAL (
+            SELECT SUM(ra.amount) AS total
+            FROM customer_account_credit_refund_allocations ra
+            WHERE ra.receipt_entry_id = e.id
+        ) ref_alloc ON true
+        WHERE e.customer_id = $1
+          AND e.kind = 'receipt'
+          AND -e.amount - COALESCE(alloc.total, 0) - COALESCE(ref_alloc.total, 0) > 0
+        ORDER BY CASE WHEN wm.wallet_id = $2 THEN 0 ELSE 1 END, e.created_at, e.id
+        "#,
+        refund.customer_id,
+        refund_wallet_id,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let mut remaining = refund.amount;
+    for receipt in receipts {
+        if remaining.is_zero() {
+            break;
+        }
+        let take = remaining.min(receipt.available);
+        sqlx::query!(
+            r#"
+            INSERT INTO customer_account_credit_refund_allocations
+                (id, refund_entry_id, receipt_entry_id, amount)
+            VALUES ($1, $2, $3, $4)
+            "#,
+            Uuid::now_v7(),
+            id,
+            receipt.entry_id,
+            take,
+        )
+        .execute(&mut *conn)
+        .await?;
+        remaining -= take;
+    }
+
+    if !remaining.is_zero() {
+        return Err(RepoError::CreditApplicationBroken);
+    }
 
     Ok(id)
 }
