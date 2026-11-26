@@ -43,7 +43,7 @@ pub const MAX_TAX_ID_LEN: usize = 32;
 /// would pass sign and scale and then fail inside Postgres as an internal
 /// error, so the boundary refuses it with a sentence the operator can act on.
 pub fn max_credit_limit() -> Decimal {
-    Decimal::new(99_999_999_999_999, 2)
+    crate::money::MAX_AMOUNT
 }
 /// The longest address the email standard allows.
 pub const MAX_EMAIL_LEN: usize = 254;

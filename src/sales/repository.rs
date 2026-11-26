@@ -37,11 +37,23 @@ pub enum RepoError {
     #[error("the sale is empty")]
     EmptySale,
 
+    #[error("the quantity has more than 3 decimal places")]
+    QuantityPrecision,
+
+    #[error("the quantity exceeds the allowed maximum")]
+    QuantityTooLarge,
+
+    #[error("the sale total exceeds the allowed maximum")]
+    TotalTooLarge,
+
     #[error("the payment amount must be greater than zero")]
     PaymentAmountNotPositive,
 
     #[error("the payment amount has more than 2 decimal places")]
     PaymentAmountPrecision,
+
+    #[error("the payment amount exceeds the allowed maximum")]
+    PaymentAmountTooLarge,
 
     #[error("the payments do not add up to the sale total")]
     PaymentMismatch {
@@ -55,6 +67,9 @@ pub enum RepoError {
 
     #[error("the on-account amount has more than 2 decimal places")]
     OnAccountPrecision,
+
+    #[error("the on-account amount exceeds the allowed maximum")]
+    OnAccountTooLarge,
 
     #[error("an on-account amount needs a customer on the sale")]
     OnAccountNeedsCustomer,
@@ -174,6 +189,44 @@ pub async fn upsert_item(
     // assuming 0, which is what the customer would otherwise be charged.
     let unit_price = product.price.ok_or(RepoError::ProductDoesNotTrackStock)?;
 
+    if quantity.round_dp(3) != quantity {
+        return Err(RepoError::QuantityPrecision);
+    }
+    if quantity > crate::money::MAX_QUANTITY {
+        return Err(RepoError::QuantityTooLarge);
+    }
+
+    // Validate the summed line quantity (`numeric(12, 3)`) and projected sale
+    // total (`numeric(14, 2)`) under the `sales FOR UPDATE` lock before writing,
+    // turning Postgres `22003` numeric overflows into a typed 422 rejection.
+    let existing_items = sqlx::query!(
+        r#"
+        SELECT product_id, quantity, unit_price
+        FROM sale_items
+        WHERE sale_id = $1
+        "#,
+        sale_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut found = false;
+    let mut projected = Vec::with_capacity(existing_items.len() + 1);
+    for item in existing_items {
+        if item.product_id == product_id {
+            let new_qty = crate::money::checked_add_quantity(item.quantity, quantity)
+                .ok_or(RepoError::QuantityTooLarge)?;
+            projected.push((new_qty, item.unit_price));
+            found = true;
+        } else {
+            projected.push((item.quantity, item.unit_price));
+        }
+    }
+    if !found {
+        projected.push((quantity, unit_price));
+    }
+    crate::money::checked_document_total(projected).ok_or(RepoError::TotalTooLarge)?;
+
     sqlx::query!(
         r#"
         INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price)
@@ -206,6 +259,15 @@ pub async fn set_item_quantity(
     product_id: Uuid,
     quantity: Decimal,
 ) -> Result<(), RepoError> {
+    if quantity > Decimal::ZERO {
+        if quantity.round_dp(3) != quantity {
+            return Err(RepoError::QuantityPrecision);
+        }
+        if quantity > crate::money::MAX_QUANTITY {
+            return Err(RepoError::QuantityTooLarge);
+        }
+    }
+
     let mut tx = pool.begin().await?;
 
     let sale_status = sqlx::query_scalar!(
@@ -229,7 +291,33 @@ pub async fn set_item_quantity(
         .execute(&mut *tx)
         .await?;
     } else {
-        let result = sqlx::query!(
+        let existing_items = sqlx::query!(
+            r#"
+            SELECT product_id, quantity, unit_price
+            FROM sale_items
+            WHERE sale_id = $1
+            "#,
+            sale_id
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut found = false;
+        let mut projected = Vec::with_capacity(existing_items.len());
+        for item in existing_items {
+            if item.product_id == product_id {
+                projected.push((quantity, item.unit_price));
+                found = true;
+            } else {
+                projected.push((item.quantity, item.unit_price));
+            }
+        }
+        if !found {
+            return Err(RepoError::ProductNotFound);
+        }
+        crate::money::checked_document_total(projected).ok_or(RepoError::TotalTooLarge)?;
+
+        sqlx::query!(
             "UPDATE sale_items SET quantity = $3 WHERE sale_id = $1 AND product_id = $2",
             sale_id,
             product_id,
@@ -237,10 +325,6 @@ pub async fn set_item_quantity(
         )
         .execute(&mut *tx)
         .await?;
-
-        if result.rows_affected() == 0 {
-            return Err(RepoError::ProductNotFound);
-        }
     }
 
     refresh_total(&mut tx, sale_id).await?;
@@ -450,7 +534,11 @@ async fn resolve_payments(
         if payment.amount.round_dp(2) != payment.amount {
             return Err(RepoError::PaymentAmountPrecision);
         }
-        paid += payment.amount;
+        if payment.amount > crate::money::MAX_AMOUNT {
+            return Err(RepoError::PaymentAmountTooLarge);
+        }
+        paid = crate::money::checked_add_amount(paid, payment.amount)
+            .ok_or(RepoError::PaymentAmountTooLarge)?;
         let amount = payment.amount;
 
         let method = payments::find_method(&mut **tx, payment.payment_method_id)
@@ -475,7 +563,8 @@ async fn resolve_payments(
     // `paid` carries both parts together, so the rejection names the amount
     // the request actually covered; `on_account` travels separately because
     // only a request that used the account may mention it in the message.
-    let covered = paid + on_account;
+    let covered = crate::money::checked_add_amount(paid, on_account)
+        .ok_or(RepoError::PaymentAmountTooLarge)?;
     if covered != total {
         return Err(RepoError::PaymentMismatch {
             total,
@@ -583,6 +672,9 @@ pub async fn complete(
     if on_account.round_dp(2) != on_account {
         return Err(RepoError::OnAccountPrecision);
     }
+    if on_account > crate::money::MAX_AMOUNT {
+        return Err(RepoError::OnAccountTooLarge);
+    }
 
     let mut tx = pool.begin().await?;
 
@@ -660,11 +752,20 @@ pub async fn complete(
             });
         }
 
-        total += item.quantity * item.unit_price;
+        let subtotal = item
+            .quantity
+            .checked_mul(item.unit_price)
+            .ok_or(RepoError::TotalTooLarge)?;
+        total = total
+            .checked_add(subtotal)
+            .ok_or(RepoError::TotalTooLarge)?;
     }
 
     // `numeric(14,2)`: rounded on save, not truncated.
     let total = total.round_dp(2);
+    if total > crate::money::MAX_AMOUNT {
+        return Err(RepoError::TotalTooLarge);
+    }
 
     // The money must add up to the total the server computed — the wallets'
     // part plus the account's part — and every method must still be usable.

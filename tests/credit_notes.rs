@@ -2598,3 +2598,25 @@ async fn partial_refunds_consolidate_till_and_receipt_on_same_tender_across_thre
     assert_eq!(balance(&pool, card_wallet).await, Decimal::ZERO);
     assert_eq!(balance(&pool, digital_wallet).await, Decimal::ZERO);
 }
+
+#[sqlx::test]
+async fn credit_note_rejects_quantity_above_numeric_ceiling_with_422(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let method = cash(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(10.00)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let sale = sale_part_on_account(
+        &pool,
+        actor,
+        product,
+        dec!(1),
+        None,
+        Some(method),
+        dec!(10.00),
+    )
+    .await;
+    let cookie = login_cookie(&pool, &password).await;
+
+    let (status, _) = note_http(&pool, &cookie, sale, product, dec!(1_000_000_000)).await;
+    assert_eq!(status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+}

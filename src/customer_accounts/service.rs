@@ -63,6 +63,7 @@ impl From<RepoError> for ReceiptsError {
             RepoError::SaleNotFound => ReceiptsError::SaleNotFound,
             RepoError::CustomerBusy => ReceiptsError::CustomerBusy,
             RepoError::AlreadyRecorded => ReceiptsError::AlreadyRecorded,
+            RepoError::AmountTooLarge { max } => ReceiptsError::AmountTooLarge { max },
             RepoError::NonPositiveAmount
             | RepoError::TooManyDecimals { .. }
             | RepoError::SaleOfAnotherCustomer
@@ -108,8 +109,7 @@ impl From<wallets::RepoError> for ReceiptsError {
 /// lesson the credit limit learned in review: the boundary owns the column's
 /// magnitude.
 fn max_amount() -> Decimal {
-    // 12 integer digits and 2 decimals, the exact capacity of numeric(14, 2).
-    Decimal::from_i128_with_scale(99_999_999_999_999, 2)
+    crate::money::MAX_AMOUNT
 }
 
 /// Shared money validation at the boundary, in published precedence order:

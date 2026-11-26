@@ -44,11 +44,23 @@ pub enum SalesError {
     #[error("the quantity must be greater than zero")]
     QuantityNotPositive,
 
+    #[error("the quantity has more than 3 decimal places")]
+    QuantityPrecision,
+
+    #[error("the quantity exceeds the allowed maximum")]
+    QuantityTooLarge,
+
+    #[error("the sale total exceeds the allowed maximum")]
+    TotalTooLarge,
+
     #[error("the payment amount must be greater than zero")]
     PaymentAmountNotPositive,
 
     #[error("the payment amount has more than 2 decimal places")]
     PaymentAmountPrecision,
+
+    #[error("the payment amount exceeds the allowed maximum")]
+    PaymentAmountTooLarge,
 
     #[error("the payments do not add up to the sale total")]
     PaymentMismatch {
@@ -62,6 +74,9 @@ pub enum SalesError {
 
     #[error("the on-account amount has more than 2 decimal places")]
     OnAccountPrecision,
+
+    #[error("the on-account amount exceeds the allowed maximum")]
+    OnAccountTooLarge,
 
     #[error("an on-account amount needs a customer on the sale")]
     OnAccountNeedsCustomer,
@@ -106,8 +121,12 @@ fn map_repo_error(err: RepoError) -> SalesError {
         },
         RepoError::NotEditable => SalesError::NotEditable,
         RepoError::EmptySale => SalesError::EmptySale,
+        RepoError::QuantityPrecision => SalesError::QuantityPrecision,
+        RepoError::QuantityTooLarge => SalesError::QuantityTooLarge,
+        RepoError::TotalTooLarge => SalesError::TotalTooLarge,
         RepoError::PaymentAmountNotPositive => SalesError::PaymentAmountNotPositive,
         RepoError::PaymentAmountPrecision => SalesError::PaymentAmountPrecision,
+        RepoError::PaymentAmountTooLarge => SalesError::PaymentAmountTooLarge,
         RepoError::PaymentMismatch {
             total,
             paid,
@@ -120,6 +139,7 @@ fn map_repo_error(err: RepoError) -> SalesError {
         RepoError::PaymentMethodUnavailable => SalesError::PaymentMethodUnavailable,
         RepoError::OnAccountNegative => SalesError::OnAccountNegative,
         RepoError::OnAccountPrecision => SalesError::OnAccountPrecision,
+        RepoError::OnAccountTooLarge => SalesError::OnAccountTooLarge,
         RepoError::OnAccountNeedsCustomer => SalesError::OnAccountNeedsCustomer,
         RepoError::OnAccountNeedsActiveCustomer => SalesError::OnAccountNeedsActiveCustomer,
         RepoError::OnAccountExceedsCreditLimit { available } => {
@@ -169,6 +189,12 @@ pub async fn add_item(
     if quantity <= Decimal::ZERO {
         return Err(SalesError::QuantityNotPositive);
     }
+    if quantity.round_dp(3) != quantity {
+        return Err(SalesError::QuantityPrecision);
+    }
+    if quantity > crate::money::MAX_QUANTITY {
+        return Err(SalesError::QuantityTooLarge);
+    }
 
     repository::upsert_item(pool, sale_id, product_id, quantity)
         .await
@@ -183,6 +209,15 @@ pub async fn set_item_quantity(
     product_id: Uuid,
     quantity: Decimal,
 ) -> Result<Sale, SalesError> {
+    if quantity > Decimal::ZERO {
+        if quantity.round_dp(3) != quantity {
+            return Err(SalesError::QuantityPrecision);
+        }
+        if quantity > crate::money::MAX_QUANTITY {
+            return Err(SalesError::QuantityTooLarge);
+        }
+    }
+
     repository::set_item_quantity(pool, sale_id, product_id, quantity)
         .await
         .map_err(map_repo_error)?;

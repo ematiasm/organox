@@ -271,6 +271,8 @@ impl From<PurchaseReturnsError> for AppError {
             PurchaseReturnsError::Empty
             | PurchaseReturnsError::QuantityNotPositive
             | PurchaseReturnsError::QuantityPrecision
+            | PurchaseReturnsError::QuantityTooLarge
+            | PurchaseReturnsError::TotalTooLarge
             | PurchaseReturnsError::DuplicateProduct
             | PurchaseReturnsError::ReasonMissing
             | PurchaseReturnsError::ReasonTooLong

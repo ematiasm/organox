@@ -999,3 +999,48 @@ async fn concurrent_purchase_return_and_supplier_payment_allocation_do_not_deadl
     assert_eq!(pos.outstanding_total, dec!(10.00));
     assert!(pos.is_consistent());
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn purchase_return_rejects_quantity_above_numeric_ceiling_with_422(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let (_wallet, method) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+    let product = seed_product(&pool, "Flour").await;
+    let supplier = seed_supplier(&pool, "Mill").await;
+    let app = app(pool.clone());
+    let cookie = login_cookie(&app, "owner@pyme.com", &password).await;
+
+    let (draft, _) = purchases::open_draft(&pool, actor).await.unwrap();
+    purchases::set_supplier(&pool, draft, Some(supplier))
+        .await
+        .unwrap();
+    purchases::add_item(&pool, draft, product, dec!(5), dec!(10.00))
+        .await
+        .unwrap();
+    purchases::complete(
+        &pool,
+        draft,
+        actor,
+        &[PurchasePaymentInput {
+            payment_method_id: method,
+            amount: dec!(50.00),
+        }],
+        Decimal::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let (status, _) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/purchases/{draft}/returns"),
+        Some(json!({
+            "reason": "Too large",
+            "surplus_mode": "wallet_refund",
+            "items": [{ "product_id": product, "quantity": "1000000000" }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}

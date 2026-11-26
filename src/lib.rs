@@ -8,6 +8,7 @@ pub mod customer_accounts;
 pub mod customers;
 pub mod db;
 pub mod error;
+pub mod money;
 pub mod openapi;
 pub mod payments;
 pub mod purchase_returns;
