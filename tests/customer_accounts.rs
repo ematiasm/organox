@@ -79,9 +79,15 @@ async fn seed_draft_sale(pool: &PgPool) -> Uuid {
     id
 }
 
-/// A wallet movement a receipt can point at. The ledger only needs the money to
-/// exist in a wallet; which kind of movement carried it is not its business.
-async fn seed_movement(pool: &PgPool, amount: Decimal) -> Uuid {
+/// A wallet movement that belongs to a customer's account: raw SQL on purpose,
+/// like every fixture here, so the ledger's own tests never depend on the
+/// service layer above it.
+async fn seed_customer_movement(
+    pool: &PgPool,
+    customer_id: Uuid,
+    kind: &str,
+    amount: Decimal,
+) -> Uuid {
     let wallet = Uuid::now_v7();
     let method = Uuid::now_v7();
     let movement = Uuid::now_v7();
@@ -102,19 +108,29 @@ async fn seed_movement(pool: &PgPool, amount: Decimal) -> Uuid {
         .expect("method");
     sqlx::query(
         r#"
-        INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id)
-        VALUES ($1, $2, 'adjustment_in', $3, $4)
+        INSERT INTO wallet_movements (id, wallet_id, kind, amount, customer_id, payment_method_id)
+        VALUES ($1, $2, $3::wallet_movement_kind, $4, $5, $6)
         "#,
     )
     .bind(movement)
     .bind(wallet)
+    .bind(kind)
     .bind(amount)
+    .bind(customer_id)
     .bind(method)
     .execute(pool)
     .await
-    .expect("movement");
+    .expect("customer account movement");
 
     movement
+}
+
+async fn seed_account_payment(pool: &PgPool, customer_id: Uuid, amount: Decimal) -> Uuid {
+    seed_customer_movement(pool, customer_id, "account_payment", amount).await
+}
+
+async fn seed_account_payment_refund(pool: &PgPool, customer_id: Uuid, amount: Decimal) -> Uuid {
+    seed_customer_movement(pool, customer_id, "account_payment_refund", amount).await
 }
 
 struct NewEntry<'a> {
@@ -239,7 +255,7 @@ async fn an_account_without_entries_owes_nothing(pool: PgPool) {
 async fn the_balance_is_the_signed_sum_of_the_entries(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(150.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(150.00)).await;
 
     insert_entry(&pool, NewEntry::charge(customer, sale, dec!(100.00)))
         .await
@@ -287,7 +303,7 @@ async fn the_balance_is_the_signed_sum_of_the_entries(pool: PgPool) {
 async fn allocating_a_receipt_lowers_the_outstanding_and_the_usable_credit(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(150.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(150.00)).await;
 
     insert_entry(&pool, NewEntry::charge(customer, sale, dec!(100.00)))
         .await
@@ -324,7 +340,7 @@ async fn allocating_a_receipt_lowers_the_outstanding_and_the_usable_credit(pool:
 async fn a_fully_paid_sale_leaves_the_debt_list(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(40.00)).await;
-    let movement = seed_movement(&pool, dec!(40.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(40.00)).await;
 
     insert_entry(&pool, NewEntry::charge(customer, sale, dec!(40.00)))
         .await
@@ -357,7 +373,7 @@ async fn a_fully_paid_sale_leaves_the_debt_list(pool: PgPool) {
 async fn an_entry_cannot_be_stored_with_the_sign_its_kind_forbids(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(50.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(50.00)).await;
 
     // A receipt stored positive would add debt where it removes it.
     let receipt_positive = insert_entry(
@@ -407,7 +423,7 @@ async fn an_entry_cannot_be_stored_with_the_sign_its_kind_forbids(pool: PgPool) 
 async fn an_entry_must_name_the_document_its_kind_needs(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(50.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(50.00)).await;
 
     // A charge without its sale is debt from nowhere.
     let charge_without_sale = insert_entry(
@@ -528,7 +544,7 @@ async fn a_sale_is_charged_to_the_account_once(pool: PgPool) {
 #[sqlx::test]
 async fn a_wallet_movement_backs_at_most_one_entry(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
-    let movement = seed_movement(&pool, dec!(100.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(100.00)).await;
 
     insert_entry(&pool, NewEntry::receipt(customer, movement, dec!(40.00)))
         .await
@@ -555,7 +571,7 @@ async fn an_allocation_cannot_exceed_its_receipt(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let first = seed_completed_sale(&pool, customer, dec!(100.00)).await;
     let second = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(50.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(50.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     let receipt = insert_entry(&mut *tx, NewEntry::receipt(customer, movement, dec!(50.00)))
@@ -580,7 +596,7 @@ async fn an_allocation_cannot_pay_another_customers_sale(pool: PgPool) {
     let ana = seed_customer(&pool, "Ana").await;
     let beto = seed_customer(&pool, "Beto").await;
     let beto_sale = seed_completed_sale(&pool, beto, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(100.00)).await;
+    let movement = seed_account_payment(&pool, ana, dec!(100.00)).await;
 
     let receipt = insert_entry(&pool, NewEntry::receipt(ana, movement, dec!(100.00)))
         .await
@@ -594,7 +610,7 @@ async fn an_allocation_cannot_pay_another_customers_sale(pool: PgPool) {
 async fn an_allocation_cannot_pay_a_sale_that_is_not_completed(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let draft = seed_draft_sale(&pool).await;
-    let movement = seed_movement(&pool, dec!(100.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(100.00)).await;
 
     let receipt = insert_entry(&pool, NewEntry::receipt(customer, movement, dec!(100.00)))
         .await
@@ -648,7 +664,7 @@ async fn charging_a_sale_raises_the_debt(pool: PgPool) {
 async fn a_receipt_collects_money_and_pays_the_sale(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(60.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(60.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
@@ -690,7 +706,7 @@ async fn a_receipt_collects_money_and_pays_the_sale(pool: PgPool) {
 async fn a_receipt_can_leave_money_unapplied(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(150.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(150.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
@@ -724,8 +740,8 @@ async fn a_receipt_can_leave_money_unapplied(pool: PgPool) {
 #[sqlx::test]
 async fn a_replayed_receipt_returns_the_first_one(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
-    let first_movement = seed_movement(&pool, dec!(60.00)).await;
-    let second_movement = seed_movement(&pool, dec!(60.00)).await;
+    let first_movement = seed_account_payment(&pool, customer, dec!(60.00)).await;
+    let second_movement = seed_account_payment(&pool, customer, dec!(60.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     let first = repository::record_receipt(
@@ -793,7 +809,7 @@ async fn a_receipt_cannot_allocate_more_than_the_sale_owes(pool: PgPool) {
         .expect("charge");
     tx.commit().await.expect("commit");
 
-    let movement = seed_movement(&pool, dec!(100.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(100.00)).await;
     let mut tx = pool.begin().await.expect("transaction");
     let result = repository::record_receipt(
         &mut tx,
@@ -855,7 +871,7 @@ async fn a_receipt_cannot_allocate_more_than_it_collected(pool: PgPool) {
         .expect("second charge");
     tx.commit().await.expect("commit");
 
-    let movement = seed_movement(&pool, dec!(100.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(100.00)).await;
     let mut tx = pool.begin().await.expect("transaction");
     let result = repository::record_receipt(
         &mut tx,
@@ -1029,8 +1045,8 @@ async fn two_concurrent_receipts_cannot_over_collect(pool: PgPool) {
         .expect("charge");
     tx.commit().await.expect("commit");
 
-    let movement_a = seed_movement(&pool, dec!(60.00)).await;
-    let movement_b = seed_movement(&pool, dec!(60.00)).await;
+    let movement_a = seed_account_payment(&pool, customer, dec!(60.00)).await;
+    let movement_b = seed_account_payment(&pool, customer, dec!(60.00)).await;
 
     // Two connections, two transactions: only the advisory lock can serialize
     // them, and this test is the proof that it does.
@@ -1068,7 +1084,7 @@ async fn two_concurrent_receipts_cannot_over_collect(pool: PgPool) {
 async fn a_receipt_cannot_disagree_with_its_wallet_movement(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(100.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(100.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     let result = repository::record_receipt(
@@ -1247,8 +1263,8 @@ async fn a_credit_note_is_recorded_once(pool: PgPool) {
 async fn a_credit_refund_returns_money_and_clears_the_credit(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let collected = seed_movement(&pool, dec!(150.00)).await;
-    let refunded = seed_movement(&pool, dec!(50.00)).await;
+    let collected = seed_account_payment(&pool, customer, dec!(150.00)).await;
+    let refunded = seed_account_payment_refund(&pool, customer, dec!(50.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
@@ -1292,7 +1308,7 @@ async fn a_credit_refund_returns_money_and_clears_the_credit(pool: PgPool) {
 async fn a_credit_refund_cannot_exceed_the_usable_credit(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(10.00)).await;
+    let movement = seed_account_payment_refund(&pool, customer, dec!(10.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
@@ -1335,8 +1351,8 @@ async fn a_credit_refund_cannot_exceed_the_usable_credit(pool: PgPool) {
 async fn a_credit_refund_is_recorded_once_per_movement(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let collected = seed_movement(&pool, dec!(150.00)).await;
-    let refunded = seed_movement(&pool, dec!(30.00)).await;
+    let collected = seed_account_payment(&pool, customer, dec!(150.00)).await;
+    let refunded = seed_account_payment_refund(&pool, customer, dec!(30.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
@@ -1429,7 +1445,7 @@ async fn an_opening_balance_can_be_loaded_with_an_adjustment(pool: PgPool) {
 async fn an_adjustment_cannot_cross_zero(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(150.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(150.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
@@ -1563,7 +1579,7 @@ async fn refunded_credit_cannot_be_allocated_again(pool: PgPool) {
     let sale = seed_completed_sale(&pool, customer, dec!(150.00)).await;
 
     // 150 collected and nothing allocated: the whole amount is usable credit.
-    let collected = seed_movement(&pool, dec!(150.00)).await;
+    let collected = seed_account_payment(&pool, customer, dec!(150.00)).await;
     let mut tx = pool.begin().await.expect("transaction");
     let receipt = repository::record_receipt(
         &mut tx,
@@ -1583,7 +1599,7 @@ async fn refunded_credit_cannot_be_allocated_again(pool: PgPool) {
     tx.commit().await.expect("commit");
 
     // 30 of that money is handed back, so only 120 may still pay a sale.
-    let refunded = seed_movement(&pool, dec!(30.00)).await;
+    let refunded = seed_account_payment_refund(&pool, customer, dec!(30.00)).await;
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_credit_refund(
         &mut tx,
@@ -1789,7 +1805,7 @@ async fn a_credit_note_cannot_cancel_more_than_the_note_carries(pool: PgPool) {
 async fn a_receipt_cannot_name_the_same_sale_twice(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(60.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(60.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     let result = repository::record_receipt(
@@ -1859,48 +1875,6 @@ async fn a_receipt_cannot_be_backed_by_a_sale_payment(pool: PgPool) {
     assert_eq!(entries, 0, "the rejected receipt left an entry behind");
 }
 
-/// A wallet movement that belongs to a customer's account: the kind the
-/// collection endpoint writes, carrying the customer it collected for. Raw SQL
-/// on purpose, like every fixture here — at the ledger's layer of the stack no
-/// repository writer exists for it yet, and a fixture must not depend on the
-/// slice being tested.
-async fn seed_account_payment(pool: &PgPool, customer_id: Uuid, amount: Decimal) -> Uuid {
-    let wallet = Uuid::now_v7();
-    let method = Uuid::now_v7();
-    let movement = Uuid::now_v7();
-    let suffix = Uuid::new_v4();
-
-    sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, $2)")
-        .bind(wallet)
-        .bind(format!("Wallet {suffix}"))
-        .execute(pool)
-        .await
-        .expect("wallet");
-    sqlx::query("INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, $2, $3)")
-        .bind(method)
-        .bind(format!("Method {suffix}"))
-        .bind(wallet)
-        .execute(pool)
-        .await
-        .expect("method");
-    sqlx::query(
-        r#"
-        INSERT INTO wallet_movements (id, wallet_id, kind, amount, customer_id, payment_method_id)
-        VALUES ($1, $2, 'account_payment', $3, $4, $5)
-        "#,
-    )
-    .bind(movement)
-    .bind(wallet)
-    .bind(amount)
-    .bind(customer_id)
-    .bind(method)
-    .execute(pool)
-    .await
-    .expect("account payment");
-
-    movement
-}
-
 #[sqlx::test]
 async fn a_receipt_backed_by_another_customers_movement_is_rejected(pool: PgPool) {
     let ana = seed_customer(&pool, "Ana").await;
@@ -1958,7 +1932,7 @@ async fn a_receipt_backed_by_another_customers_movement_is_rejected(pool: PgPool
 async fn allocating_a_receipt_succeeds_and_moves_the_debt(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(60.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(60.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_charge(&mut tx, customer, sale, dec!(100.00), Uuid::now_v7())
@@ -2010,7 +1984,7 @@ async fn the_outstanding_total_agrees_with_the_sale_list(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let first = seed_completed_sale(&pool, customer, dec!(100.00)).await;
     let second = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(60.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(60.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_charge(&mut tx, customer, first, dec!(100.00), Uuid::now_v7())
@@ -2055,7 +2029,7 @@ async fn the_outstanding_total_agrees_with_the_sale_list(pool: PgPool) {
 async fn an_allocation_beyond_the_sale_charge_is_rejected_by_the_engine(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
-    let movement = seed_movement(&pool, dec!(60.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(60.00)).await;
 
     let mut tx = pool.begin().await.expect("transaction");
     let receipt = insert_entry(&mut *tx, NewEntry::receipt(customer, movement, dec!(60.00)))
@@ -2177,7 +2151,7 @@ async fn a_zero_limit_is_cash_only(pool: PgPool) {
     // A customer holding money in the shop's favour is different: the charge
     // first spends that money, and only what it leaves over is credit. A
     // 30 charge against 50 held never asks for credit at all.
-    let movement = seed_movement(&pool, dec!(50.00)).await;
+    let movement = seed_account_payment(&pool, customer, dec!(50.00)).await;
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_receipt(
         &mut tx,
@@ -2403,7 +2377,7 @@ async fn applying_credit_consumes_the_oldest_receipt_first(pool: PgPool) {
 
     // Two receipts in two committed transactions: their `created_at` values
     // order them, and only that ordering decides which one pays.
-    let older_movement = seed_movement(&pool, dec!(50.00)).await;
+    let older_movement = seed_account_payment(&pool, customer, dec!(50.00)).await;
     let mut tx = pool.begin().await.expect("transaction");
     let older = repository::record_receipt(
         &mut tx,
@@ -2422,7 +2396,7 @@ async fn applying_credit_consumes_the_oldest_receipt_first(pool: PgPool) {
     .entry_id;
     tx.commit().await.expect("commit");
 
-    let newer_movement = seed_movement(&pool, dec!(30.00)).await;
+    let newer_movement = seed_account_payment(&pool, customer, dec!(30.00)).await;
     let mut tx = pool.begin().await.expect("transaction");
     let newer = repository::record_receipt(
         &mut tx,
@@ -2491,7 +2465,7 @@ async fn applying_credit_never_exceeds_the_usable_credit(pool: PgPool) {
     // customer's favour (a refund is only allowed against money actually
     // held): the receipt now carries 150 of unallocated money, but only 100
     // of it is the customer's to spend.
-    let collected = seed_movement(&pool, dec!(150.00)).await;
+    let collected = seed_account_payment(&pool, customer, dec!(150.00)).await;
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_receipt(
         &mut tx,
@@ -2509,7 +2483,7 @@ async fn applying_credit_never_exceeds_the_usable_credit(pool: PgPool) {
     .expect("receipt");
     tx.commit().await.expect("commit");
 
-    let refunded = seed_movement(&pool, dec!(50.00)).await;
+    let refunded = seed_account_payment_refund(&pool, customer, dec!(50.00)).await;
     let mut tx = pool.begin().await.expect("transaction");
     repository::record_credit_refund(
         &mut tx,
@@ -3758,4 +3732,346 @@ async fn migration_0033_backfill_handles_clean_and_pre_fix_corrupted_ledgers(poo
     let mut expected_s = vec![(sp1, dec!(50.00)), (src, dec!(50.00))];
     expected_s.sort_by_key(|(id, _)| *id);
     assert_eq!(s_attrs, expected_s);
+}
+
+#[sqlx::test]
+async fn ensure_movement_backing_enforces_exact_kind_whitelist_for_receipts_and_refunds(
+    pool: PgPool,
+) {
+    let actor = Uuid::now_v7();
+    let ana = seed_customer(&pool, "Ana Whitelist").await;
+    let sale = seed_completed_sale(&pool, ana, dec!(100.00)).await;
+    let note = seed_credit_note(&pool, sale, dec!(25.00)).await;
+
+    // Give Ana $100 of unapplied credit so affordability never masks the backing check.
+    let initial_mv = seed_account_payment(&pool, ana, dec!(100.00)).await;
+    let mut tx = pool.begin().await.expect("tx");
+    repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: initial_mv,
+            amount: dec!(100.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .expect("initial receipt");
+    tx.commit().await.expect("commit");
+
+    let wallet = Uuid::now_v7();
+    let method = Uuid::now_v7();
+    sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, 'Whitelist Wallet')")
+        .bind(wallet)
+        .execute(&pool)
+        .await
+        .expect("wallet");
+    sqlx::query(
+        "INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, 'Whitelist Cash', $2)",
+    )
+    .bind(method)
+    .bind(wallet)
+    .execute(&pool)
+    .await
+    .expect("method");
+
+    let supplier = Uuid::now_v7();
+    sqlx::query("INSERT INTO suppliers (id, name) VALUES ($1, 'Whitelist Supplier')")
+        .bind(supplier)
+        .execute(&pool)
+        .await
+        .expect("supplier");
+    let purchase = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchases (id, status, supplier_id, supplier_name, total, created_by, completed_by, completed_at)
+         VALUES ($1, 'completed', $2, 'Whitelist Supplier', 100.00, $3, $3, now())",
+    )
+    .bind(purchase)
+    .bind(supplier)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .expect("purchase");
+    let purchase_return = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchase_returns (id, purchase_id, total, surplus_mode, reason, created_by)
+         VALUES ($1, $2, 25.00, 'wallet_refund', 'whitelist test', $3)",
+    )
+    .bind(purchase_return)
+    .bind(purchase)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .expect("purchase return");
+
+    let amount = dec!(25.00);
+    let mut non_account_movements: Vec<(&str, Uuid)> = Vec::new();
+
+    for kind in ["supplier_account_payment", "supplier_account_refund"] {
+        let id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, supplier_id)
+             VALUES ($1, $2, $3::wallet_movement_kind, $4, $5, $6)",
+        )
+        .bind(id)
+        .bind(wallet)
+        .bind(kind)
+        .bind(amount)
+        .bind(method)
+        .bind(supplier)
+        .execute(&pool)
+        .await
+        .expect(kind);
+        non_account_movements.push((kind, id));
+    }
+
+    let purchase_payment_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, purchase_id)
+         VALUES ($1, $2, 'purchase_payment', $3, $4, $5)",
+    )
+    .bind(purchase_payment_id)
+    .bind(wallet)
+    .bind(amount)
+    .bind(method)
+    .bind(purchase)
+    .execute(&pool)
+    .await
+    .expect("purchase_payment");
+    non_account_movements.push(("purchase_payment", purchase_payment_id));
+
+    let purchase_refund_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, purchase_id, purchase_return_id)
+         VALUES ($1, $2, 'purchase_refund', $3, $4, $5, $6)",
+    )
+    .bind(purchase_refund_id)
+    .bind(wallet)
+    .bind(amount)
+    .bind(method)
+    .bind(purchase)
+    .bind(purchase_return)
+    .execute(&pool)
+    .await
+    .expect("purchase_refund");
+    non_account_movements.push(("purchase_refund", purchase_refund_id));
+
+    let sale_payment_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, sale_id)
+         VALUES ($1, $2, 'sale_payment', $3, $4, $5)",
+    )
+    .bind(sale_payment_id)
+    .bind(wallet)
+    .bind(amount)
+    .bind(method)
+    .bind(sale)
+    .execute(&pool)
+    .await
+    .expect("sale_payment");
+    non_account_movements.push(("sale_payment", sale_payment_id));
+
+    let sale_refund_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, sale_id, credit_note_id)
+         VALUES ($1, $2, 'sale_refund', $3, $4, $5, $6)",
+    )
+    .bind(sale_refund_id)
+    .bind(wallet)
+    .bind(amount)
+    .bind(method)
+    .bind(sale)
+    .bind(note)
+    .execute(&pool)
+    .await
+    .expect("sale_refund");
+    non_account_movements.push(("sale_refund", sale_refund_id));
+
+    for kind in ["expense", "adjustment_in", "adjustment_out"] {
+        let id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO wallet_movements (id, wallet_id, kind, amount)
+             VALUES ($1, $2, $3::wallet_movement_kind, $4)",
+        )
+        .bind(id)
+        .bind(wallet)
+        .bind(kind)
+        .bind(amount)
+        .execute(&pool)
+        .await
+        .expect(kind);
+        non_account_movements.push((kind, id));
+    }
+
+    let account_payment_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, customer_id)
+         VALUES ($1, $2, 'account_payment', $3, $4, $5)",
+    )
+    .bind(account_payment_id)
+    .bind(wallet)
+    .bind(amount)
+    .bind(method)
+    .bind(ana)
+    .execute(&pool)
+    .await
+    .expect("account_payment");
+
+    let account_payment_refund_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, customer_id)
+         VALUES ($1, $2, 'account_payment_refund', $3, $4, $5)",
+    )
+    .bind(account_payment_refund_id)
+    .bind(wallet)
+    .bind(amount)
+    .bind(method)
+    .bind(ana)
+    .execute(&pool)
+    .await
+    .expect("account_payment_refund");
+
+    // Receipts accept only `account_payment`.
+    for &(expected_kind, mv_id) in non_account_movements.iter().chain(std::iter::once(&(
+        "account_payment_refund",
+        account_payment_refund_id,
+    ))) {
+        let mut tx = pool.begin().await.expect("tx");
+        let err = repository::record_receipt(
+            &mut tx,
+            repository::NewReceipt {
+                customer_id: ana,
+                wallet_movement_id: mv_id,
+                amount,
+                allocations: &[],
+                idempotency_key: None,
+                note: None,
+                created_by: actor,
+            },
+        )
+        .await
+        .err();
+        assert!(
+            matches!(
+                err,
+                Some(repository::RepoError::MovementNotFromAnAccount { ref kind })
+                    if kind == expected_kind
+            ),
+            "record_receipt must reject `{expected_kind}` with MovementNotFromAnAccount, got {err:?}",
+        );
+        tx.rollback().await.expect("rollback");
+    }
+
+    // Credit refunds accept only `account_payment_refund`.
+    for &(expected_kind, mv_id) in non_account_movements
+        .iter()
+        .chain(std::iter::once(&("account_payment", account_payment_id)))
+    {
+        let mut tx = pool.begin().await.expect("tx");
+        let err = repository::record_credit_refund(
+            &mut tx,
+            ana,
+            mv_id,
+            amount,
+            Some("wrong kind"),
+            actor,
+        )
+        .await;
+        assert!(
+            matches!(
+                err,
+                Err(repository::RepoError::MovementNotFromAnAccount { ref kind })
+                    if kind == expected_kind
+            ),
+            "record_credit_refund must reject `{expected_kind}` with MovementNotFromAnAccount, got {err:?}",
+        );
+        tx.rollback().await.expect("rollback");
+    }
+
+    let entries: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM customer_account_entries WHERE customer_id = $1")
+            .bind(ana)
+            .fetch_one(&pool)
+            .await
+            .expect("entry count");
+    assert_eq!(entries, 1, "rejected writes must not leave entries behind");
+}
+
+#[sqlx::test]
+async fn a_credit_refund_backed_by_another_customers_movement_is_rejected(pool: PgPool) {
+    let actor = Uuid::now_v7();
+    let ana = seed_customer(&pool, "Ana Refund Owner").await;
+    let beto = seed_customer(&pool, "Beto Refund Owner").await;
+
+    let ana_payment = seed_account_payment(&pool, ana, dec!(100.00)).await;
+    let mut tx = pool.begin().await.expect("tx");
+    repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: ana,
+            wallet_movement_id: ana_payment,
+            amount: dec!(100.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .expect("receipt");
+    tx.commit().await.expect("commit");
+
+    let wallet = Uuid::now_v7();
+    let method = Uuid::now_v7();
+    let beto_refund_mv = Uuid::now_v7();
+    sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, 'Beto Refund Wallet')")
+        .bind(wallet)
+        .execute(&pool)
+        .await
+        .expect("wallet");
+    sqlx::query("INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, 'Beto Cash', $2)")
+        .bind(method)
+        .bind(wallet)
+        .execute(&pool)
+        .await
+        .expect("method");
+    sqlx::query(
+        "INSERT INTO wallet_movements (id, wallet_id, kind, amount, payment_method_id, customer_id)
+         VALUES ($1, $2, 'account_payment_refund', 50.00, $3, $4)",
+    )
+    .bind(beto_refund_mv)
+    .bind(wallet)
+    .bind(method)
+    .bind(beto)
+    .execute(&pool)
+    .await
+    .expect("beto refund movement");
+
+    let mut tx = pool.begin().await.expect("tx");
+    let err = repository::record_credit_refund(
+        &mut tx,
+        ana,
+        beto_refund_mv,
+        dec!(50.00),
+        Some("wrong owner"),
+        actor,
+    )
+    .await;
+    assert!(
+        matches!(err, Err(repository::RepoError::MovementOfAnotherCustomer)),
+        "expected MovementOfAnotherCustomer, got {err:?}",
+    );
+    tx.rollback().await.expect("rollback");
+
+    let refunds: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM customer_account_entries WHERE customer_id = $1 AND kind = 'credit_refund'",
+    )
+    .bind(ana)
+    .fetch_one(&pool)
+    .await
+    .expect("refund count");
+    assert_eq!(refunds, 0);
 }
