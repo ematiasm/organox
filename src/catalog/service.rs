@@ -201,8 +201,11 @@ pub async fn record_movement(
     pool: &PgPool,
     input: RecordMovementInput,
 ) -> Result<Uuid, CatalogError> {
-    if input.reason == MovementReason::PurchaseReturn {
-        return Err(ValidationError::NonManualReason.into());
+    if !input.reason.is_manual() {
+        return Err(ValidationError::NonManualReason {
+            reason: input.reason,
+        }
+        .into());
     }
     let quantity = validation::validate_quantity(input.quantity)?;
     let unit_cost = validation::validate_unit_cost(input.unit_cost)?;

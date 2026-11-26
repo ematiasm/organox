@@ -102,6 +102,21 @@ impl MovementReason {
     pub fn signed_effect(self, quantity: Decimal) -> Decimal {
         quantity * Decimal::from(self.sign())
     }
+
+    /// Reasons an operator may record directly through `record_movement`.
+    ///
+    /// `Return` and `PurchaseReturn` are written exclusively by credit notes
+    /// and purchase returns so stock inflows/outflows stay tied to their
+    /// source documents.
+    pub fn is_manual(self) -> bool {
+        match self {
+            MovementReason::Purchase
+            | MovementReason::Sale
+            | MovementReason::Adjustment
+            | MovementReason::Loss => true,
+            MovementReason::Return | MovementReason::PurchaseReturn => false,
+        }
+    }
 }
 
 impl fmt::Display for MovementReason {
@@ -179,6 +194,16 @@ mod tests {
         assert_eq!(MovementReason::Sale.sign(), -1);
         assert_eq!(MovementReason::PurchaseReturn.sign(), -1);
         assert_eq!(MovementReason::Loss.sign(), -1);
+    }
+
+    #[test]
+    fn return_reasons_are_not_manual() {
+        assert!(MovementReason::Purchase.is_manual());
+        assert!(MovementReason::Sale.is_manual());
+        assert!(MovementReason::Adjustment.is_manual());
+        assert!(MovementReason::Loss.is_manual());
+        assert!(!MovementReason::Return.is_manual());
+        assert!(!MovementReason::PurchaseReturn.is_manual());
     }
 
     #[test]
