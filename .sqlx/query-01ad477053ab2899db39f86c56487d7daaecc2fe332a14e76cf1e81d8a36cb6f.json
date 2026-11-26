@@ -1,0 +1,184 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH entry_totals AS (\n            SELECT\n                supplier_id,\n                COALESCE(SUM(amount), 0) AS balance,\n                COALESCE(SUM(CASE WHEN kind IN ('payment', 'purchase_return_credit')\n                                  THEN -amount ELSE 0 END), 0) AS paid,\n                COALESCE(SUM(CASE WHEN kind = 'credit_refund' THEN amount ELSE 0 END), 0)\n                    AS refunded,\n                COALESCE(SUM(CASE WHEN kind IN ('adjustment_in', 'adjustment_out')\n                                  THEN amount ELSE 0 END), 0) AS adjustments\n            FROM supplier_account_entries\n            GROUP BY supplier_id\n        ),\n        supplier_allocated AS (\n            SELECT e.supplier_id, COALESCE(SUM(a.amount), 0) AS total\n            FROM supplier_account_allocations a\n            JOIN supplier_account_entries e ON e.id = a.entry_id\n            GROUP BY e.supplier_id\n        ),\n        charges AS (\n            SELECT supplier_id, purchase_id, SUM(amount) AS charged\n            FROM supplier_account_entries\n            WHERE kind = 'purchase_charge'\n            GROUP BY supplier_id, purchase_id\n        ),\n        cancellations AS (\n            SELECT supplier_id, purchase_id, SUM(-amount) AS cancelled\n            FROM supplier_account_entries\n            WHERE kind = 'purchase_return'\n            GROUP BY supplier_id, purchase_id\n        ),\n        purchase_allocated AS (\n            SELECT e.supplier_id, a.purchase_id, SUM(a.amount) AS allocated\n            FROM supplier_account_allocations a\n            JOIN supplier_account_entries e ON e.id = a.entry_id\n            GROUP BY e.supplier_id, a.purchase_id\n        ),\n        open_purchases AS (\n            SELECT\n                ch.supplier_id,\n                (ch.charged - COALESCE(cn.cancelled, 0) - COALESCE(pa.allocated, 0)) AS outstanding,\n                FLOOR(EXTRACT(EPOCH FROM (NOW() - p.completed_at)) / 86400)::bigint AS age_days\n            FROM charges ch\n            JOIN purchases p ON p.id = ch.purchase_id\n            LEFT JOIN cancellations cn\n                   ON cn.supplier_id = ch.supplier_id AND cn.purchase_id = ch.purchase_id\n            LEFT JOIN purchase_allocated pa\n                   ON pa.supplier_id = ch.supplier_id AND pa.purchase_id = ch.purchase_id\n            WHERE ch.charged - COALESCE(cn.cancelled, 0) - COALESCE(pa.allocated, 0) > 0\n        ),\n        aging_by_supplier AS (\n            SELECT\n                supplier_id,\n                COALESCE(SUM(outstanding), 0) AS outstanding_total,\n                COALESCE(SUM(CASE WHEN age_days <= 30 THEN outstanding ELSE 0 END), 0)\n                    AS days_0_30,\n                COALESCE(SUM(CASE WHEN age_days BETWEEN 31 AND 60 THEN outstanding ELSE 0 END), 0)\n                    AS days_31_60,\n                COALESCE(SUM(CASE WHEN age_days BETWEEN 61 AND 90 THEN outstanding ELSE 0 END), 0)\n                    AS days_61_90,\n                COALESCE(SUM(CASE WHEN age_days > 90 THEN outstanding ELSE 0 END), 0)\n                    AS days_90_plus\n            FROM open_purchases\n            GROUP BY supplier_id\n        )\n        SELECT\n            s.id AS \"supplier_id!\",\n            s.name AS \"supplier_name!\",\n            s.tax_id,\n            s.is_active AS \"is_active!\",\n            et.balance::numeric(14, 2) AS \"balance!: Decimal\",\n            (et.paid - et.refunded - COALESCE(sa.total, 0))::numeric(14, 2)\n                AS \"unapplied_credit!: Decimal\",\n            COALESCE(ag.outstanding_total, 0)::numeric(14, 2) AS \"outstanding_total!: Decimal\",\n            et.adjustments::numeric(14, 2) AS \"adjustments!: Decimal\",\n            COALESCE(ag.days_0_30, 0)::numeric(14, 2) AS \"days_0_30!: Decimal\",\n            COALESCE(ag.days_31_60, 0)::numeric(14, 2) AS \"days_31_60!: Decimal\",\n            COALESCE(ag.days_61_90, 0)::numeric(14, 2) AS \"days_61_90!: Decimal\",\n            COALESCE(ag.days_90_plus, 0)::numeric(14, 2) AS \"days_90_plus!: Decimal\",\n            COUNT(*) OVER () AS \"items_total!\",\n            (SUM(et.balance) OVER ())::numeric(14, 2) AS \"total_balance!: Decimal\",\n            (SUM(et.paid - et.refunded - COALESCE(sa.total, 0)) OVER ())\n                ::numeric(14, 2) AS \"total_unapplied_credit!: Decimal\",\n            (SUM(COALESCE(ag.outstanding_total, 0)) OVER ())::numeric(14, 2)\n                AS \"total_outstanding!: Decimal\",\n            (SUM(et.adjustments) OVER ())::numeric(14, 2) AS \"total_adjustments!: Decimal\",\n            (SUM(COALESCE(ag.days_0_30, 0)) OVER ())::numeric(14, 2)\n                AS \"aging_days_0_30!: Decimal\",\n            (SUM(COALESCE(ag.days_31_60, 0)) OVER ())::numeric(14, 2)\n                AS \"aging_days_31_60!: Decimal\",\n            (SUM(COALESCE(ag.days_61_90, 0)) OVER ())::numeric(14, 2)\n                AS \"aging_days_61_90!: Decimal\",\n            (SUM(COALESCE(ag.days_90_plus, 0)) OVER ())::numeric(14, 2)\n                AS \"aging_days_90_plus!: Decimal\"\n        FROM entry_totals et\n        JOIN suppliers s ON s.id = et.supplier_id\n        LEFT JOIN supplier_allocated sa ON sa.supplier_id = et.supplier_id\n        LEFT JOIN aging_by_supplier ag ON ag.supplier_id = et.supplier_id\n        WHERE et.balance <> 0\n           OR (et.paid - et.refunded - COALESCE(sa.total, 0)) <> 0\n        ORDER BY et.balance DESC, lower(s.name) ASC, s.id ASC\n        LIMIT $1 OFFSET $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "supplier_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "suppliers",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "supplier_name!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "suppliers",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "tax_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "suppliers",
+            "name": "tax_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "is_active!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "suppliers",
+            "name": "is_active"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "balance!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "unapplied_credit!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "outstanding_total!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "adjustments!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "days_0_30!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "days_31_60!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "days_61_90!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "days_90_plus!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "items_total!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "total_balance!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "total_unapplied_credit!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "total_outstanding!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
+        "name": "total_adjustments!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "aging_days_0_30!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 18,
+        "name": "aging_days_31_60!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 19,
+        "name": "aging_days_61_90!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 20,
+        "name": "aging_days_90_plus!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "01ad477053ab2899db39f86c56487d7daaecc2fe332a14e76cf1e81d8a36cb6f"
+}

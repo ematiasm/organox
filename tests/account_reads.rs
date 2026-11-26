@@ -451,6 +451,72 @@ async fn account_read_routes_reject_unknown_customer_and_missing_session(pool: P
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn account_statement_windows_entries_and_keeps_the_running_balance(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool);
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+    let customer_id = create_customer(&app, &cookie, "Window Co", None, None).await;
+
+    for (amount, note) in [("10.00", "one"), ("20.00", "two"), ("30.00", "three")] {
+        let (status, body) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/customers/{customer_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": "in", "amount": amount, "note": note })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "adjustment: {body}");
+    }
+
+    let (status, full) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/account"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "full statement: {full}");
+    assert_eq!(full["entries"].as_array().unwrap().len(), 3);
+    assert_eq!(full["entries_total"], 3);
+
+    // The window keeps the running balance of the whole ledger: the entry at
+    // offset 1 still reports 30.00, not 20.00 counted from the page start.
+    let (status, page) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/account?limit=2&offset=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "windowed statement: {page}");
+    let entries = page["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(page["entries_total"], 3);
+    assert_eq!(entries[0]["running_balance"], "30.00");
+    assert_eq!(entries[1]["running_balance"], "60.00");
+    // The position is the whole account, never the page.
+    assert_eq!(page["balance"], "60.00");
+    assert_eq!(page["balance"], full["balance"]);
+
+    // Past the end: no entries, the real total, and the same position.
+    let (status, beyond) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/account?limit=2&offset=9"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "past the end: {beyond}");
+    assert_eq!(beyond["entries"].as_array().unwrap().len(), 0);
+    assert_eq!(beyond["entries_total"], 3);
+    assert_eq!(beyond["balance"], "60.00");
+}
+
 // =========================================================================
 // 2. GET /customers/{id}/receipts & GET /customers/{id}/adjustments
 // =========================================================================
@@ -825,6 +891,72 @@ async fn receivables_filters_open_positions_and_buckets_aging_from_sale_date(poo
             + parse_dec(&body["aging"]["days_90_plus"]),
         total_out
     );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn receivables_windows_items_and_keeps_the_portfolio_totals(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool);
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    for (name, amount) in [("First Debtor", "10.00"), ("Second Debtor", "20.00")] {
+        let customer_id = create_customer(&app, &cookie, name, None, None).await;
+        let (status, body) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/customers/{customer_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": "in", "amount": amount, "note": "opening" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "adjustment: {body}");
+    }
+
+    let (status, full) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/receivables",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "full report: {full}");
+    assert_eq!(full["items"].as_array().unwrap().len(), 2);
+    assert_eq!(full["items_total"], 2);
+
+    // One page of items, totals over the whole report.
+    let (status, page) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/receivables?limit=1",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "windowed report: {page}");
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["items_total"], 2);
+    assert_eq!(page["total_balance"], full["total_balance"]);
+    assert_eq!(
+        page["total_unapplied_credit"],
+        full["total_unapplied_credit"]
+    );
+    assert_eq!(page["total_outstanding"], full["total_outstanding"]);
+    assert_eq!(page["aging"], full["aging"]);
+
+    // Past the end: no items, and the totals still describe the report.
+    let (status, beyond) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/receivables?limit=1&offset=5",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "past the end: {beyond}");
+    assert_eq!(beyond["items"].as_array().unwrap().len(), 0);
+    assert_eq!(beyond["items_total"], 2);
+    assert_eq!(beyond["total_balance"], full["total_balance"]);
 }
 
 // =========================================================================

@@ -921,13 +921,14 @@ async fn pure_on_account_purchase_records_stock_and_payable_without_wallet_movem
 
     // purchase_charge in supplier_account_entries and derived supplier balance == total.
     let mut conn = pool.acquire().await.unwrap();
-    let entries = supplier_accounts::list_entries_in(&mut conn, supplier_id)
-        .await
-        .unwrap();
+    let (entries, _entries_total) =
+        supplier_accounts::list_entries_in(&mut conn, supplier_id, None, 0)
+            .await
+            .unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].kind, SupplierAccountEntryKind::PurchaseCharge);
-    assert_eq!(entries[0].amount, dec!(400.00));
-    assert_eq!(entries[0].purchase_id, Some(draft_id));
+    assert_eq!(entries[0].0.kind, SupplierAccountEntryKind::PurchaseCharge);
+    assert_eq!(entries[0].0.amount, dec!(400.00));
+    assert_eq!(entries[0].0.purchase_id, Some(draft_id));
 
     let supplier = suppliers::get_supplier(&pool, supplier_id).await.unwrap();
     assert_eq!(supplier.balance, dec!(400.00));
@@ -992,13 +993,14 @@ async fn mixed_cash_and_on_account_purchase_writes_wallet_outflow_and_payable(po
 
     // Ledger purchase_charge for the on_account portion only.
     let mut conn = pool.acquire().await.unwrap();
-    let entries = supplier_accounts::list_entries_in(&mut conn, supplier_id)
-        .await
-        .unwrap();
+    let (entries, _entries_total) =
+        supplier_accounts::list_entries_in(&mut conn, supplier_id, None, 0)
+            .await
+            .unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].kind, SupplierAccountEntryKind::PurchaseCharge);
-    assert_eq!(entries[0].amount, dec!(650.00));
-    assert_eq!(entries[0].purchase_id, Some(draft_id));
+    assert_eq!(entries[0].0.kind, SupplierAccountEntryKind::PurchaseCharge);
+    assert_eq!(entries[0].0.amount, dec!(650.00));
+    assert_eq!(entries[0].0.purchase_id, Some(draft_id));
 
     let supplier = suppliers::get_supplier(&pool, supplier_id).await.unwrap();
     assert_eq!(supplier.balance, dec!(650.00));
@@ -1072,9 +1074,10 @@ async fn on_account_purchase_enforces_credit_limit_atomically(pool: PgPool) {
     {
         let mut conn = pool.acquire().await.unwrap();
         assert!(
-            supplier_accounts::list_entries_in(&mut conn, cash_only_supplier)
+            supplier_accounts::list_entries_in(&mut conn, cash_only_supplier, None, 0)
                 .await
                 .unwrap()
+                .0
                 .is_empty()
         );
     }
@@ -1320,9 +1323,10 @@ async fn on_account_validation_rejects_negative_precision_and_sum_mismatch(pool:
     );
     let mut conn = pool.acquire().await.unwrap();
     assert!(
-        supplier_accounts::list_entries_in(&mut conn, supplier_id)
+        supplier_accounts::list_entries_in(&mut conn, supplier_id, None, 0)
             .await
             .unwrap()
+            .0
             .is_empty()
     );
 }

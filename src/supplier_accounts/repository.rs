@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use super::model::{
-    AgingBuckets, PayableSupplier, PurchaseOutstanding, SupplierAccountEntry,
+    AgingBuckets, PayableSupplier, PayablesTotals, PurchaseOutstanding, SupplierAccountEntry,
     SupplierAccountEntryKind, SupplierAccountPosition, SupplierAdjustmentLogItem,
     SupplierPaymentLogAllocation, SupplierPaymentLogItem,
 };
@@ -297,11 +297,23 @@ pub async fn supplier_exists_in(
     Ok(found.is_some())
 }
 
-/// Every ledger entry for a supplier, oldest first (`created_at ASC, id ASC`).
+/// Every ledger entry for a supplier, oldest first (`created_at ASC, id ASC`),
+/// each carrying the running balance after it.
+///
+/// The running balance is a window over the whole ledger, not over the page:
+/// `limit`/`offset` only choose which entries come back, so a later page still
+/// reports the balance the account really had at that entry instead of
+/// restarting from zero. `limit = None` returns every entry, which is what the
+/// account panel needs to pair each charge with its purchase return.
+///
+/// The `id` tie-breaker (UUIDv7) keeps the order deterministic when two entries
+/// share the same database timestamp.
 pub async fn list_entries_in(
     conn: &mut PgConnection,
     supplier_id: Uuid,
-) -> Result<Vec<SupplierAccountEntry>, RepoError> {
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<(Vec<(SupplierAccountEntry, Decimal)>, i64), RepoError> {
     let rows = sqlx::query!(
         r#"
         SELECT id,
@@ -313,31 +325,66 @@ pub async fn list_entries_in(
                wallet_movement_id,
                note,
                created_by,
-               created_at
+               created_at,
+               (SUM(amount) OVER (
+                   ORDER BY created_at ASC, id ASC
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+               ))::numeric(14, 2) AS "running_balance!: Decimal",
+               COUNT(*) OVER () AS "entries_total!"
         FROM supplier_account_entries
         WHERE supplier_id = $1
         ORDER BY created_at ASC, id ASC
+        LIMIT $2 OFFSET $3
         "#,
-        supplier_id
+        supplier_id,
+        limit,
+        offset
     )
     .fetch_all(&mut *conn)
     .await?;
 
-    Ok(rows
+    let entries_total = rows.first().map(|row| row.entries_total).unwrap_or(-1);
+
+    let entries = rows
         .into_iter()
-        .map(|row| SupplierAccountEntry {
-            id: row.id,
-            supplier_id: row.supplier_id,
-            kind: row.kind,
-            amount: row.amount,
-            purchase_id: row.purchase_id,
-            purchase_return_id: row.purchase_return_id,
-            wallet_movement_id: row.wallet_movement_id,
-            note: row.note,
-            created_by: row.created_by,
-            created_at: row.created_at,
+        .map(|row| {
+            (
+                SupplierAccountEntry {
+                    id: row.id,
+                    supplier_id: row.supplier_id,
+                    kind: row.kind,
+                    amount: row.amount,
+                    purchase_id: row.purchase_id,
+                    purchase_return_id: row.purchase_return_id,
+                    wallet_movement_id: row.wallet_movement_id,
+                    note: row.note,
+                    created_by: row.created_by,
+                    created_at: row.created_at,
+                },
+                row.running_balance,
+            )
         })
-        .collect())
+        .collect();
+
+    Ok((entries, entries_total))
+}
+
+/// Total number of ledger entries for a supplier.
+///
+/// `list_entries_in` reports the count in each row, so this only runs when the
+/// requested window is past the end and the page query returns nothing.
+pub async fn count_entries_in(
+    conn: &mut PgConnection,
+    supplier_id: Uuid,
+) -> Result<i64, RepoError> {
+    let count = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM supplier_account_entries WHERE supplier_id = $1"#,
+        supplier_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+
+    Ok(count)
 }
 
 /// Supplier payment write log (`kind = 'payment'`), newest first, with each
@@ -460,17 +507,53 @@ pub async fn list_adjustments_in(
         .collect())
 }
 
-/// Every supplier with an open account position (`balance != 0` or
-/// `unapplied_credit != 0`), with open-purchase aging buckets computed from
-/// each purchase's `completed_at` timestamp in one consistent snapshot.
-pub async fn list_payables(pool: &PgPool) -> Result<Vec<PayableSupplier>, RepoError> {
+/// Portfolio-wide payables report: one row per supplier with an open position
+/// (`balance != 0` or `unapplied_credit != 0`), plus totals over the whole
+/// report.
+///
+/// `limit`/`offset` choose which suppliers come back; the totals are window
+/// aggregates over the filtered set, so they describe every supplier with a
+/// balance no matter which page the caller asked for. `limit = None` returns
+/// the whole report, which is what the report screen loads.
+///
+/// Elapsed whole days `floor((now - completed_at) / 86400)` partition every
+/// open purchase into exactly one bucket (`<= 30`, `31..=60`, `61..=90`,
+/// `> 90`), so the four buckets always sum to `outstanding_total`.
+pub async fn list_payables(
+    pool: &PgPool,
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<(Vec<PayableSupplier>, PayablesTotals), RepoError> {
     let mut conn = pool.acquire().await?;
-    list_payables_in(&mut conn).await
+    list_payables_in(&mut conn, limit, offset).await
 }
 
 /// [`list_payables`] inside an open transaction (such as a `REPEATABLE READ,
 /// READ ONLY` snapshot).
-pub async fn list_payables_in(conn: &mut PgConnection) -> Result<Vec<PayableSupplier>, RepoError> {
+pub async fn list_payables_in(
+    conn: &mut PgConnection,
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<(Vec<PayableSupplier>, PayablesTotals), RepoError> {
+    let (items, totals) = payables_page(conn, limit, offset).await?;
+
+    // A window past the end has no rows to carry the aggregates, and answering
+    // zeroed totals for a report that has suppliers would be a lie. Re-read the
+    // unwindowed report only in that case; it is the same query with other
+    // binds, never a duplicated one.
+    if items.is_empty() && (limit.is_some() || offset > 0) {
+        let (_, totals) = payables_page(conn, None, 0).await?;
+        return Ok((Vec::new(), totals));
+    }
+
+    Ok((items, totals))
+}
+
+async fn payables_page(
+    conn: &mut PgConnection,
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<(Vec<PayableSupplier>, PayablesTotals), RepoError> {
     let rows = sqlx::query!(
         r#"
         WITH entry_totals AS (
@@ -551,7 +634,22 @@ pub async fn list_payables_in(conn: &mut PgConnection) -> Result<Vec<PayableSupp
             COALESCE(ag.days_0_30, 0)::numeric(14, 2) AS "days_0_30!: Decimal",
             COALESCE(ag.days_31_60, 0)::numeric(14, 2) AS "days_31_60!: Decimal",
             COALESCE(ag.days_61_90, 0)::numeric(14, 2) AS "days_61_90!: Decimal",
-            COALESCE(ag.days_90_plus, 0)::numeric(14, 2) AS "days_90_plus!: Decimal"
+            COALESCE(ag.days_90_plus, 0)::numeric(14, 2) AS "days_90_plus!: Decimal",
+            COUNT(*) OVER () AS "items_total!",
+            (SUM(et.balance) OVER ())::numeric(14, 2) AS "total_balance!: Decimal",
+            (SUM(et.paid - et.refunded - COALESCE(sa.total, 0)) OVER ())
+                ::numeric(14, 2) AS "total_unapplied_credit!: Decimal",
+            (SUM(COALESCE(ag.outstanding_total, 0)) OVER ())::numeric(14, 2)
+                AS "total_outstanding!: Decimal",
+            (SUM(et.adjustments) OVER ())::numeric(14, 2) AS "total_adjustments!: Decimal",
+            (SUM(COALESCE(ag.days_0_30, 0)) OVER ())::numeric(14, 2)
+                AS "aging_days_0_30!: Decimal",
+            (SUM(COALESCE(ag.days_31_60, 0)) OVER ())::numeric(14, 2)
+                AS "aging_days_31_60!: Decimal",
+            (SUM(COALESCE(ag.days_61_90, 0)) OVER ())::numeric(14, 2)
+                AS "aging_days_61_90!: Decimal",
+            (SUM(COALESCE(ag.days_90_plus, 0)) OVER ())::numeric(14, 2)
+                AS "aging_days_90_plus!: Decimal"
         FROM entry_totals et
         JOIN suppliers s ON s.id = et.supplier_id
         LEFT JOIN supplier_allocated sa ON sa.supplier_id = et.supplier_id
@@ -559,12 +657,33 @@ pub async fn list_payables_in(conn: &mut PgConnection) -> Result<Vec<PayableSupp
         WHERE et.balance <> 0
            OR (et.paid - et.refunded - COALESCE(sa.total, 0)) <> 0
         ORDER BY et.balance DESC, lower(s.name) ASC, s.id ASC
-        "#
+        LIMIT $1 OFFSET $2
+        "#,
+        limit,
+        offset
     )
     .fetch_all(&mut *conn)
     .await?;
 
-    Ok(rows
+    let Some(first) = rows.first() else {
+        return Ok((Vec::new(), PayablesTotals::default()));
+    };
+
+    let totals = PayablesTotals {
+        items_total: first.items_total,
+        total_balance: first.total_balance,
+        total_unapplied_credit: first.total_unapplied_credit,
+        total_outstanding: first.total_outstanding,
+        total_adjustments: first.total_adjustments,
+        aging: AgingBuckets {
+            days_0_30: first.aging_days_0_30,
+            days_31_60: first.aging_days_31_60,
+            days_61_90: first.aging_days_61_90,
+            days_90_plus: first.aging_days_90_plus,
+        },
+    };
+
+    let items = rows
         .into_iter()
         .map(|row| PayableSupplier {
             supplier_id: row.supplier_id,
@@ -582,7 +701,9 @@ pub async fn list_payables_in(conn: &mut PgConnection) -> Result<Vec<PayableSupp
                 days_90_plus: row.days_90_plus,
             },
         })
-        .collect())
+        .collect();
+
+    Ok((items, totals))
 }
 
 // --- Writes -------------------------------------------------------------

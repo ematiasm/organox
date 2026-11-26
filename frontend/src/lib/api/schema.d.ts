@@ -16,6 +16,8 @@ export interface paths {
          * @description Lists every supplier whose `balance != 0` or `unapplied_credit != 0`,
          *     ordered by highest balance first, with open-purchase aging buckets computed
          *     from each purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`).
+         *     Omitting `limit` returns the whole report; `limit`/`offset` window `items`
+         *     while totals, aging, and `items_total` always describe the whole report.
          */
         get: operations["list_payables_doc"];
         put?: never;
@@ -183,9 +185,11 @@ export interface paths {
         };
         /**
          * Customer account statement.
-         * @description Returns every ledger entry oldest first with its running balance, the
+         * @description Returns ledger entries oldest first with their running balance, the
          *     customer's current balance and unapplied credit (`U`), and every sale that
-         *     still owes money — all read from one consistent snapshot.
+         *     still owes money — all read from one consistent snapshot. Omitting `limit`
+         *     returns the whole ledger; `limit`/`offset` return a bounded window and
+         *     `entries_total` always reports the whole ledger.
          */
         get: operations["get_account_statement_doc"];
         put?: never;
@@ -831,9 +835,11 @@ export interface paths {
         };
         /**
          * Supplier account statement.
-         * @description Returns every ledger entry oldest first with its running balance, the
+         * @description Returns ledger entries oldest first with their running balance, the
          *     supplier's current balance and unapplied credit, and every completed
          *     purchase with an open payable — all read from one consistent snapshot.
+         *     Omitting `limit` returns the whole ledger; `limit`/`offset` return a bounded
+         *     window and `entries_total` always reports the whole ledger.
          */
         get: operations["get_account_statement_doc"];
         put?: never;
@@ -1405,8 +1411,17 @@ export interface components {
             balance: string;
             /** Format: uuid */
             customer_id: string;
-            /** @description Ledger entries oldest first, each carrying the running balance after it. */
+            /**
+             * @description Ledger entries oldest first, each carrying the running balance after it.
+             *     Paginated only when `limit` is asked for; `entries_total` is the whole
+             *     ledger either way.
+             */
             entries: components["schemas"]["AccountStatementEntryResponse"][];
+            /**
+             * Format: int64
+             * @description Ledger entries in the whole statement, not just this page.
+             */
+            entries_total: number;
             /** @description Sales with `outstanding > 0`, oldest first. */
             outstanding_sales: components["schemas"]["OutstandingSaleResponse"][];
             /**
@@ -1604,7 +1619,13 @@ export interface components {
          */
         PayablesResponse: {
             aging: components["schemas"]["PayablesAgingBucketsResponse"];
+            /** @description Suppliers on this page. */
             items: components["schemas"]["PayableSupplierResponse"][];
+            /**
+             * Format: int64
+             * @description Suppliers in the whole report, not just this page.
+             */
+            items_total: number;
             /** @example 0.00 */
             total_adjustments: string;
             /** @example 175.00 */
@@ -1922,7 +1943,13 @@ export interface components {
          */
         ReceivablesResponse: {
             aging: components["schemas"]["AgingBucketsResponse"];
+            /** @description Customers on this page. */
             items: components["schemas"]["ReceivableCustomerResponse"][];
+            /**
+             * Format: int64
+             * @description Customers in the whole report, not just this page.
+             */
+            items_total: number;
             /** @example 0.00 */
             total_adjustments: string;
             /** @example 175.00 */
@@ -2154,8 +2181,17 @@ export interface components {
              * @example 100.00
              */
             balance: string;
-            /** @description Ledger entries oldest first, each carrying the running balance after it. */
+            /**
+             * @description Ledger entries oldest first, each carrying the running balance after it.
+             *     Paginated only when `limit` is asked for; `entries_total` is the whole
+             *     ledger either way.
+             */
             entries: components["schemas"]["SupplierAccountStatementEntryResponse"][];
+            /**
+             * Format: int64
+             * @description Ledger entries in the whole statement, not just this page.
+             */
+            entries_total: number;
             /** @description Purchases with `outstanding > 0`, oldest first. */
             outstanding_purchases: components["schemas"]["OutstandingPurchaseResponse"][];
             /**
@@ -2527,7 +2563,12 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                /** @description Maximum number of suppliers to return (default: all of them). */
+                limit: number | null;
+                /** @description Suppliers to skip from the first (default 0). */
+                offset: number | null;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2556,7 +2597,12 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                /** @description Maximum number of customers to return (default: all of them). */
+                limit: number | null;
+                /** @description Customers to skip from the first (default 0). */
+                offset: number | null;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -2919,6 +2965,10 @@ export interface operations {
             path: {
                 /** @description Customer ID */
                 id: string;
+                /** @description Maximum number of entries to return (default: all of them). */
+                limit: number | null;
+                /** @description Entries to skip from the oldest (default 0). */
+                offset: number | null;
             };
             cookie?: never;
         };
@@ -5096,6 +5146,10 @@ export interface operations {
             path: {
                 /** @description Supplier ID */
                 id: string;
+                /** @description Maximum number of entries to return (default: all of them). */
+                limit: number | null;
+                /** @description Entries to skip from the oldest (default 0). */
+                offset: number | null;
             };
             cookie?: never;
         };

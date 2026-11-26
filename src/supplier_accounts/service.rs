@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::payments::model::WalletMovementKind;
 use crate::payments::repository as wallets;
 use crate::supplier_accounts::model::{
-    AgingBuckets, PayablesSummary, SupplierAccountEntryKind, SupplierAccountStatement,
+    PayablesSummary, SupplierAccountEntryKind, SupplierAccountStatement,
     SupplierAccountStatementEntry, SupplierAdjustmentLogItem, SupplierPaymentLogItem,
 };
 use crate::supplier_accounts::repository::{self, RepoError};
@@ -423,6 +423,8 @@ async fn begin_read_snapshot(
 pub async fn account_statement(
     pool: &PgPool,
     supplier_id: Uuid,
+    limit: Option<i64>,
+    offset: i64,
 ) -> Result<SupplierAccountStatement, SupplierAccountError> {
     let mut tx = begin_read_snapshot(pool).await?;
 
@@ -431,20 +433,24 @@ pub async fn account_statement(
     }
 
     let position = repository::account_position_in(&mut tx, supplier_id).await?;
-    let raw_entries = repository::list_entries_in(&mut tx, supplier_id).await?;
+    let (rows, entries_total) =
+        repository::list_entries_in(&mut tx, supplier_id, limit, offset).await?;
+    // A window past the end carries no count; the ledger still has entries, so
+    // count them instead of answering zero.
+    let entries_total = if entries_total < 0 {
+        repository::count_entries_in(&mut tx, supplier_id).await?
+    } else {
+        entries_total
+    };
     let outstanding_purchases =
         repository::outstanding_by_purchase_in(&mut tx, supplier_id).await?;
     tx.commit().await?;
 
-    let mut running = Decimal::ZERO;
-    let entries = raw_entries
+    let entries = rows
         .into_iter()
-        .map(|entry| {
-            running += entry.amount;
-            SupplierAccountStatementEntry {
-                entry,
-                running_balance: running,
-            }
+        .map(|(entry, running_balance)| SupplierAccountStatementEntry {
+            entry,
+            running_balance,
         })
         .collect();
 
@@ -452,6 +458,7 @@ pub async fn account_statement(
         supplier_id,
         position,
         entries,
+        entries_total,
         outstanding_purchases,
     })
 }
@@ -496,32 +503,28 @@ pub async fn list_adjustments(
 /// Portfolio payables report: suppliers with `balance != 0` or
 /// `unapplied_credit != 0`, aging buckets from open purchases, and totals
 /// summed across all listed suppliers in one consistent read-only snapshot.
-pub async fn payables(pool: &PgPool) -> Result<PayablesSummary, SupplierAccountError> {
+pub async fn payables(
+    pool: &PgPool,
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<PayablesSummary, SupplierAccountError> {
+    let limit = limit.map(|limit| limit.clamp(1, 200));
+    let offset = offset.max(0);
+
     let mut tx = begin_read_snapshot(pool).await?;
-    let items = repository::list_payables_in(&mut tx).await?;
+    // The repository already reports totals over the whole report, so paging
+    // never changes what the portfolio owes — only which suppliers come back.
+    let (items, totals) = repository::list_payables_in(&mut tx, limit, offset).await?;
     tx.commit().await?;
 
-    let mut total_balance = Decimal::ZERO;
-    let mut total_unapplied_credit = Decimal::ZERO;
-    let mut total_outstanding = Decimal::ZERO;
-    let mut total_adjustments = Decimal::ZERO;
-    let mut aging = AgingBuckets::default();
-
-    for item in &items {
-        total_balance += item.balance;
-        total_unapplied_credit += item.unapplied_credit;
-        total_outstanding += item.outstanding_total;
-        total_adjustments += item.adjustments;
-        aging.add(&item.aging);
-    }
-
     Ok(PayablesSummary {
-        total_balance,
-        total_unapplied_credit,
-        total_outstanding,
-        total_adjustments,
-        aging,
+        total_balance: totals.total_balance,
+        total_unapplied_credit: totals.total_unapplied_credit,
+        total_outstanding: totals.total_outstanding,
+        total_adjustments: totals.total_adjustments,
+        aging: totals.aging,
         items,
+        items_total: totals.items_total,
     })
 }
 

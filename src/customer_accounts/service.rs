@@ -12,8 +12,8 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use crate::customer_accounts::model::{
-    AccountStatement, AccountStatementEntry, AdjustmentLogItem, AgingBuckets,
-    CustomerAccountEntryKind, ReceiptLogItem, ReceivablesSummary,
+    AccountStatement, AccountStatementEntry, AdjustmentLogItem, CustomerAccountEntryKind,
+    ReceiptLogItem, ReceivablesSummary,
 };
 use crate::customer_accounts::repository::{self, RepoError};
 use crate::payments::model::WalletMovementKind;
@@ -473,6 +473,8 @@ async fn begin_read_snapshot(
 pub async fn account_statement(
     pool: &PgPool,
     customer_id: Uuid,
+    limit: Option<i64>,
+    offset: i64,
 ) -> Result<AccountStatement, ReceiptsError> {
     let mut tx = begin_read_snapshot(pool).await?;
 
@@ -481,19 +483,23 @@ pub async fn account_statement(
     }
 
     let position = repository::account_position_in(&mut tx, customer_id).await?;
-    let raw_entries = repository::list_entries_in(&mut tx, customer_id).await?;
+    let (rows, entries_total) =
+        repository::list_entries_in(&mut tx, customer_id, limit, offset).await?;
+    // A window past the end carries no count; the ledger still has entries, so
+    // count them instead of answering zero.
+    let entries_total = if entries_total < 0 {
+        repository::count_entries_in(&mut tx, customer_id).await?
+    } else {
+        entries_total
+    };
     let outstanding_sales = repository::outstanding_by_sale_in(&mut tx, customer_id).await?;
     tx.commit().await?;
 
-    let mut running = Decimal::ZERO;
-    let entries = raw_entries
+    let entries = rows
         .into_iter()
-        .map(|entry| {
-            running += entry.amount;
-            AccountStatementEntry {
-                entry,
-                running_balance: running,
-            }
+        .map(|(entry, running_balance)| AccountStatementEntry {
+            entry,
+            running_balance,
         })
         .collect();
 
@@ -501,6 +507,7 @@ pub async fn account_statement(
         customer_id,
         position,
         entries,
+        entries_total,
         outstanding_sales,
     })
 }
@@ -545,29 +552,25 @@ pub async fn list_adjustments(
 /// Portfolio receivables report: customers with `balance != 0` or
 /// `unapplied_credit != 0`, aging buckets from open sales, and totals summed
 /// across all listed customers.
-pub async fn receivables(pool: &PgPool) -> Result<ReceivablesSummary, ReceiptsError> {
-    let items = repository::list_receivables(pool).await?;
+pub async fn receivables(
+    pool: &PgPool,
+    limit: Option<i64>,
+    offset: i64,
+) -> Result<ReceivablesSummary, ReceiptsError> {
+    let limit = limit.map(|limit| limit.clamp(1, 200));
+    let offset = offset.max(0);
 
-    let mut total_balance = Decimal::ZERO;
-    let mut total_unapplied_credit = Decimal::ZERO;
-    let mut total_outstanding = Decimal::ZERO;
-    let mut total_adjustments = Decimal::ZERO;
-    let mut aging = AgingBuckets::default();
-
-    for item in &items {
-        total_balance += item.balance;
-        total_unapplied_credit += item.unapplied_credit;
-        total_outstanding += item.outstanding_total;
-        total_adjustments += item.adjustments;
-        aging.add(&item.aging);
-    }
+    // The repository already reports totals over the whole report, so paging
+    // never changes what the portfolio owes — only which customers come back.
+    let (items, totals) = repository::list_receivables(pool, limit, offset).await?;
 
     Ok(ReceivablesSummary {
-        total_balance,
-        total_unapplied_credit,
-        total_outstanding,
-        total_adjustments,
-        aging,
+        total_balance: totals.total_balance,
+        total_unapplied_credit: totals.total_unapplied_credit,
+        total_outstanding: totals.total_outstanding,
+        total_adjustments: totals.total_adjustments,
+        aging: totals.aging,
         items,
+        items_total: totals.items_total,
     })
 }

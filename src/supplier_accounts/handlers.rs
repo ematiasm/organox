@@ -177,6 +177,32 @@ pub struct ListSupplierAccountLogQuery {
     pub limit: Option<i64>,
 }
 
+/// Window over a portfolio report (`/accounts/payables`).
+///
+/// Omitting `limit` returns the whole report, which is what the report screen
+/// loads. The totals and aging describe the whole report either way; only the
+/// `items` array is windowed.
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ListReportQuery {
+    /// Maximum number of suppliers to return (default: all of them).
+    pub limit: Option<i64>,
+    /// Suppliers to skip from the first (default 0).
+    pub offset: Option<i64>,
+}
+
+/// Window over the ledger entries of a supplier account statement.
+///
+/// Omitting `limit` returns every entry, which is what the account panel needs
+/// to pair each charge with its purchase return. Passing it returns a bounded
+/// window and `entries_total` still reports the whole ledger.
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ListStatementQuery {
+    /// Maximum number of entries to return (default: all of them).
+    pub limit: Option<i64>,
+    /// Entries to skip from the oldest (default 0).
+    pub offset: Option<i64>,
+}
+
 /// One ledger line in a supplier's account statement, with the running balance
 /// right after it.
 #[derive(Serialize, ToSchema)]
@@ -230,7 +256,11 @@ pub struct SupplierAccountResponse {
     #[schema(value_type = String, example = "100.00")]
     pub outstanding_total: String,
     /// Ledger entries oldest first, each carrying the running balance after it.
+    /// Paginated only when `limit` is asked for; `entries_total` is the whole
+    /// ledger either way.
     pub entries: Vec<SupplierAccountStatementEntryResponse>,
+    /// Ledger entries in the whole statement, not just this page.
+    pub entries_total: i64,
     /// Purchases with `outstanding > 0`, oldest first.
     pub outstanding_purchases: Vec<OutstandingPurchaseResponse>,
 }
@@ -323,7 +353,10 @@ pub struct PayablesResponse {
     #[schema(value_type = String, example = "0.00")]
     pub total_adjustments: String,
     pub aging: PayablesAgingBucketsResponse,
+    /// Suppliers on this page.
     pub items: Vec<PayableSupplierResponse>,
+    /// Suppliers in the whole report, not just this page.
+    pub items_total: i64,
 }
 
 // --- Handlers -----------------------------------------------------------
@@ -439,8 +472,12 @@ async fn get_account_statement(
     State(state): State<AppState>,
     _user: AuthUser,
     AppPath(id): AppPath<Uuid>,
+    AppQuery(query): AppQuery<ListStatementQuery>,
 ) -> Result<Json<SupplierAccountResponse>, AppError> {
-    let statement = service::account_statement(&state.pool, id).await?;
+    let limit = query.limit.map(|limit| limit.clamp(1, 500));
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let statement = service::account_statement(&state.pool, id, limit, offset).await?;
     Ok(Json(to_account_response(statement)))
 }
 
@@ -471,8 +508,12 @@ async fn list_adjustments(
 async fn list_payables(
     State(state): State<AppState>,
     _user: AuthUser,
+    AppQuery(query): AppQuery<ListReportQuery>,
 ) -> Result<Json<PayablesResponse>, AppError> {
-    let summary = service::payables(&state.pool).await?;
+    let limit = query.limit.map(|limit| limit.clamp(1, 200));
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let summary = service::payables(&state.pool, limit, offset).await?;
     Ok(Json(to_payables_response(summary)))
 }
 
@@ -556,6 +597,7 @@ fn to_account_response(statement: SupplierAccountStatement) -> SupplierAccountRe
             .into_iter()
             .map(to_statement_entry)
             .collect(),
+        entries_total: statement.entries_total,
         outstanding_purchases: statement
             .outstanding_purchases
             .into_iter()
@@ -629,6 +671,7 @@ fn to_payables_response(summary: PayablesSummary) -> PayablesResponse {
         total_adjustments: format_money(summary.total_adjustments),
         aging: to_aging_response(summary.aging),
         items: summary.items.into_iter().map(to_payable_supplier).collect(),
+        items_total: summary.items_total,
     }
 }
 
@@ -748,14 +791,19 @@ fn record_adjustment_doc() {}
 
 /// Supplier account statement.
 ///
-/// Returns every ledger entry oldest first with its running balance, the
+/// Returns ledger entries oldest first with their running balance, the
 /// supplier's current balance and unapplied credit, and every completed
 /// purchase with an open payable — all read from one consistent snapshot.
+/// Omitting `limit` returns the whole ledger; `limit`/`offset` return a bounded
+/// window and `entries_total` always reports the whole ledger.
 #[utoipa::path(
     get,
     path = "/api/v1/suppliers/{id}/account",
     tag = "supplier_accounts",
-    params(("id" = Uuid, Path, description = "Supplier ID")),
+    params(
+        ("id" = Uuid, Path, description = "Supplier ID"),
+        ListStatementQuery,
+    ),
     responses(
         (status = 200, description = "Supplier account statement", body = SupplierAccountResponse),
         (status = 401, description = "No session", body = crate::openapi::Problem,
@@ -812,10 +860,13 @@ fn list_adjustments_doc() {}
 /// Lists every supplier whose `balance != 0` or `unapplied_credit != 0`,
 /// ordered by highest balance first, with open-purchase aging buckets computed
 /// from each purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`).
+/// Omitting `limit` returns the whole report; `limit`/`offset` window `items`
+/// while totals, aging, and `items_total` always describe the whole report.
 #[utoipa::path(
     get,
     path = "/api/v1/accounts/payables",
     tag = "supplier_accounts",
+    params(ListReportQuery),
     responses(
         (status = 200, description = "Open supplier positions and aging buckets", body = PayablesResponse),
         (status = 401, description = "No session", body = crate::openapi::Problem,

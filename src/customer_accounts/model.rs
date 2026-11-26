@@ -199,6 +199,8 @@ pub struct AccountStatement {
     pub customer_id: Uuid,
     pub position: AccountPosition,
     pub entries: Vec<AccountStatementEntry>,
+    /// Ledger entries in the whole statement, not just the ones on this page.
+    pub entries_total: i64,
     pub outstanding_sales: Vec<SaleOutstanding>,
 }
 
@@ -277,6 +279,21 @@ pub struct ReceivableCustomer {
     pub aging: AgingBuckets,
 }
 
+/// Portfolio totals of the receivables report.
+///
+/// They always describe the whole report, never the page: `items_total` is how
+/// many customers have an open position, and every amount is the sum over all
+/// of them. Paging only chooses which customers come back with it.
+#[derive(Debug, Clone, Default)]
+pub struct ReceivablesTotals {
+    pub items_total: i64,
+    pub total_balance: Decimal,
+    pub total_unapplied_credit: Decimal,
+    pub total_outstanding: Decimal,
+    pub total_adjustments: Decimal,
+    pub aging: AgingBuckets,
+}
+
 /// Portfolio-wide receivables report across every customer with an open
 /// account position.
 #[derive(Debug, Clone)]
@@ -287,4 +304,6 @@ pub struct ReceivablesSummary {
     pub total_adjustments: Decimal,
     pub aging: AgingBuckets,
     pub items: Vec<ReceivableCustomer>,
+    /// Customers in the whole report, not just the ones on this page.
+    pub items_total: i64,
 }
