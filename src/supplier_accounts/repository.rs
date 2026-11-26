@@ -1150,6 +1150,8 @@ pub async fn apply_available_credit(
         return Ok(Decimal::ZERO);
     }
 
+    ensure_chargeable_purchase(conn, supplier_id, purchase_id).await?;
+
     let payments = sqlx::query!(
         r#"
         SELECT e.id AS "entry_id!: Uuid",
@@ -1173,30 +1175,48 @@ pub async fn apply_available_credit(
           AND e.kind IN ('payment', 'purchase_return_credit')
           AND -e.amount - COALESCE(alloc.total, 0) - COALESCE(ref_alloc.total, 0) > 0
         ORDER BY e.created_at, e.id
-        LIMIT 100
         "#,
         supplier_id
     )
     .fetch_all(&mut *conn)
     .await?;
 
+    let mut ids = Vec::new();
+    let mut entry_ids = Vec::new();
+    let mut amounts = Vec::new();
     let mut applied = Decimal::ZERO;
+
     for payment in payments {
         if remaining.is_zero() {
             break;
         }
         let take = remaining.min(payment.available);
-        allocate(conn, payment.entry_id, purchase_id, take)
-            .await
-            .map_err(|err| match err {
-                RepoError::OutstandingExceeded { .. }
-                | RepoError::AllocationExceedsPayment { .. }
-                | RepoError::AllocationExceedsCredit { .. } => RepoError::CreditApplicationBroken,
-                other => other,
-            })?;
+        ensure_cents(take)?;
+        ids.push(Uuid::now_v7());
+        entry_ids.push(payment.entry_id);
+        amounts.push(take);
         applied += take;
         remaining -= take;
     }
+
+    if !remaining.is_zero() {
+        return Err(RepoError::CreditApplicationBroken);
+    }
+
+    sqlx::query!(
+        r#"
+        INSERT INTO supplier_account_allocations (id, entry_id, purchase_id, amount)
+        SELECT id, entry_id, $3, amount
+        FROM UNNEST($1::uuid[], $2::uuid[], $4::numeric(14, 2)[])
+            AS planned(id, entry_id, amount)
+        "#,
+        &ids,
+        &entry_ids,
+        purchase_id,
+        &amounts,
+    )
+    .execute(&mut *conn)
+    .await?;
 
     Ok(applied)
 }

@@ -1560,3 +1560,92 @@ async fn credit_refund_attribution_blocks_manual_allocate_handles_return_credits
     .unwrap();
     assert_eq!(allocs2, vec![(rc_id, dec!(40.00))]);
 }
+
+#[sqlx::test]
+async fn applying_credit_consumes_more_than_100_payments_oldest_first(pool: PgPool) {
+    let actor = setup_actor();
+    let supplier = setup_supplier(&pool, "BatchCreditCo", None).await;
+    let (wallet, method) = setup_method(&pool, "Bank").await;
+    let purchase =
+        setup_completed_purchase(&pool, supplier, "BatchCreditCo", dec!(120.50), actor).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, purchase, dec!(120.50), actor)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    for _ in 0..125 {
+        let mv = insert_supplier_movement(
+            &pool,
+            wallet,
+            method,
+            supplier,
+            WalletMovementKind::SupplierAccountPayment,
+            dec!(1.00),
+            actor,
+        )
+        .await;
+        let mut tx = pool.begin().await.unwrap();
+        ledger::record_payment(
+            &mut tx,
+            NewSupplierPayment {
+                supplier_id: supplier,
+                wallet_movement_id: mv,
+                amount: dec!(1.00),
+                allocations: &[],
+                idempotency_key: None,
+                note: None,
+                created_by: actor,
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    let ordered_payments: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM supplier_account_entries
+         WHERE supplier_id = $1 AND kind IN ('payment', 'purchase_return_credit')
+         ORDER BY created_at, id",
+    )
+    .bind(supplier)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(ordered_payments.len(), 125);
+
+    let mut tx = pool.begin().await.unwrap();
+    ledger::lock_supplier(&mut tx, supplier).await.unwrap();
+    let applied = ledger::apply_available_credit(&mut tx, supplier, purchase, dec!(120.50))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(applied, dec!(120.50));
+
+    let allocs: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT a.entry_id, a.amount
+         FROM supplier_account_allocations a
+         JOIN supplier_account_entries e ON e.id = a.entry_id
+         WHERE a.purchase_id = $1
+         ORDER BY e.created_at, e.id",
+    )
+    .bind(purchase)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(allocs.len(), 121);
+    let expected: Vec<(Uuid, Decimal)> = ordered_payments[..120]
+        .iter()
+        .map(|&id| (id, dec!(1.00)))
+        .chain(std::iter::once((ordered_payments[120], dec!(0.50))))
+        .collect();
+    assert_eq!(allocs, expected);
+
+    let position = ledger::account_position(&pool, supplier).await.unwrap();
+    assert_eq!(position.unapplied_credit, dec!(4.50));
+    assert_eq!(position.outstanding_total, Decimal::ZERO);
+    assert_eq!(position.balance, dec!(-4.50));
+    assert!(position.is_consistent());
+}
