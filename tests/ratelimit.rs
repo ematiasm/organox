@@ -790,3 +790,54 @@ async fn ip_limiter_unwraps_ipv4_mapped_ipv6_via_http(pool: PgPool) {
         StatusCode::UNAUTHORIZED
     );
 }
+
+#[sqlx::test]
+async fn ip_rate_limit_returns_rfc7807_problem_json_with_retry_after(pool: PgPool) {
+    let limiter = IpLimiter::new(IpPolicy {
+        max_requests: 1,
+        window: Duration::from_secs(60),
+        burst: 0,
+    });
+    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+    let wrong = test_password();
+    let ip: IpAddr = "198.51.100.77".parse().unwrap();
+
+    let first = app
+        .clone()
+        .oneshot(login_request_from(ip, "problem@pyme.com", &wrong))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+
+    let blocked = app
+        .oneshot(login_request_from(ip, "problem@pyme.com", &wrong))
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        blocked
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/problem+json"),
+        "IP rate limit 429 must return RFC 7807 application/problem+json"
+    );
+    let retry_after: u64 = blocked
+        .headers()
+        .get(axum::http::header::RETRY_AFTER)
+        .expect("429 from IP limiter must include Retry-After")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(retry_after >= 1);
+
+    let bytes = axum::body::to_bytes(blocked.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["type"], "about:blank");
+    assert_eq!(body["title"], "Too Many Requests");
+    assert_eq!(body["status"], 429);
+    assert!(body["detail"].as_str().is_some_and(|s| !s.is_empty()));
+}

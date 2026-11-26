@@ -7,11 +7,11 @@
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 use crate::AppState;
+use crate::error::AppError;
 use crate::ratelimit::client_ip;
 
 pub async fn limit_by_ip(State(state): State<AppState>, request: Request, next: Next) -> Response {
@@ -28,26 +28,9 @@ pub async fn limit_by_ip(State(state): State<AppState>, request: Request, next: 
 
     let ip = client_ip(peer);
 
-    if let Err(retry_after) = state.ip_limiter.check_and_record(ip) {
-        tracing::warn!(%ip, retry_after, "IP rate limit exceeded");
-
-        let mut response = (
-            StatusCode::TOO_MANY_REQUESTS,
-            axum::Json(serde_json::json!({
-                "type": "about:blank",
-                "title": "Too Many Requests",
-                "status": 429,
-                "detail": "Too many attempts from this address. Wait a few seconds.",
-            })),
-        )
-            .into_response();
-
-        if let Ok(value) = retry_after.to_string().parse() {
-            response
-                .headers_mut()
-                .insert(axum::http::header::RETRY_AFTER, value);
-        }
-        return response;
+    if let Err(retry_after_secs) = state.ip_limiter.check_and_record(ip) {
+        tracing::warn!(%ip, retry_after_secs, "IP rate limit exceeded");
+        return AppError::TooManyRequests { retry_after_secs }.into_response();
     }
 
     next.run(request).await

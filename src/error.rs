@@ -32,6 +32,12 @@ pub enum AppError {
     #[error("too many attempts")]
     TooManyRequests { retry_after_secs: u64 },
 
+    #[error("bad request: {0}")]
+    BadRequest(String),
+
+    #[error("unsupported media type: {0}")]
+    UnsupportedMediaType(String),
+
     #[error("invalid input: {0}")]
     Validation(String),
 
@@ -76,6 +82,12 @@ impl IntoResponse for AppError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too Many Requests",
                 "Too many attempts. Wait a few minutes before retrying.".to_string(),
+            ),
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "Bad Request", msg.clone()),
+            AppError::UnsupportedMediaType(msg) => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Unsupported Media Type",
+                msg.clone(),
             ),
             AppError::Validation(msg) => (
                 StatusCode::UNPROCESSABLE_ENTITY,

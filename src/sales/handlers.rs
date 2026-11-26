@@ -6,7 +6,7 @@
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use chrono::{DateTime, Utc};
@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath};
 use crate::sales::model::{Sale, SalePaymentInput, SaleStatus};
 use crate::sales::service::{self, SalesError};
 
@@ -176,7 +177,7 @@ async fn open_draft(
 async fn get_sale(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<Json<SaleResponse>, AppError> {
     let sale = service::get(&state.pool, id).await?;
     Ok(Json(to_response(sale)))
@@ -185,8 +186,8 @@ async fn get_sale(
 async fn add_item(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<AddItemRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<AddItemRequest>,
 ) -> Result<Json<SaleResponse>, AppError> {
     let sale = service::add_item(&state.pool, id, body.product_id, body.quantity).await?;
     Ok(Json(to_response(sale)))
@@ -195,8 +196,8 @@ async fn add_item(
 async fn set_quantity(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path((id, product_id)): Path<(Uuid, Uuid)>,
-    Json(body): Json<SetQuantityRequest>,
+    AppPath((id, product_id)): AppPath<(Uuid, Uuid)>,
+    AppJson(body): AppJson<SetQuantityRequest>,
 ) -> Result<Json<SaleResponse>, AppError> {
     let sale = service::set_item_quantity(&state.pool, id, product_id, body.quantity).await?;
     Ok(Json(to_response(sale)))
@@ -205,7 +206,7 @@ async fn set_quantity(
 async fn remove_item(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path((id, product_id)): Path<(Uuid, Uuid)>,
+    AppPath((id, product_id)): AppPath<(Uuid, Uuid)>,
 ) -> Result<Json<SaleResponse>, AppError> {
     let sale = service::remove_item(&state.pool, id, product_id).await?;
     Ok(Json(to_response(sale)))
@@ -214,8 +215,8 @@ async fn remove_item(
 async fn complete_sale(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<CompleteSaleRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<CompleteSaleRequest>,
 ) -> Result<Json<CompletedSaleResponse>, AppError> {
     let payments: Vec<SalePaymentInput> = body
         .payments
@@ -242,7 +243,7 @@ async fn complete_sale(
 async fn cancel_sale(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
     service::cancel(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -251,8 +252,8 @@ async fn cancel_sale(
 async fn set_sale_customer(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<SetSaleCustomerRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<SetSaleCustomerRequest>,
 ) -> Result<StatusCode, AppError> {
     let Some(customer_id) = body.customer_id else {
         return Err(AppError::Validation(

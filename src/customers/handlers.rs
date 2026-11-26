@@ -6,7 +6,7 @@
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
@@ -20,6 +20,7 @@ use crate::auth::AuthUser;
 use crate::customers::model::Customer;
 use crate::customers::service::{self, CreateCustomerInput, CustomerError, UpdateCustomerInput};
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath, AppQuery};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -129,7 +130,7 @@ pub struct ListCustomersQuery {
 async fn list_customers(
     State(state): State<AppState>,
     _user: AuthUser,
-    Query(query): Query<ListCustomersQuery>,
+    AppQuery(query): AppQuery<ListCustomersQuery>,
 ) -> Result<Json<CustomerListResponse>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0).max(0);
@@ -154,7 +155,7 @@ async fn list_customers(
 async fn create_customer(
     State(state): State<AppState>,
     _user: AuthUser,
-    Json(body): Json<CreateCustomerRequest>,
+    AppJson(body): AppJson<CreateCustomerRequest>,
 ) -> Result<(StatusCode, Json<CustomerIdResponse>), AppError> {
     let id = service::create_customer(
         &state.pool,
@@ -174,7 +175,7 @@ async fn create_customer(
 async fn get_customer(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<Json<CustomerResponse>, AppError> {
     let customer = service::get_customer(&state.pool, id).await?;
     Ok(Json(to_response(customer)))
@@ -183,8 +184,8 @@ async fn get_customer(
 async fn update_customer(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<UpdateCustomerRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<UpdateCustomerRequest>,
 ) -> Result<StatusCode, AppError> {
     service::update_customer(
         &state.pool,
@@ -206,7 +207,7 @@ async fn update_customer(
 async fn deactivate_customer(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
     service::deactivate_customer(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)

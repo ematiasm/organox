@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
 use chrono::{DateTime, Utc};
@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath};
 use crate::purchase_returns::model::{PurchaseReturnDetail, ReturnLine, SurplusMode};
 use crate::purchase_returns::service::{self, CreatePurchaseReturnInput, PurchaseReturnsError};
 use crate::purchases::model::PurchaseStatus;
@@ -124,8 +125,8 @@ pub struct PurchaseReturnsSummaryResponse {
 async fn create_purchase_return(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(purchase_id): Path<Uuid>,
-    Json(body): Json<CreatePurchaseReturnRequest>,
+    AppPath(purchase_id): AppPath<Uuid>,
+    AppJson(body): AppJson<CreatePurchaseReturnRequest>,
 ) -> Result<(StatusCode, Json<PurchaseReturnResponse>), AppError> {
     let lines: Vec<ReturnLine> = body
         .items
@@ -160,7 +161,7 @@ async fn create_purchase_return(
 async fn purchase_returns(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(purchase_id): Path<Uuid>,
+    AppPath(purchase_id): AppPath<Uuid>,
 ) -> Result<Json<PurchaseReturnsSummaryResponse>, AppError> {
     let summary = service::for_purchase(&state.pool, purchase_id).await?;
 
