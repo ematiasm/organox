@@ -591,7 +591,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Latest completed sales. */
+        /** One page of completed sales, most recent first. */
         get: operations["list_sales_doc"];
         put?: never;
         post?: never;
@@ -2051,6 +2051,18 @@ export interface components {
             quantity: string;
             subtotal: string;
             unit_price: string;
+        };
+        SaleListResponse: {
+            items: components["schemas"]["SaleResponse"][];
+            /** Format: int64 */
+            limit: number;
+            /** Format: int64 */
+            offset: number;
+            /**
+             * Format: int64
+             * @description Total completed sales, not just the ones on this page.
+             */
+            total: number;
         };
         /** @description One payment of the charge. A sale can be paid with several. */
         SalePaymentRequest: {
@@ -4334,7 +4346,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                limit: number | null;
+                offset: number | null;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -4345,7 +4360,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SaleResponse"][];
+                    "application/json": components["schemas"]["SaleListResponse"];
                 };
             };
             /** @description No session */

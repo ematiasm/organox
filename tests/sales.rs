@@ -509,22 +509,142 @@ async fn cancelling_a_completed_sale_is_rejected(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn completed_sales_are_listed_newest_first(pool: PgPool) {
+async fn completed_sales_are_listed_newest_first_and_paginated(pool: PgPool) {
     let actor = seed_user(&pool).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
+        sales::add_item(&pool, draft, product, dec!(1))
+            .await
+            .unwrap();
+        complete(&pool, draft, actor, dec!(100)).await.unwrap();
+        ids.push(draft);
+    }
+
+    let (all, total) = sales::list_completed(&pool, 10, 0).await.unwrap();
+    assert_eq!(total, 3);
+    assert_eq!(all.len(), 3);
+    assert!(all.iter().all(|s| s.status == SaleStatus::Completed));
+    assert_eq!(all[0].id, ids[2], "newest sale first");
+    assert_eq!(all[2].id, ids[0], "oldest sale last");
+
+    // Consecutive pages never overlap, follow the same order, and both report
+    // the size of the whole result, not of their own window.
+    let (first, first_total) = sales::list_completed(&pool, 2, 0).await.unwrap();
+    let (second, second_total) = sales::list_completed(&pool, 2, 2).await.unwrap();
+    assert_eq!(first_total, 3);
+    assert_eq!(second_total, 3);
+    let paged: Vec<Uuid> = first.iter().chain(second.iter()).map(|s| s.id).collect();
+    assert_eq!(paged, vec![ids[2], ids[1], ids[0]]);
+
+    // A page past the end still reports the real total instead of zero.
+    let (beyond, beyond_total) = sales::list_completed(&pool, 2, 10).await.unwrap();
+    assert!(beyond.is_empty());
+    assert_eq!(beyond_total, 3);
+}
+
+#[sqlx::test]
+async fn http_sales_list_paginates(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (_, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100)).await;
+    let actor: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = 'cashier@pyme.com'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    stock(&pool, actor, product, dec!(10)).await;
+
+    let mut ids = Vec::new();
     for _ in 0..2 {
         let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
         sales::add_item(&pool, draft, product, dec!(1))
             .await
             .unwrap();
         complete(&pool, draft, actor, dec!(100)).await.unwrap();
+        ids.push(draft.to_string());
     }
 
-    let list = sales::list_completed(&pool, 10).await.unwrap();
-    assert_eq!(list.len(), 2);
-    assert!(list.iter().all(|s| s.status == SaleStatus::Completed));
+    let cookie = login_cookie(&pool, &password).await;
+
+    let first: serde_json::Value = {
+        let res = app(pool.clone())
+            .oneshot(
+                with_session("GET", "/api/v1/sales?limit=1&offset=0", &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 65536).await.unwrap())
+            .unwrap()
+    };
+    assert_eq!(first["limit"], 1);
+    assert_eq!(first["offset"], 0);
+    assert_eq!(first["total"], 2);
+    assert_eq!(first["items"].as_array().unwrap().len(), 1);
+    assert_eq!(first["items"][0]["id"], ids[1].as_str());
+
+    let second: Vec<String> = {
+        let res = app(pool.clone())
+            .oneshot(
+                with_session("GET", "/api/v1/sales?limit=1&offset=1", &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 65536).await.unwrap())
+                .unwrap();
+        assert_eq!(body["total"], 2);
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(second, vec![ids[0].clone()]);
+
+    // Defaults keep the first page; out-of-range values are clamped.
+    let defaults: serde_json::Value = {
+        let res = app(pool.clone())
+            .oneshot(
+                with_session("GET", "/api/v1/sales", &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 65536).await.unwrap())
+            .unwrap()
+    };
+    assert_eq!(defaults["limit"], 50);
+    assert_eq!(defaults["offset"], 0);
+    assert_eq!(defaults["total"], 2);
+
+    let clamped: serde_json::Value = {
+        let res = app(pool.clone())
+            .oneshot(
+                with_session("GET", "/api/v1/sales?limit=0&offset=-5", &cookie)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 65536).await.unwrap())
+            .unwrap()
+    };
+    assert_eq!(clamped["limit"], 1);
+    assert_eq!(clamped["offset"], 0);
 }
 
 // --- Customer -----------------------------------------------------------
@@ -3337,7 +3457,7 @@ async fn midpoint_rounding_line_subtotals_and_frozen_total_stay_consistent(pool:
             .unwrap(),
     )
     .unwrap();
-    let listed = list_body
+    let listed = list_body["items"]
         .as_array()
         .unwrap()
         .iter()

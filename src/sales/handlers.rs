@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
-use crate::extract::{AppJson, AppPath};
+use crate::extract::{AppJson, AppPath, AppQuery};
 use crate::sales::model::{Sale, SalePaymentInput, SaleStatus};
 use crate::sales::service::{self, SalesError};
 
@@ -65,6 +65,15 @@ pub struct SaleResponse {
     pub customer_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct SaleListResponse {
+    pub items: Vec<SaleResponse>,
+    pub limit: i64,
+    pub offset: i64,
+    /// Total completed sales, not just the ones on this page.
+    pub total: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -260,12 +269,28 @@ async fn set_sale_customer(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize, utoipa::IntoParams)]
+pub struct ListSalesQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 async fn list_sales(
     State(state): State<AppState>,
     _user: AuthUser,
-) -> Result<Json<Vec<SaleResponse>>, AppError> {
-    let sales = service::list_completed(&state.pool, 50).await?;
-    Ok(Json(sales.into_iter().map(to_response).collect()))
+    AppQuery(query): AppQuery<ListSalesQuery>,
+) -> Result<Json<SaleListResponse>, AppError> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let (sales, total) = service::list_completed(&state.pool, limit, offset).await?;
+
+    Ok(Json(SaleListResponse {
+        items: sales.into_iter().map(to_response).collect(),
+        limit,
+        offset,
+        total,
+    }))
 }
 
 // --- Conversions --------------------------------------------------------
@@ -552,13 +577,14 @@ fn cancel_sale_doc() {}
 #[allow(dead_code)]
 fn set_sale_customer_doc() {}
 
-/// Latest completed sales.
+/// One page of completed sales, most recent first.
 #[utoipa::path(
     get,
     path = "/api/v1/sales",
     tag = "sales",
+    params(ListSalesQuery),
     responses(
-        (status = 200, description = "Completed sales", body = Vec<SaleResponse>),
+        (status = 200, description = "Completed sales", body = SaleListResponse),
         (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )

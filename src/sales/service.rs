@@ -312,8 +312,33 @@ pub async fn complete_with_on_account(
         .map_err(map_repo_error)
 }
 
-pub async fn list_completed(pool: &PgPool, limit: i64) -> Result<Vec<Sale>, SalesError> {
-    repository::list_completed(pool, limit.clamp(1, 200))
+/// Completed sales, most recent first, plus the total number of completed
+/// sales.
+///
+/// The page and the count are clamped here so no caller can ask the database
+/// for an unbounded window.
+pub async fn list_completed(
+    pool: &PgPool,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<Sale>, i64), SalesError> {
+    let limit = limit.clamp(1, 200);
+    let offset = offset.max(0);
+
+    let (sales, total) = repository::list_completed(pool, limit, offset)
         .await
-        .map_err(map_repo_error)
+        .map_err(map_repo_error)?;
+
+    // A page past the end returns no rows, so `COUNT(*) OVER ()` has nothing
+    // to report and the repository sends `-1`; count separately rather than
+    // answering `total = 0` for an account that has sales.
+    let total = if total < 0 {
+        repository::count_completed(pool)
+            .await
+            .map_err(map_repo_error)?
+    } else {
+        total
+    };
+
+    Ok((sales, total))
 }

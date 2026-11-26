@@ -79,6 +79,7 @@ export type Role = components['schemas']['Role'];
 export type SessionUser = components['schemas']['UserResponse'];
 export type User = components['schemas']['UserResponse'];
 export type Sale = components['schemas']['SaleResponse'];
+export type SaleList = components['schemas']['SaleListResponse'];
 export type SaleItem = components['schemas']['SaleItemResponse'];
 export type SaleStatus = components['schemas']['SaleStatus'];
 export type SaleCreditNotes = components['schemas']['SaleCreditNotesResponse'];
@@ -613,7 +614,10 @@ export const api = {
 	// note's prices, total and refunds come back from the server; the client
 	// never calculates them.
 
-	listSales: () => request<Sale[]>('/api/v1/sales'),
+	listSales: (params?: { limit?: number; offset?: number }) =>
+		request<SaleList>('/api/v1/sales', {
+			query: { limit: params?.limit, offset: params?.offset }
+		}),
 
 	saleCreditNotes: (saleId: string) =>
 		request<SaleCreditNotes>(`/api/v1/sales/${encodeURIComponent(saleId)}/credit-notes`),
