@@ -9,16 +9,19 @@
 //!  * the IP limit does not penalize other IPs.
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use organox::AppState;
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
 use organox::auth::validation::ValidatedEmail;
 use organox::auth::{password, validation};
-use organox::ratelimit::{AccountPolicy, Decision, IpPolicy};
+use organox::ratelimit::{AccountPolicy, Decision, IpLimiter, IpPolicy};
 use organox::routes::router;
 use serde_json::json;
 use sqlx::PgPool;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
 use tower_cookies::CookieManagerLayer;
@@ -595,5 +598,195 @@ async fn record_failure_after_expired_lock_starts_fresh_window(pool: PgPool) {
         decision,
         Decision::Allowed { remaining: 2 },
         "first failure after an expired lock must start a fresh count at 1"
+    );
+}
+
+// --- IP limiter IPv6 /64 normalization and strict cap (issue #99) ------
+
+fn login_request_from(ip: IpAddr, email: &str, password: &str) -> Request<Body> {
+    let mut req = login_request(email, password);
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::new(ip, 40_000)));
+    req
+}
+
+fn state_with_ip_limiter(pool: PgPool, ip_limiter: IpLimiter) -> AppState {
+    let mut state = state_with_max_failures(pool, 100);
+    state.ip_limiter = Arc::new(ip_limiter);
+    state
+}
+
+#[sqlx::test]
+async fn ip_limiter_groups_ipv6_hosts_by_64_prefix_via_http(pool: PgPool) {
+    let limiter = IpLimiter::new(IpPolicy {
+        max_requests: 2,
+        window: Duration::from_secs(60),
+        burst: 0,
+    });
+    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+    let wrong = test_password();
+
+    // Two distinct hosts in the same /64 consume the shared quota (2).
+    let r1 = app
+        .clone()
+        .oneshot(login_request_from(
+            "2001:db8:1:2::1".parse().unwrap(),
+            "ipv6@pyme.com",
+            &wrong,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r1.status(), StatusCode::UNAUTHORIZED);
+
+    let r2 = app
+        .clone()
+        .oneshot(login_request_from(
+            "2001:db8:1:2::2".parse().unwrap(),
+            "ipv6@pyme.com",
+            &wrong,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r2.status(), StatusCode::UNAUTHORIZED);
+
+    // Third host in the same /64 is rejected with 429 + Retry-After.
+    let r3 = app
+        .clone()
+        .oneshot(login_request_from(
+            "2001:db8:1:2:dead:beef::3".parse().unwrap(),
+            "ipv6@pyme.com",
+            &wrong,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        r3.headers().get("retry-after").is_some(),
+        "429 from IP limiter must include Retry-After"
+    );
+
+    // A different /64 prefix still gets its own quota.
+    let r4 = app
+        .oneshot(login_request_from(
+            "2001:db8:1:3::1".parse().unwrap(),
+            "ipv6@pyme.com",
+            &wrong,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r4.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+async fn ip_limiter_fails_closed_at_max_entries_via_http(pool: PgPool) {
+    let limiter = IpLimiter::with_max_entries(
+        IpPolicy {
+            max_requests: 2,
+            window: Duration::from_secs(60),
+            burst: 0,
+        },
+        2,
+    );
+    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+    let wrong = test_password();
+
+    let ip1: IpAddr = "198.51.100.1".parse().unwrap();
+    let ip2: IpAddr = "198.51.100.2".parse().unwrap();
+    let ip3: IpAddr = "198.51.100.3".parse().unwrap();
+
+    // Fill the 2-bucket cap with ip1 and ip2.
+    assert_eq!(
+        app.clone()
+            .oneshot(login_request_from(ip1, "cap@pyme.com", &wrong))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(login_request_from(ip2, "cap@pyme.com", &wrong))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A 3rd distinct IP fails closed with 429 + Retry-After.
+    let blocked = app
+        .clone()
+        .oneshot(login_request_from(ip3, "cap@pyme.com", &wrong))
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(blocked.headers().get("retry-after").is_some());
+
+    // Already-tracked ip1 still gets its 2nd allowed attempt before hitting 429.
+    assert_eq!(
+        app.clone()
+            .oneshot(login_request_from(ip1, "cap@pyme.com", &wrong))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.oneshot(login_request_from(ip1, "cap@pyme.com", &wrong))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[sqlx::test]
+async fn ip_limiter_unwraps_ipv4_mapped_ipv6_via_http(pool: PgPool) {
+    let limiter = IpLimiter::new(IpPolicy {
+        max_requests: 1,
+        window: Duration::from_secs(60),
+        burst: 0,
+    });
+    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+    let wrong = test_password();
+
+    // IPv4 consumes the 1-request quota.
+    assert_eq!(
+        app.clone()
+            .oneshot(login_request_from(
+                "203.0.113.10".parse().unwrap(),
+                "mapped@pyme.com",
+                &wrong,
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // IPv4-mapped IPv6 for the same IPv4 hits the shared bucket (429).
+    assert_eq!(
+        app.clone()
+            .oneshot(login_request_from(
+                "::ffff:203.0.113.10".parse().unwrap(),
+                "mapped@pyme.com",
+                &wrong,
+            ))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    // Different IPv4-mapped IPv6 gets its own bucket instead of collapsing to ::/64.
+    assert_eq!(
+        app.oneshot(login_request_from(
+            "::ffff:203.0.113.11".parse().unwrap(),
+            "mapped@pyme.com",
+            &wrong,
+        ))
+        .await
+        .unwrap()
+        .status(),
+        StatusCode::UNAUTHORIZED
     );
 }
