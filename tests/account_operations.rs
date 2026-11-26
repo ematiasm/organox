@@ -990,3 +990,237 @@ async fn cannot_deactivate_customer_holding_credit_until_refunded(pool: PgPool) 
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(!customer_is_active(&pool, customer).await);
 }
+
+#[sqlx::test]
+async fn adjustment_in_reconciles_over_adjusted_customer_account_and_preserves_credit(
+    pool: PgPool,
+) {
+    let customer = seed_customer(&pool, "Clara").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    charge_sale(&pool, customer, sale, dec!(100.00)).await;
+    let (method, _wallet) = seed_method(&pool, "Cash").await;
+
+    let router = app(pool.clone());
+    let (_owner, owner_password) = seed_owner(&pool).await;
+    let cookie = login(&router, "owner@pyme.com", &owner_password).await;
+
+    // 1. Post adjustment_out $30 against the $100 open debt -> balance = 70, outstanding = 100.
+    let (status, body) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/adjustments"),
+        Some(&cookie),
+        Some(json!({
+            "direction": "out",
+            "amount": "30.00",
+            "note": "manual discount applied before settlement",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "adjustment_out: {body}");
+    assert_eq!(body["balance"], "70.00");
+
+    // 2. Collect $100 allocated to the sale -> balance = -30, U = 0, outstanding = 0.
+    let (status, body) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/receipts"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method,
+            "amount": "100.00",
+            "allocations": [{ "sale_id": sale, "amount": "100.00" }],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "receipt: {body}");
+    assert_eq!(body["balance"], "-30.00");
+    assert_eq!(body["unapplied_credit"], "0.00");
+
+    // Refund is refused (no real unapplied credit), adjustment_out is refused,
+    // adjustment_in above the 30.00 non-credit drift is refused, and deactivate is 409.
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/credit-refunds"),
+        Some(&cookie),
+        Some(json!({ "payment_method_id": method, "amount": "1.00", "note": "no cash" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    for (direction, amount) in [("out", "1.00"), ("in", "30.01")] {
+        let (status, _) = send(
+            &router,
+            "POST",
+            &format!("/api/v1/customers/{customer}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": direction, "amount": amount, "note": "must fail" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/deactivate"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // 3. Add $20 of real unapplied credit -> balance = -50, U = 20, non_credit_drift = 30.
+    collect_unallocated(&router, &cookie, customer, method, "20.00", None).await;
+
+    // 30.01 would bury 0.01 of real unapplied credit -> refused 422.
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/adjustments"),
+        Some(&cookie),
+        Some(json!({
+            "direction": "in",
+            "amount": "30.01",
+            "note": "would bury credit",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Reconciling the exact 30.00 non-credit drift succeeds and preserves all 20.00 of credit.
+    let (status, body) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/adjustments"),
+        Some(&cookie),
+        Some(json!({
+            "direction": "in",
+            "amount": "30.00",
+            "note": "reverse over-adjustment after full settlement",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "reconcile: {body}");
+    assert_eq!(body["balance"], "-20.00");
+    assert_eq!(body["unapplied_credit"], "20.00");
+
+    // Once only real unapplied credit remains (drift = 0), adjustment_in is refused again.
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/adjustments"),
+        Some(&cookie),
+        Some(json!({
+            "direction": "in",
+            "amount": "0.01",
+            "note": "cannot bury refundable credit",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Refund the 20.00 real credit -> balance = 0, U = 0 -> deactivate succeeds!
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/credit-refunds"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method,
+            "amount": "20.00",
+            "note": "refund advance credit",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/deactivate"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!customer_is_active(&pool, customer).await);
+}
+
+#[sqlx::test]
+async fn adjustment_in_reconciles_over_adjusted_customer_account_after_credit_note(pool: PgPool) {
+    let customer = seed_customer(&pool, "Dario").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    charge_sale(&pool, customer, sale, dec!(100.00)).await;
+
+    let router = app(pool.clone());
+    let (owner, owner_password) = seed_owner(&pool).await;
+    let cookie = login(&router, "owner@pyme.com", &owner_password).await;
+
+    // 1. Post adjustment_out $30 -> balance = 70.
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/adjustments"),
+        Some(&cookie),
+        Some(json!({
+            "direction": "out",
+            "amount": "30.00",
+            "note": "manual adjustment",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // 2. Credit note reverses the full $100 sale charge -> balance = -30, U = 0, outstanding = 0.
+    let note_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO credit_notes (id, sale_id, total, reason, created_by)
+         VALUES ($1, $2, $3, 'full return', $4)",
+    )
+    .bind(note_id)
+    .bind(sale)
+    .bind(dec!(100.00))
+    .bind(owner)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_credit_note(&mut tx, customer, sale, note_id, dec!(100.00), owner)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // 3. Reconcile back to 0.00 via adjustment_in $30 -> deactivate now succeeds.
+    let (status, body) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/adjustments"),
+        Some(&cookie),
+        Some(json!({
+            "direction": "in",
+            "amount": "30.00",
+            "note": "reconcile after credit note",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "reconcile: {body}");
+    assert_eq!(body["balance"], "0.00");
+    assert_eq!(body["unapplied_credit"], "0.00");
+
+    let position = ledger::account_position(&pool, customer).await.unwrap();
+    assert_eq!(position.balance, Decimal::ZERO);
+    assert!(position.is_consistent());
+
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/deactivate"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!customer_is_active(&pool, customer).await);
+}

@@ -1284,7 +1284,8 @@ pub async fn record_credit_refund(
 }
 
 /// Record a manual payable adjustment (opening balance or correction). Must
-/// carry a non-blank note and cannot cross zero or run while holding credit.
+/// carry a non-blank note, never cross zero with `adjustment_out`, and never
+/// bury refundable advance credit (`unapplied_credit`) with `adjustment_in`.
 pub async fn record_adjustment(
     conn: &mut PgConnection,
     supplier_id: Uuid,
@@ -1305,9 +1306,29 @@ pub async fn record_adjustment(
 
     let position = account_position_in(conn, supplier_id).await?;
 
-    if position.balance < Decimal::ZERO
-        || (kind == SupplierAccountEntryKind::AdjustmentOut && amount > position.balance)
-    {
+    // When `balance >= 0`, `AdjustmentIn` adds manual payable freely and
+    // `AdjustmentOut` cannot cross zero (`amount <= balance`).
+    // When `balance < 0`, `AdjustmentOut` is always refused, while
+    // `AdjustmentIn` is permitted up to the non-credit negative drift
+    // `(-balance - unapplied_credit).max(0)` so operators can reconcile an
+    // over-adjusted account back to zero without burying refundable advance
+    // credit.
+    let rejected = if position.balance < Decimal::ZERO {
+        match kind {
+            SupplierAccountEntryKind::AdjustmentIn => {
+                let non_credit_drift = (-position.balance)
+                    .checked_sub(position.unapplied_credit)
+                    .unwrap_or(Decimal::ZERO)
+                    .max(Decimal::ZERO);
+                amount > non_credit_drift
+            }
+            _ => true,
+        }
+    } else {
+        kind == SupplierAccountEntryKind::AdjustmentOut && amount > position.balance
+    };
+
+    if rejected {
         return Err(RepoError::AdjustmentCrossesZero {
             balance: position.balance,
         });

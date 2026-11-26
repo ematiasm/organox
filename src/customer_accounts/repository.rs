@@ -1614,12 +1614,28 @@ pub async fn record_adjustment(
 
     let position = account_position_in(conn, customer_id).await?;
 
-    // An adjustment operates on a debt, so it may only run while the balance is
-    // a debt: entering more than is owed would mint credit out of nothing, and
-    // adjusting while the customer holds credit would bury it under debt.
-    if position.balance < Decimal::ZERO
-        || (kind == CustomerAccountEntryKind::AdjustmentOut && amount > position.balance)
-    {
+    // When `balance >= 0`, `AdjustmentIn` adds manual debt freely and
+    // `AdjustmentOut` cannot cross zero (`amount <= balance`).
+    // When `balance < 0`, `AdjustmentOut` is always refused, while
+    // `AdjustmentIn` is permitted up to the non-credit negative drift
+    // `(-balance - unapplied_credit).max(0)` so operators can reconcile an
+    // over-adjusted account back to zero without burying refundable credit.
+    let rejected = if position.balance < Decimal::ZERO {
+        match kind {
+            CustomerAccountEntryKind::AdjustmentIn => {
+                let non_credit_drift = (-position.balance)
+                    .checked_sub(position.unapplied_credit)
+                    .unwrap_or(Decimal::ZERO)
+                    .max(Decimal::ZERO);
+                amount > non_credit_drift
+            }
+            _ => true,
+        }
+    } else {
+        kind == CustomerAccountEntryKind::AdjustmentOut && amount > position.balance
+    };
+
+    if rejected {
         return Err(RepoError::AdjustmentCrossesZero {
             balance: position.balance,
         });
