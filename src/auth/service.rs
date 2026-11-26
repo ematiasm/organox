@@ -22,6 +22,7 @@ pub const MAX_CONCURRENT_HASHES: usize = 4;
 
 use crate::auth::model::{PasswordHash, Role, User};
 use crate::auth::password::{self, PasswordError};
+pub use crate::auth::repository::ListedUser;
 use crate::auth::repository::{self, NewUser, RepoError};
 use crate::auth::token::{SessionToken, TokenHash};
 use crate::auth::validation::{self, ValidatedEmail, ValidationError};
@@ -92,6 +93,18 @@ pub enum LoginOutcome {
     Locked {
         until: DateTime<Utc>,
     },
+}
+
+/// List every user in email order. Requires the actor to be able to manage users.
+///
+/// The actor's role is passed explicitly because the authentication extractor,
+/// not this module, is the sole authority on "who made this request".
+pub async fn list_users(pool: &PgPool, actor_role: Role) -> Result<Vec<ListedUser>, AuthError> {
+    if !actor_role.can_manage_users() {
+        return Err(AuthError::Forbidden);
+    }
+
+    Ok(repository::list_users(pool).await?)
 }
 
 /// Create a user. Requires the actor to be able to manage users.

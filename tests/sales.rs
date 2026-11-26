@@ -173,9 +173,14 @@ async fn complete(
 async fn open_draft_reuses_the_open_one(pool: PgPool) {
     let actor = seed_user(&pool).await;
 
-    let first = sales::open_draft(&pool, actor).await.unwrap();
-    let second = sales::open_draft(&pool, actor).await.unwrap();
+    let (first, first_reused) = sales::open_draft(&pool, actor).await.unwrap();
+    let (second, second_reused) = sales::open_draft(&pool, actor).await.unwrap();
 
+    assert!(
+        !first_reused,
+        "first call must report a newly created draft"
+    );
+    assert!(second_reused, "second call must report a reused draft");
     assert_eq!(first, second, "must return the same open draft");
 
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM sales WHERE status = 'draft'")
@@ -192,13 +197,18 @@ async fn open_draft_creates_new_after_completion(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, first_reused) = sales::open_draft(&pool, actor).await.unwrap();
+    assert!(!first_reused);
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
     complete(&pool, draft, actor, dec!(100)).await.unwrap();
 
-    let next = sales::open_draft(&pool, actor).await.unwrap();
+    let (next, next_reused) = sales::open_draft(&pool, actor).await.unwrap();
+    assert!(
+        !next_reused,
+        "after completion, the next draft must not be marked reused"
+    );
     assert_ne!(draft, next, "after completion, the next draft is new");
 }
 
@@ -210,7 +220,7 @@ async fn adding_the_same_product_sums_quantity_and_freezes_price(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(2))
         .await
         .unwrap();
@@ -233,7 +243,7 @@ async fn price_change_does_not_alter_an_open_draft(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(2))
         .await
         .unwrap();
@@ -262,7 +272,7 @@ async fn service_cannot_be_sold_as_item(pool: PgPool) {
     let actor = seed_user(&pool).await;
     let service = seed_service(&pool, "Delivery", dec!(8000)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     let err = sales::add_item(&pool, draft, service, dec!(1))
         .await
         .expect_err("a service has no stock and cannot be sold as an item");
@@ -281,7 +291,7 @@ async fn quantity_must_be_positive(pool: PgPool) {
     let actor = seed_user(&pool).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     let err = sales::add_item(&pool, draft, product, dec!(0))
         .await
         .expect_err("quantity 0");
@@ -294,7 +304,7 @@ async fn set_quantity_zero_removes_the_item(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(2))
         .await
         .unwrap();
@@ -314,7 +324,7 @@ async fn completing_a_sale_discounts_stock_exactly_once(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(3))
         .await
         .unwrap();
@@ -344,7 +354,7 @@ async fn completing_twice_is_rejected(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -366,7 +376,7 @@ async fn insufficient_stock_leaves_no_state_change(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(2)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(5))
         .await
         .unwrap();
@@ -425,8 +435,8 @@ async fn two_drafts_competing_for_the_last_units(pool: PgPool) {
     let product = seed_product(&pool, "Last unit", dec!(500)).await;
     stock(&pool, actor_a, product, dec!(1)).await;
 
-    let draft_a = sales::open_draft(&pool, actor_a).await.unwrap();
-    let draft_b = sales::open_draft(&pool, actor_b).await.unwrap();
+    let (draft_a, _) = sales::open_draft(&pool, actor_a).await.unwrap();
+    let (draft_b, _) = sales::open_draft(&pool, actor_b).await.unwrap();
     sales::add_item(&pool, draft_a, product, dec!(1))
         .await
         .unwrap();
@@ -448,7 +458,7 @@ async fn two_drafts_competing_for_the_last_units(pool: PgPool) {
 #[sqlx::test]
 async fn empty_sale_cannot_be_completed(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
 
     let err = sales::complete(&pool, draft, actor, &[])
         .await
@@ -464,7 +474,7 @@ async fn abandoned_draft_never_touches_stock_ledger(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(4))
         .await
         .unwrap();
@@ -486,7 +496,7 @@ async fn cancelling_a_completed_sale_is_rejected(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -505,7 +515,7 @@ async fn completed_sales_are_listed_newest_first(pool: PgPool) {
     stock(&pool, actor, product, dec!(10)).await;
 
     for _ in 0..2 {
-        let draft = sales::open_draft(&pool, actor).await.unwrap();
+        let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
         sales::add_item(&pool, draft, product, dec!(1))
             .await
             .unwrap();
@@ -581,7 +591,7 @@ async fn a_draft_accepts_and_then_clears_a_customer(pool: PgPool) {
     let actor = seed_user(&pool).await;
     let customer = seed_customer(&pool, "Ana Pérez").await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::set_customer(&pool, draft, Some(customer))
         .await
         .unwrap();
@@ -607,7 +617,7 @@ async fn a_closed_sale_refuses_a_customer_change(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -619,7 +629,7 @@ async fn a_closed_sale_refuses_a_customer_change(pool: PgPool) {
     assert!(matches!(err, SalesError::NotEditable));
     assert_eq!(stored_customer_id(&pool, draft).await, None);
 
-    let cancelled = sales::open_draft(&pool, actor).await.unwrap();
+    let (cancelled, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::cancel(&pool, cancelled).await.unwrap();
     let err = sales::set_customer(&pool, cancelled, Some(customer))
         .await
@@ -631,7 +641,7 @@ async fn a_closed_sale_refuses_a_customer_change(pool: PgPool) {
 #[sqlx::test]
 async fn an_unknown_customer_cannot_be_attached(pool: PgPool) {
     let actor = seed_user(&pool).await;
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
 
     let err = sales::set_customer(&pool, draft, Some(Uuid::now_v7()))
         .await
@@ -649,7 +659,7 @@ async fn a_deactivated_customer_cannot_be_attached(pool: PgPool) {
         .await
         .unwrap();
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     let err = sales::set_customer(&pool, draft, Some(customer))
         .await
         .expect_err("a deactivated customer cannot be attached");
@@ -667,7 +677,7 @@ async fn the_customer_name_freezes_at_completion(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -709,7 +719,7 @@ async fn a_customer_deactivated_mid_draft_does_not_block_checkout(pool: PgPool) 
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -758,7 +768,7 @@ async fn charging_a_sale_credits_the_method_wallet(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(2))
         .await
         .unwrap();
@@ -796,7 +806,7 @@ async fn a_split_payment_credits_every_wallet(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -852,7 +862,7 @@ async fn a_payment_that_does_not_add_up_leaves_no_trace(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(2))
         .await
         .unwrap();
@@ -908,7 +918,7 @@ async fn an_empty_payment_list_cannot_cover_a_positive_total_on_its_own(pool: Pg
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -934,7 +944,7 @@ async fn a_zero_total_sale_needs_no_payment(pool: PgPool) {
     let product = seed_product(&pool, "Sample", dec!(0)).await;
     stock(&pool, actor, product, dec!(5)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -958,7 +968,7 @@ async fn repointing_a_method_does_not_move_a_recorded_payment(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -1014,7 +1024,7 @@ async fn a_payment_with_three_decimals_is_rejected(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -1043,7 +1053,7 @@ async fn a_deactivated_method_cannot_charge(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -1082,7 +1092,7 @@ async fn an_unknown_method_cannot_charge(pool: PgPool) {
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -1203,6 +1213,50 @@ async fn http_sale_flow_returns_server_computed_total(pool: PgPool) {
     assert_eq!(sale["total"], "3001.00");
     assert_eq!(sale["item_count"], 1);
     assert_eq!(sale["items"][0]["subtotal"], "3001.00");
+}
+
+#[sqlx::test]
+async fn http_open_draft_reports_created_then_reused(pool: PgPool) {
+    use tower::ServiceExt;
+
+    let (_, password) = seed_user_with_password(&pool).await;
+    let cookie = login_cookie(&pool, &password).await;
+
+    let first = app(pool.clone())
+        .oneshot(
+            with_session("POST", "/api/v1/sales/draft", &cookie)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), axum::http::StatusCode::CREATED);
+    let first_body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(first.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first_body["reused"], false);
+    let first_id = first_body["id"].as_str().expect("draft id");
+
+    let second = app(pool.clone())
+        .oneshot(
+            with_session("POST", "/api/v1/sales/draft", &cookie)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), axum::http::StatusCode::OK);
+    let second_body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(second.into_body(), 65536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(second_body["reused"], true);
+    assert_eq!(second_body["id"].as_str().expect("draft id"), first_id);
 }
 
 /// The route and the response shape: 204 on attach and on clear, the two
@@ -1335,7 +1389,7 @@ async fn http_customer_route_errors_are_problem_json(pool: PgPool) {
         .await
         .unwrap();
 
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -1368,7 +1422,7 @@ async fn http_customer_route_errors_are_problem_json(pool: PgPool) {
     );
 
     // Unknown customer: 404.
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     let unknown = app(pool.clone())
         .oneshot(
             with_session("PUT", &format!("/api/v1/sales/{draft}/customer"), &cookie)
@@ -1416,7 +1470,7 @@ async fn an_omitted_customer_id_is_rejected_and_keeps_the_customer(pool: PgPool)
 
     let (actor, password) = seed_user_with_password(&pool).await;
     let customer = seed_customer(&pool, "Ana Pérez").await;
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::set_customer(&pool, draft, Some(customer))
         .await
         .unwrap();
@@ -1529,7 +1583,7 @@ async fn draft_at_price(pool: &PgPool, price: Decimal) -> (Uuid, Uuid, Uuid, Str
     let (actor, password) = seed_user_with_password(pool).await;
     let product = seed_product(pool, "Flour", price).await;
     stock(pool, actor, product, dec!(10)).await;
-    let draft = sales::open_draft(pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(pool, actor).await.unwrap();
     sales::add_item(pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -1809,7 +1863,7 @@ async fn a_zero_total_sale_needs_no_on_account(pool: PgPool) {
 
     // The same cashier's next draft: owing anything against a zero total is a
     // mismatch by construction.
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -2081,7 +2135,7 @@ async fn the_credit_limit_counts_the_debt_the_customer_already_has(pool: PgPool)
 
     // A second sale on the same account: 50 more would put the exposure at
     // 110 against the 100 limit.
-    let second = sales::open_draft(&pool, actor).await.unwrap();
+    let (second, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, second, product, dec!(1))
         .await
         .unwrap();
@@ -2353,7 +2407,7 @@ async fn closed_sales_and_their_items_are_immutable_in_db(pool: PgPool) {
     stock(&pool, actor, sugar, dec!(10)).await;
 
     // 1. Completed sale with one item.
-    let completed = sales::open_draft(&pool, actor).await.unwrap();
+    let (completed, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, completed, flour, dec!(1))
         .await
         .unwrap();
@@ -2362,7 +2416,7 @@ async fn closed_sales_and_their_items_are_immutable_in_db(pool: PgPool) {
         .unwrap();
 
     // Another open draft to test cross-sale item reassignment.
-    let open_draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (open_draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, open_draft, sugar, dec!(1))
         .await
         .unwrap();
@@ -2545,7 +2599,7 @@ async fn sales_immutability_trigger_edge_cases(pool: PgPool) {
     stock(&pool, actor, flour, dec!(10)).await;
 
     // 1. Deleting a draft sale with items still cascades cleanly.
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, flour, dec!(1)).await.unwrap();
     sqlx::query("DELETE FROM sales WHERE id = $1")
         .bind(draft)
@@ -2579,7 +2633,7 @@ async fn sales_immutability_trigger_edge_cases(pool: PgPool) {
     );
 
     // 3. ON CONFLICT DO UPDATE and status reopen on a completed sale are rejected.
-    let completed = sales::open_draft(&pool, actor).await.unwrap();
+    let (completed, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, completed, flour, dec!(1))
         .await
         .unwrap();
@@ -2612,7 +2666,7 @@ async fn sales_immutability_trigger_edge_cases(pool: PgPool) {
 
     // 4. Raw sale_items INSERT racing with cancellation (FOR NO KEY UPDATE)
     // serializes via the trigger's FOR SHARE lock and fails after commit.
-    let cancelling = sales::open_draft(&pool, actor).await.unwrap();
+    let (cancelling, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, cancelling, flour, dec!(1))
         .await
         .unwrap();
@@ -2663,7 +2717,7 @@ async fn item_mutations_serialize_with_completion_lock(pool: PgPool) {
     stock(&pool, actor, sugar, dec!(20)).await;
 
     for mode in ["add_item", "set_item_quantity", "remove_item"] {
-        let draft = sales::open_draft(&pool, actor).await.unwrap();
+        let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
         sales::add_item(&pool, draft, flour, dec!(1)).await.unwrap();
 
         // Hold `FOR UPDATE` on the draft, mirroring `sales::repository::complete`
@@ -2752,7 +2806,7 @@ async fn concurrent_http_item_mutations_and_complete_preserve_invariants(pool: P
 
     let mut completed_rounds = 0_u32;
     for round in 0..6 {
-        let draft = sales::open_draft(&pool, actor).await.unwrap();
+        let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
         sales::add_item(&pool, draft, flour, dec!(1)).await.unwrap();
 
         let complete_req = http_complete(
@@ -2892,7 +2946,7 @@ async fn http_sale_complete_rejects_decimal_max_payments_without_panicking(pool:
     let product = seed_product(&pool, "Flour", dec!(100.00)).await;
     stock(&pool, actor, product, dec!(10)).await;
     let method = cash(&pool).await;
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .unwrap();
@@ -3013,7 +3067,7 @@ async fn http_sale_items_enforce_quantity_and_total_ceilings(pool: PgPool) {
     let (actor, password) = seed_user_with_password(&pool).await;
     let cheap = seed_product(&pool, "Bolt", dec!(1.00)).await;
     let pricey = seed_product(&pool, "Machinery", dec!(10000000.00)).await;
-    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     let cookie = login_cookie(&pool, &password).await;
 
     // Single quantity above numeric(12,3) -> 422.
@@ -3106,7 +3160,7 @@ async fn midpoint_rounding_line_subtotals_and_frozen_total_stay_consistent(pool:
     //    Half-away-from-zero rounds 1.605 -> 1.61 across Postgres refresh_total, GET, and complete.
     let p_mid = seed_product(&pool, "Midpoint Flour", dec!(1.07)).await;
     stock(&pool, actor, p_mid, dec!(10)).await;
-    let draft1 = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft1, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft1, p_mid, dec!(1.500))
         .await
         .unwrap();
@@ -3166,7 +3220,7 @@ async fn midpoint_rounding_line_subtotals_and_frozen_total_stay_consistent(pool:
     stock(&pool, actor, p_a, dec!(10)).await;
     stock(&pool, actor, p_b, dec!(10)).await;
 
-    let draft2 = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft2, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft2, p_a, dec!(0.500))
         .await
         .unwrap();
@@ -3297,7 +3351,7 @@ async fn midpoint_rounding_line_subtotals_and_frozen_total_stay_consistent(pool:
     let p_big1 = seed_product(&pool, "Big 1", dec!(999_999.99)).await;
     let p_big2 = seed_product(&pool, "Big 2", dec!(9_999.99)).await;
     let p_unit = seed_product(&pool, "Unit 1", dec!(1.00)).await;
-    let draft_cap = sales::open_draft(&pool, actor).await.unwrap();
+    let (draft_cap, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft_cap, p_big1, dec!(1_000_000))
         .await
         .unwrap();

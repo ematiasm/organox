@@ -51,6 +51,7 @@ pub struct FoundSession {
 }
 
 /// Public fields of a user, ready for the HTTP DTO.
+#[derive(Debug)]
 pub struct ListedUser {
     pub id: Uuid,
     pub email: String,

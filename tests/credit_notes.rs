@@ -150,7 +150,7 @@ async fn charged_sale(
     product: Uuid,
     quantity: Decimal,
 ) -> (Uuid, Uuid, Decimal) {
-    let sale = sales::open_draft(pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(pool, actor).await.expect("draft");
     sales::add_item(pool, sale, product, quantity)
         .await
         .expect("item");
@@ -346,7 +346,7 @@ async fn notes_and_their_items_are_read_in_a_stable_order(pool: PgPool) {
     stock(&pool, actor, zucchini, dec!(10)).await;
     stock(&pool, actor, apple, dec!(10)).await;
 
-    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, sale, zucchini, dec!(2))
         .await
         .expect("zucchini");
@@ -403,7 +403,7 @@ async fn notes_and_their_items_are_read_in_a_stable_order(pool: PgPool) {
 async fn a_sale_without_a_stored_total_reports_the_computed_lines_total(pool: PgPool) {
     let actor = seed_user(&pool).await;
     let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
-    let draft = sales::open_draft(&pool, actor).await.expect("draft");
+    let (draft, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, draft, product, dec!(2.5))
         .await
         .expect("item");
@@ -498,7 +498,7 @@ async fn only_a_charged_sale_can_be_credited(pool: PgPool) {
     stock(&pool, actor, product, dec!(10)).await;
 
     // A draft has charged nothing: there is no money to give back.
-    let draft = sales::open_draft(&pool, actor).await.expect("draft");
+    let (draft, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, draft, product, dec!(1))
         .await
         .expect("item");
@@ -647,7 +647,7 @@ async fn a_cash_and_card_sale_refunds_both_wallets_in_proportion(pool: PgPool) {
     .await
     .expect("method");
 
-    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, sale, product, dec!(3))
         .await
         .expect("item");
@@ -793,7 +793,7 @@ async fn every_refund_movement_names_the_note_that_caused_it(pool: PgPool) {
     .await
     .expect("method");
 
-    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, sale, product, dec!(2))
         .await
         .expect("item");
@@ -1095,7 +1095,7 @@ async fn a_fractional_quantity_returns_a_consistent_amount(pool: PgPool) {
     stock(&pool, actor, product, dec!(1)).await;
 
     // 0.333 * 3.00 = 0.999, rounded to the cent the sale charges 1.00.
-    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, sale, product, dec!(0.333))
         .await
         .expect("item");
@@ -1189,7 +1189,7 @@ async fn the_cumulative_refund_cannot_exceed_the_sale_total(pool: PgPool) {
     stock(&pool, actor, product, dec!(1)).await;
 
     // 0.02 * 33.33 = 0.6666, rounded to the cent the sale charges 0.67.
-    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, sale, product, dec!(0.02))
         .await
         .expect("item");
@@ -1574,7 +1574,7 @@ async fn a_fractional_sale_discloses_the_money_allowance(pool: PgPool) {
     stock(&pool, actor, product, dec!(1)).await;
 
     // 0.02 units at 33.33 charge 0.67 after cent rounding.
-    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, sale, product, dec!(0.02))
         .await
         .expect("item");
@@ -1909,7 +1909,7 @@ async fn sale_part_on_account(
     method: Option<Uuid>,
     at_till: Decimal,
 ) -> Uuid {
-    let sale = sales::open_draft(pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(pool, actor).await.expect("draft");
     sales::add_item(pool, sale, product, quantity)
         .await
         .expect("item");
@@ -2179,7 +2179,7 @@ async fn a_note_on_a_cash_sale_keeps_refunding_its_payments(pool: PgPool) {
     .await
     .expect("method");
 
-    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, sale, product, dec!(3))
         .await
         .expect("item");
@@ -2442,7 +2442,7 @@ async fn partial_refunds_across_three_tenders_do_not_fail_with_alabama_paradox(p
     .expect("digital method");
 
     // $7.00 sale paid via 3 tenders: $3.00, $3.00, $1.00.
-    let sale = sales::open_draft(&pool, actor).await.expect("draft");
+    let (sale, _) = sales::open_draft(&pool, actor).await.expect("draft");
     sales::add_item(&pool, sale, product, dec!(700))
         .await
         .expect("item");
@@ -2731,7 +2731,7 @@ async fn credit_notes_match_per_line_half_away_from_zero_rounding_across_two_mid
     let wallet = wallet_of(&pool, method).await;
 
     // Two 0.500 * 1.01 = 0.505 lines -> 0.51 + 0.51 = 1.02 total.
-    let sale = sales::open_draft(&pool, actor).await.unwrap();
+    let (sale, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, sale, p_a, dec!(0.500))
         .await
         .unwrap();
