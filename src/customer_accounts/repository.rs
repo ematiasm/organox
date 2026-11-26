@@ -1295,14 +1295,14 @@ pub async fn apply_available_credit(
         return Ok(Decimal::ZERO);
     }
 
-    // The receipts that still carry unallocated and unrefunded money, oldest
+    ensure_chargeable_sale(conn, customer_id, sale_id).await?;
+
+    // All receipts that still carry unallocated and unrefunded money, oldest
     // first. The `id` tiebreaker keeps the order total: two receipts created in
     // the same instant are still one before the other, and the ids are
-    // time-ordered. The bound is deliberate: a fragmented account applies at
-    // most this many receipts per completion and the rest stays usable credit,
-    // so one checkout cannot hold the account lock for an unbounded time — and
-    // the next completion spends the remainder oldest-first again, so nothing
-    // is lost, only deferred.
+    // time-ordered. Allocations are planned in memory from this locked snapshot
+    // and inserted in a single batched query so fragmented accounts neither hit
+    // a silent row cap nor pay N+1 query overhead while holding advisory locks.
     let receipts = sqlx::query!(
         r#"
         SELECT e.id AS "entry_id!: Uuid",
@@ -1326,39 +1326,50 @@ pub async fn apply_available_credit(
           AND e.kind = 'receipt'
           AND -e.amount - COALESCE(alloc.total, 0) - COALESCE(ref_alloc.total, 0) > 0
         ORDER BY e.created_at, e.id
-        LIMIT 100
         "#,
         customer_id
     )
     .fetch_all(&mut *conn)
     .await?;
 
+    let mut ids = Vec::new();
+    let mut entry_ids = Vec::new();
+    let mut amounts = Vec::new();
     let mut applied = Decimal::ZERO;
+
     for receipt in receipts {
         if remaining.is_zero() {
             break;
         }
         let take = remaining.min(receipt.available);
-        // `allocate` keeps every guard — receipt, sale, credit — and a guard
-        // firing here means the caps above lied about what could be applied:
-        // an impossible ledger violation, not a client error. It is typed so
-        // the completion can answer an internal error without pretending a
-        // database protocol failed, and the caller's transaction dies rather
-        // than quietly applying less than the books say.
-        allocate(conn, receipt.entry_id, sale_id, take)
-            .await
-            .map_err(|err| match err {
-                RepoError::OutstandingExceeded { .. }
-                | RepoError::AllocationExceedsReceipt { .. }
-                | RepoError::AllocationExceedsCredit { .. } => RepoError::CreditApplicationBroken,
-                // Everything else is a real condition this function must
-                // not rewrite: infrastructure, or the busy lock the caller
-                // owns.
-                other => other,
-            })?;
+        ensure_cents(take)?;
+        ids.push(Uuid::now_v7());
+        entry_ids.push(receipt.entry_id);
+        amounts.push(take);
         applied += take;
         remaining -= take;
     }
+
+    // If the caps derived from the locked snapshot could not be covered by the
+    // account's unapplied receipts, the ledger's own invariants disagreed.
+    if !remaining.is_zero() {
+        return Err(RepoError::CreditApplicationBroken);
+    }
+
+    sqlx::query!(
+        r#"
+        INSERT INTO customer_account_allocations (id, entry_id, sale_id, amount)
+        SELECT id, entry_id, $3, amount
+        FROM UNNEST($1::uuid[], $2::uuid[], $4::numeric(14, 2)[])
+            AS planned(id, entry_id, amount)
+        "#,
+        &ids,
+        &entry_ids,
+        sale_id,
+        &amounts,
+    )
+    .execute(&mut *conn)
+    .await?;
 
     Ok(applied)
 }

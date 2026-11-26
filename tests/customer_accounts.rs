@@ -2528,6 +2528,114 @@ async fn applying_credit_never_exceeds_the_usable_credit(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn applying_credit_consumes_more_than_100_receipts_oldest_first(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(120.50)).await;
+    let actor = Uuid::now_v7();
+
+    let wallet = Uuid::now_v7();
+    let method = Uuid::now_v7();
+    sqlx::query("INSERT INTO wallets (id, name) VALUES ($1, 'Cash')")
+        .bind(wallet)
+        .execute(&pool)
+        .await
+        .expect("wallet");
+    sqlx::query("INSERT INTO payment_methods (id, name, wallet_id) VALUES ($1, 'Cash', $2)")
+        .bind(method)
+        .bind(wallet)
+        .execute(&pool)
+        .await
+        .expect("method");
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::record_charge(&mut tx, customer, sale, dec!(120.50), actor)
+        .await
+        .expect("charge");
+    for _ in 0..125 {
+        let movement = Uuid::now_v7();
+        sqlx::query(
+            r#"
+            INSERT INTO wallet_movements
+                (id, wallet_id, kind, amount, customer_id, payment_method_id)
+            VALUES ($1, $2, 'account_payment', $3, $4, $5)
+            "#,
+        )
+        .bind(movement)
+        .bind(wallet)
+        .bind(dec!(1.00))
+        .bind(customer)
+        .bind(method)
+        .execute(&mut *tx)
+        .await
+        .expect("movement");
+        repository::record_receipt(
+            &mut tx,
+            repository::NewReceipt {
+                customer_id: customer,
+                wallet_movement_id: movement,
+                amount: dec!(1.00),
+                allocations: &[],
+                idempotency_key: None,
+                note: None,
+                created_by: actor,
+            },
+        )
+        .await
+        .expect("receipt");
+    }
+    tx.commit().await.expect("commit seed");
+
+    let ordered_receipts: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM customer_account_entries
+         WHERE customer_id = $1 AND kind = 'receipt'
+         ORDER BY created_at, id",
+    )
+    .bind(customer)
+    .fetch_all(&pool)
+    .await
+    .expect("ordered receipts");
+    assert_eq!(ordered_receipts.len(), 125);
+
+    let mut tx = pool.begin().await.expect("transaction");
+    repository::lock_customer(&mut tx, customer)
+        .await
+        .expect("lock customer");
+    let applied = repository::apply_available_credit(&mut tx, customer, sale, dec!(120.50))
+        .await
+        .expect("credit applied");
+    tx.commit().await.expect("commit apply");
+
+    assert_eq!(applied, dec!(120.50));
+
+    let allocs: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT a.entry_id, a.amount
+         FROM customer_account_allocations a
+         JOIN customer_account_entries e ON e.id = a.entry_id
+         WHERE a.sale_id = $1
+         ORDER BY e.created_at, e.id",
+    )
+    .bind(sale)
+    .fetch_all(&pool)
+    .await
+    .expect("allocations");
+    assert_eq!(allocs.len(), 121);
+    let expected: Vec<(Uuid, Decimal)> = ordered_receipts[..120]
+        .iter()
+        .map(|&id| (id, dec!(1.00)))
+        .chain(std::iter::once((ordered_receipts[120], dec!(0.50))))
+        .collect();
+    assert_eq!(allocs, expected);
+
+    let position = repository::account_position(&pool, customer)
+        .await
+        .expect("position");
+    assert_eq!(position.unapplied_credit, dec!(4.50));
+    assert_eq!(position.outstanding_total, Decimal::ZERO);
+    assert_eq!(position.balance, dec!(-4.50));
+    assert!(position.is_consistent());
+}
+
+#[sqlx::test]
 async fn account_movements_cannot_back_entries_of_the_opposite_direction(pool: PgPool) {
     let ana = seed_customer(&pool, "Ana").await;
     let wallet = Uuid::now_v7();

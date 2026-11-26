@@ -155,12 +155,10 @@ prevents a deactivation from racing an on-account purchase.
   outflows, and freezing `purchases` (`status = 'completed'`, `total`,
   `supplier_name`), completion writes one `purchase_charge` of `+on_account`
   (guarded by `supplier_account_entries_one_charge_per_purchase`) and
-  immediately runs `apply_available_credit`, allocating from unallocated
-  payments oldest-first (`created_at, id`, capped at `LIMIT 100` unallocated
-  payment rows per completion) up to `min(on_account, U, purchase_outstanding)`.
-  If a supplier accumulates more than 100 separate partially unallocated
-  advance payments, only the oldest 100 are consumed during that completion and
-  any remainder stays in `U`.
+  immediately runs `apply_available_credit`, planning allocations from
+  unallocated payments and purchase-return credits oldest-first
+  (`created_at, id`) up to `min(on_account, U, purchase_outstanding)` and
+  inserting them in a single batched query.
 - `CompletedPurchaseResponse.credit_applied` reports how much advance credit
   covered automatically; `on_account - credit_applied` is the net payable added.
 

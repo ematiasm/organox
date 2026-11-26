@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO supplier_account_allocations (id, entry_id, purchase_id, amount)\n        SELECT id, entry_id, $3, amount\n        FROM UNNEST($1::uuid[], $2::uuid[], $4::numeric(14, 2)[])\n            AS planned(id, entry_id, amount)\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray",
+        "Uuid",
+        "NumericArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5a368efdc5c915234b662f3424607e8f62ca40aab27849854d3d67857a656cf7"
+}
