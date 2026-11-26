@@ -157,12 +157,7 @@ async fn open_draft(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<(StatusCode, Json<DraftResponse>), AppError> {
-    let existing = crate::sales::repository::find_open_draft_for_user(&state.pool, user.id())
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    let reused = existing.is_some();
-    let id = service::open_draft(&state.pool, user.id()).await?;
+    let (id, reused) = service::open_draft(&state.pool, user.id()).await?;
 
     Ok((
         if reused {

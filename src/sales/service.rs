@@ -155,22 +155,27 @@ fn map_repo_error(err: RepoError) -> SalesError {
 /// Returning the existing draft is correct, not a shortcut: reloading the sale
 /// screen must not create a draft for every F5, or the cashier ends up with
 /// twenty empty carts and the table grows pointlessly.
-pub async fn open_draft(pool: &PgPool, user_id: Uuid) -> Result<Uuid, SalesError> {
+///
+/// Returns `(id, reused)` where `reused` is `true` if an existing open draft
+/// was returned and `false` if a new draft was created.
+pub async fn open_draft(pool: &PgPool, user_id: Uuid) -> Result<(Uuid, bool), SalesError> {
     if let Some(existing) = repository::find_open_draft_for_user(pool, user_id)
         .await
         .map_err(map_repo_error)?
     {
-        return Ok(existing);
+        return Ok((existing, true));
     }
 
-    repository::create_draft(
+    let id = repository::create_draft(
         pool,
         repository::NewSaleDraft {
             created_by: user_id,
         },
     )
     .await
-    .map_err(map_repo_error)
+    .map_err(map_repo_error)?;
+
+    Ok((id, false))
 }
 
 pub async fn get(pool: &PgPool, sale_id: Uuid) -> Result<Sale, SalesError> {

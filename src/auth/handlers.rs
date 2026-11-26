@@ -17,7 +17,6 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::extract::{AuthUser, SESSION_COOKIE};
 use crate::auth::model::Role;
-use crate::auth::repository;
 use crate::auth::service::{self, AuthError, LoginOutcome};
 use crate::error::AppError;
 use crate::extract::{AppJson, AppPath};
@@ -182,9 +181,7 @@ async fn list_users(
     // Same authorization rule as user creation, before reading the users.
     user.require_user_management()?;
 
-    let users = repository::list_users(&state.pool)
-        .await
-        .map_err(|err| AppError::Internal(err.to_string()))?;
+    let users = service::list_users(&state.pool, user.role()).await?;
 
     Ok(Json(
         users

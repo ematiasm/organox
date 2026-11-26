@@ -716,6 +716,32 @@ async fn owner_lists_all_users_ordered_by_email(pool: sqlx::PgPool) {
     }
 }
 
+#[sqlx::test]
+async fn service_list_users_enforces_owner_role_and_orders_by_email(pool: sqlx::PgPool) {
+    seed_user(&pool, "zoe@pyme.com", Role::Manager).await;
+    seed_user(&pool, "anna@pyme.com", Role::Manager).await;
+    seed_user(&pool, "mike@pyme.com", Role::Owner).await;
+
+    let err = service::list_users(&pool, Role::Manager)
+        .await
+        .expect_err("manager must not list users through auth::service");
+    assert!(matches!(err, AuthError::Forbidden));
+
+    let users = service::list_users(&pool, Role::Owner)
+        .await
+        .expect("owner must be able to list users through auth::service");
+
+    let summary: Vec<(&str, Role)> = users.iter().map(|u| (u.email.as_str(), u.role)).collect();
+    assert_eq!(
+        summary,
+        [
+            ("anna@pyme.com", Role::Manager),
+            ("mike@pyme.com", Role::Owner),
+            ("zoe@pyme.com", Role::Manager),
+        ]
+    );
+}
+
 // --- Password rotation -------------------------------------------------
 
 fn change_password_request(cookie: &str, current: &str, new: &str) -> Request<Body> {
