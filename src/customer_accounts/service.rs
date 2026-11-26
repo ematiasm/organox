@@ -517,15 +517,17 @@ pub async fn list_receipts(
     pool: &PgPool,
     customer_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<ReceiptLogItem>, ReceiptsError> {
     let limit = limit.clamp(1, 200);
+    let offset = offset.max(0);
     let mut tx = begin_read_snapshot(pool).await?;
 
     if !repository::customer_exists_in(&mut tx, customer_id).await? {
         return Err(ReceiptsError::CustomerNotFound);
     }
 
-    let receipts = repository::list_receipts_in(&mut tx, customer_id, limit).await?;
+    let receipts = repository::list_receipts_in(&mut tx, customer_id, limit, offset).await?;
     tx.commit().await?;
     Ok(receipts)
 }
@@ -536,15 +538,17 @@ pub async fn list_adjustments(
     pool: &PgPool,
     customer_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<AdjustmentLogItem>, ReceiptsError> {
     let limit = limit.clamp(1, 200);
+    let offset = offset.max(0);
     let mut tx = begin_read_snapshot(pool).await?;
 
     if !repository::customer_exists_in(&mut tx, customer_id).await? {
         return Err(ReceiptsError::CustomerNotFound);
     }
 
-    let adjustments = repository::list_adjustments_in(&mut tx, customer_id, limit).await?;
+    let adjustments = repository::list_adjustments_in(&mut tx, customer_id, limit, offset).await?;
     tx.commit().await?;
     Ok(adjustments)
 }

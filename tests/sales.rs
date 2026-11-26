@@ -911,7 +911,9 @@ async fn charging_a_sale_credits_the_method_wallet(pool: PgPool) {
     assert_eq!(done.payment_movement_ids.len(), 1);
     assert_eq!(wallet_balance(&pool, wallet).await, dec!(3001.00));
 
-    let movements = payments::list_movements(&pool, wallet, 10).await.unwrap();
+    let movements = payments::list_movements(&pool, wallet, 10, 0)
+        .await
+        .unwrap();
     assert_eq!(movements.len(), 1);
     assert_eq!(movements[0].kind, WalletMovementKind::SalePayment);
     assert_eq!(movements[0].sale_id, Some(draft));

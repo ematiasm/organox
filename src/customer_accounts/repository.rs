@@ -420,6 +420,7 @@ pub async fn list_receipts_in(
     conn: &mut PgConnection,
     customer_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<ReceiptLogItem>, RepoError> {
     let rows = sqlx::query!(
         r#"
@@ -437,9 +438,11 @@ pub async fn list_receipts_in(
           AND e.kind = 'receipt'
         ORDER BY e.created_at DESC, e.id DESC
         LIMIT $2
+        OFFSET $3
         "#,
         customer_id,
-        limit
+        limit,
+        offset
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -500,6 +503,7 @@ pub async fn list_adjustments_in(
     conn: &mut PgConnection,
     customer_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<AdjustmentLogItem>, RepoError> {
     let rows = sqlx::query!(
         r#"
@@ -514,9 +518,11 @@ pub async fn list_adjustments_in(
           AND kind IN ('adjustment_in', 'adjustment_out')
         ORDER BY created_at DESC, id DESC
         LIMIT $2
+        OFFSET $3
         "#,
         customer_id,
-        limit
+        limit,
+        offset
     )
     .fetch_all(&mut *conn)
     .await?;

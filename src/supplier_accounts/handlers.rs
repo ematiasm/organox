@@ -175,6 +175,8 @@ pub struct SupplierAdjustmentResponse {
 pub struct ListSupplierAccountLogQuery {
     /// Maximum number of entries to return (default 50, clamped to 1..=200).
     pub limit: Option<i64>,
+    /// Entries to skip from the newest (default 0).
+    pub offset: Option<i64>,
 }
 
 /// Window over a portfolio report (`/accounts/payables`).
@@ -488,7 +490,8 @@ async fn list_payments(
     AppQuery(query): AppQuery<ListSupplierAccountLogQuery>,
 ) -> Result<Json<Vec<SupplierPaymentLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let payments = service::list_payments(&state.pool, id, limit).await?;
+    let offset = query.offset.unwrap_or(0).max(0);
+    let payments = service::list_payments(&state.pool, id, limit, offset).await?;
     Ok(Json(payments.into_iter().map(to_payment_log).collect()))
 }
 
@@ -499,7 +502,8 @@ async fn list_adjustments(
     AppQuery(query): AppQuery<ListSupplierAccountLogQuery>,
 ) -> Result<Json<Vec<SupplierAdjustmentLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let adjustments = service::list_adjustments(&state.pool, id, limit).await?;
+    let offset = query.offset.unwrap_or(0).max(0);
+    let adjustments = service::list_adjustments(&state.pool, id, limit, offset).await?;
     Ok(Json(
         adjustments.into_iter().map(to_adjustment_log).collect(),
     ))
@@ -816,6 +820,9 @@ fn record_adjustment_doc() {}
 fn get_account_statement_doc() {}
 
 /// Payment write log for one supplier, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
 #[utoipa::path(
     get,
     path = "/api/v1/suppliers/{id}/payments",
@@ -836,6 +843,9 @@ fn get_account_statement_doc() {}
 fn list_payments_doc() {}
 
 /// Manual payable adjustment write log for one supplier, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
 #[utoipa::path(
     get,
     path = "/api/v1/suppliers/{id}/adjustments",

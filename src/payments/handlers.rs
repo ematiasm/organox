@@ -108,7 +108,10 @@ pub struct ListQuery {
 
 #[derive(Deserialize, utoipa::IntoParams)]
 pub struct ListMovementsQuery {
+    /// Maximum number of movements to return (default 50, clamped to 1..=200).
     pub limit: Option<i64>,
+    /// Movements to skip from the newest (default 0).
+    pub offset: Option<i64>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -204,7 +207,8 @@ async fn list_wallet_movements(
     AppQuery(query): AppQuery<ListMovementsQuery>,
 ) -> Result<Json<Vec<WalletMovementResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let rows = service::list_movements(&state.pool, id, limit).await?;
+    let offset = query.offset.unwrap_or(0).max(0);
+    let rows = service::list_movements(&state.pool, id, limit, offset).await?;
     Ok(Json(rows.into_iter().map(to_movement_response).collect()))
 }
 
@@ -408,6 +412,9 @@ fn get_wallet_doc() {}
 fn update_wallet_doc() {}
 
 /// Movements of one wallet, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the wallet ledger.
 #[utoipa::path(
     get,
     path = "/api/v1/wallets/{id}/movements",

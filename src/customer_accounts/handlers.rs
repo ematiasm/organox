@@ -181,6 +181,8 @@ pub struct AdjustmentResponse {
 pub struct ListAccountLogQuery {
     /// Maximum number of entries to return (default 50, clamped to 1..=200).
     pub limit: Option<i64>,
+    /// Entries to skip from the newest (default 0).
+    pub offset: Option<i64>,
 }
 
 /// Window over a portfolio report (`/accounts/receivables`).
@@ -498,7 +500,8 @@ async fn list_receipts(
     AppQuery(query): AppQuery<ListAccountLogQuery>,
 ) -> Result<Json<Vec<ReceiptLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let receipts = service::list_receipts(&state.pool, id, limit).await?;
+    let offset = query.offset.unwrap_or(0).max(0);
+    let receipts = service::list_receipts(&state.pool, id, limit, offset).await?;
     Ok(Json(receipts.into_iter().map(to_receipt_log).collect()))
 }
 
@@ -509,7 +512,8 @@ async fn list_adjustments(
     AppQuery(query): AppQuery<ListAccountLogQuery>,
 ) -> Result<Json<Vec<AdjustmentLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let adjustments = service::list_adjustments(&state.pool, id, limit).await?;
+    let offset = query.offset.unwrap_or(0).max(0);
+    let adjustments = service::list_adjustments(&state.pool, id, limit, offset).await?;
     Ok(Json(
         adjustments.into_iter().map(to_adjustment_log).collect(),
     ))
@@ -824,6 +828,9 @@ fn record_adjustment_doc() {}
 fn get_account_statement_doc() {}
 
 /// Collection write log for one customer, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
 #[utoipa::path(
     get,
     path = "/api/v1/customers/{id}/receipts",
@@ -844,6 +851,9 @@ fn get_account_statement_doc() {}
 fn list_receipts_doc() {}
 
 /// Manual debt adjustment write log for one customer, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
 #[utoipa::path(
     get,
     path = "/api/v1/customers/{id}/adjustments",

@@ -22,8 +22,8 @@ semantics."
 
 ## Tasks
 
-T1 | S1, S2 | inline | U1: batch `sales::list_completed` with `ANY($1)` and paginate `GET /sales` with a `{items, limit, offset, total}` envelope; update the sales screen.
-T2 | S2 | inline | U2: accept bounded `limit`/`offset` on customer and supplier statements plus receivables/payables, reporting the full count; totals, aging, and the position stay computed over the whole account.
+T1 | S1, S2 | inline | U1 (commit eb58eb7): batch `sales::list_completed` with `ANY($1)` and paginate `GET /sales` with a `{items, limit, offset, total}` envelope; update the sales screen.
+T2 | S2 | inline | U2 (commit b66a82e): accept bounded `limit`/`offset` on customer and supplier statements plus receivables/payables, reporting the full count; totals, aging, and the position stay computed over the whole account.
 T3 | S2, S3 | inline | U3: check wallet existence with `SELECT 1` instead of the full ledger read, and accept `offset` on wallet movement and account log endpoints.
 T4 | S2 | inline | Regenerate the OpenAPI spec and TS types, update the docs tables, and run the full local checks.
 
@@ -44,3 +44,13 @@ are always computed over the whole account (S5).
 L4. Decision: log endpoints (`/receipts`, `/adjustments`, `/payments`,
 `/wallets/{id}/movements`) keep their bare array and gain `offset` next to the
 existing bounded `limit`; a fifth envelope is not invented for them.
+
+L5. Slice boundaries (one PR, three work units, generated files travel with
+the unit that changes them): U1 ends at `eb58eb7` (sales), U2 at `b66a82e`
+(statements and portfolio reports, customer and supplier), U3 closes the
+feature with the wallet existence probe and the log offsets.
+
+L6. The supplier half of U2 mirrors the customer half function for function:
+`list_entries_in` + `count_entries_in`, `payables_page` + the past-the-end
+re-read, and the same two query structs in the handlers. A later change to one
+side has to change the other.

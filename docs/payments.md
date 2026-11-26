@@ -185,7 +185,7 @@ movement at all. The note reports the refunds it produced; see
 | POST | `/api/v1/wallets` | Create a wallet |
 | GET | `/api/v1/wallets/{id}` | One wallet with its balance |
 | PATCH | `/api/v1/wallets/{id}` | Rename or (de)activate |
-| GET | `/api/v1/wallets/{id}/movements` | Recent movements, newest first |
+| GET | `/api/v1/wallets/{id}/movements?limit=&offset=` | Recent movements, newest first (`limit` 1..=200, default 50; `offset` default 0) |
 | POST | `/api/v1/wallets/{id}/movements` | Record an expense or an adjustment |
 | GET | `/api/v1/payment-methods` | Methods with the wallet each one pays into |
 | POST | `/api/v1/payment-methods` | Create a method |

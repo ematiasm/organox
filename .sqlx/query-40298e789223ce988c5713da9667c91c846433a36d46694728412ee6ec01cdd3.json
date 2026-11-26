@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT e.id AS entry_id,\n               e.wallet_movement_id AS \"wallet_movement_id!: Uuid\",\n               wm.wallet_id,\n               wm.payment_method_id,\n               (-e.amount)::numeric(14, 2) AS \"amount!: Decimal\",\n               wm.note,\n               e.created_by,\n               e.created_at\n        FROM supplier_account_entries e\n        JOIN wallet_movements wm ON wm.id = e.wallet_movement_id\n        WHERE e.supplier_id = $1\n          AND e.kind = 'payment'\n        ORDER BY e.created_at DESC, e.id DESC\n        LIMIT $2\n        ",
+  "query": "\n        SELECT e.id AS entry_id,\n               e.wallet_movement_id AS \"wallet_movement_id!: Uuid\",\n               wm.wallet_id,\n               wm.payment_method_id,\n               (-e.amount)::numeric(14, 2) AS \"amount!: Decimal\",\n               wm.note,\n               e.created_by,\n               e.created_at\n        FROM supplier_account_entries e\n        JOIN wallet_movements wm ON wm.id = e.wallet_movement_id\n        WHERE e.supplier_id = $1\n          AND e.kind = 'payment'\n        ORDER BY e.created_at DESC, e.id DESC\n        LIMIT $2\n        OFFSET $3\n        ",
   "describe": {
     "columns": [
       {
@@ -90,6 +90,7 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Int8",
         "Int8"
       ]
     },
@@ -104,5 +105,5 @@
       false
     ]
   },
-  "hash": "95bb32b1244510cf8249a1fd1a7164b76665fff7158c0ae67b8ddc45b04ae9c8"
+  "hash": "40298e789223ce988c5713da9667c91c846433a36d46694728412ee6ec01cdd3"
 }

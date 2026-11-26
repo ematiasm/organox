@@ -936,6 +936,31 @@ async fn payment_log_returns_newest_first_with_allocations_and_clamps_limit(pool
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(clamped_max.as_array().unwrap().len(), 3);
+
+    // offset pages through newest-first rows; negative offset clamps to 0.
+    let (st, _, page1) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/payments?limit=1&offset=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let page1_items = page1.as_array().unwrap();
+    assert_eq!(page1_items.len(), 1);
+    assert_eq!(page1_items[0]["payment_id"], ids[1]);
+
+    let (st, _, clamped_offset) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/payments?limit=1&offset=-2"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(clamped_offset.as_array().unwrap()[0]["payment_id"], ids[2]);
 }
 
 // =========================================================================
@@ -1216,6 +1241,19 @@ async fn adjustments_enforce_note_and_non_negative_balance_without_wallet_moveme
     assert_eq!(st, StatusCode::OK);
     assert_eq!(clamped.as_array().unwrap().len(), 1);
     assert_eq!(clamped[0]["adjustment_id"], adj2["adjustment_id"]);
+
+    let (st, _, page1) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/adjustments?limit=1&offset=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let page1_items = page1.as_array().unwrap();
+    assert_eq!(page1_items.len(), 1);
+    assert_eq!(page1_items[0]["adjustment_id"], adj1["adjustment_id"]);
 
     // Unknown supplier -> 404.
     let (st, _, _) = send(

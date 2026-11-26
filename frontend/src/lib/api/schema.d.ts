@@ -207,7 +207,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Manual debt adjustment write log for one customer, newest first. */
+        /**
+         * Manual debt adjustment write log for one customer, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the log.
+         */
         get: operations["list_adjustments_doc"];
         put?: never;
         /**
@@ -276,7 +280,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Collection write log for one customer, newest first. */
+        /**
+         * Collection write log for one customer, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the log.
+         */
         get: operations["list_receipts_doc"];
         put?: never;
         /**
@@ -857,7 +865,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Manual payable adjustment write log for one supplier, newest first. */
+        /**
+         * Manual payable adjustment write log for one supplier, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the log.
+         */
         get: operations["list_adjustments_doc"];
         put?: never;
         /**
@@ -923,7 +935,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Payment write log for one supplier, newest first. */
+        /**
+         * Payment write log for one supplier, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the log.
+         */
         get: operations["list_payments_doc"];
         put?: never;
         /**
@@ -1025,7 +1041,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Movements of one wallet, newest first. */
+        /**
+         * Movements of one wallet, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the wallet ledger.
+         */
         get: operations["list_wallet_movements_doc"];
         put?: never;
         /**
@@ -3012,6 +3032,8 @@ export interface operations {
                 id: string;
                 /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
                 limit: number | null;
+                /** @description Entries to skip from the newest (default 0). */
+                offset: number | null;
             };
             cookie?: never;
         };
@@ -3238,6 +3260,8 @@ export interface operations {
                 id: string;
                 /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
                 limit: number | null;
+                /** @description Entries to skip from the newest (default 0). */
+                offset: number | null;
             };
             cookie?: never;
         };
@@ -5193,6 +5217,8 @@ export interface operations {
                 id: string;
                 /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
                 limit: number | null;
+                /** @description Entries to skip from the newest (default 0). */
+                offset: number | null;
             };
             cookie?: never;
         };
@@ -5419,6 +5445,8 @@ export interface operations {
                 id: string;
                 /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
                 limit: number | null;
+                /** @description Entries to skip from the newest (default 0). */
+                offset: number | null;
             };
             cookie?: never;
         };
@@ -5879,7 +5907,10 @@ export interface operations {
             path: {
                 /** @description Wallet id */
                 id: string;
+                /** @description Maximum number of movements to return (default 50, clamped to 1..=200). */
                 limit: number | null;
+                /** @description Movements to skip from the newest (default 0). */
+                offset: number | null;
             };
             cookie?: never;
         };

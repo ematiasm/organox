@@ -613,7 +613,7 @@ async fn receipts_log_returns_newest_first_with_allocations_wallet_and_note(pool
     assert_eq!(allocs[0]["sale_id"], sale_id.to_string());
     assert_eq!(allocs[0]["amount"], "50.00");
 
-    // Limit parameter is respected.
+    // Limit and offset parameters are respected.
     let (status, limited) = send(
         &app,
         "GET",
@@ -626,6 +626,33 @@ async fn receipts_log_returns_newest_first_with_allocations_wallet_and_note(pool
     let limited_items = limited.as_array().unwrap();
     assert_eq!(limited_items.len(), 1);
     assert_eq!(limited_items[0]["receipt_id"], r2["receipt_id"]);
+
+    let (status, page1) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/receipts?limit=1&offset=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page1_items = page1.as_array().unwrap();
+    assert_eq!(page1_items.len(), 1);
+    assert_eq!(page1_items[0]["receipt_id"], r1["receipt_id"]);
+
+    let (status, clamped_offset) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/receipts?limit=1&offset=-3"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        clamped_offset.as_array().unwrap()[0]["receipt_id"],
+        r2["receipt_id"]
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -706,6 +733,19 @@ async fn adjustments_log_returns_newest_first_with_signed_amount_and_note(pool: 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(limited.as_array().unwrap().len(), 1);
     assert_eq!(limited[0]["adjustment_id"], a2["adjustment_id"]);
+
+    let (status, page1) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/adjustments?limit=1&offset=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page1_items = page1.as_array().unwrap();
+    assert_eq!(page1_items.len(), 1);
+    assert_eq!(page1_items[0]["adjustment_id"], a1["adjustment_id"]);
 }
 
 // =========================================================================

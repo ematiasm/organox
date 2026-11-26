@@ -649,6 +649,7 @@
           "customer_accounts"
         ],
         "summary": "Manual debt adjustment write log for one customer, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the log.",
         "operationId": "list_adjustments_doc",
         "parameters": [
           {
@@ -665,6 +666,19 @@
             "name": "limit",
             "in": "path",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "description": "Entries to skip from the newest (default 0).",
             "required": true,
             "schema": {
               "type": [
@@ -950,6 +964,7 @@
           "customer_accounts"
         ],
         "summary": "Collection write log for one customer, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the log.",
         "operationId": "list_receipts_doc",
         "parameters": [
           {
@@ -966,6 +981,19 @@
             "name": "limit",
             "in": "path",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "description": "Entries to skip from the newest (default 0).",
             "required": true,
             "schema": {
               "type": [
@@ -3631,6 +3659,7 @@
           "supplier_accounts"
         ],
         "summary": "Manual payable adjustment write log for one supplier, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the log.",
         "operationId": "list_adjustments_doc",
         "parameters": [
           {
@@ -3647,6 +3676,19 @@
             "name": "limit",
             "in": "path",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "description": "Entries to skip from the newest (default 0).",
             "required": true,
             "schema": {
               "type": [
@@ -3932,6 +3974,7 @@
           "supplier_accounts"
         ],
         "summary": "Payment write log for one supplier, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the log.",
         "operationId": "list_payments_doc",
         "parameters": [
           {
@@ -3948,6 +3991,19 @@
             "name": "limit",
             "in": "path",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "description": "Entries to skip from the newest (default 0).",
             "required": true,
             "schema": {
               "type": [
@@ -4514,6 +4570,7 @@
           "payments"
         ],
         "summary": "Movements of one wallet, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the wallet ledger.",
         "operationId": "list_wallet_movements_doc",
         "parameters": [
           {
@@ -4529,6 +4586,20 @@
           {
             "name": "limit",
             "in": "path",
+            "description": "Maximum number of movements to return (default 50, clamped to 1..=200).",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "description": "Movements to skip from the newest (default 0).",
             "required": true,
             "schema": {
               "type": [

@@ -176,11 +176,15 @@ pub async fn list_movements(
     pool: &sqlx::PgPool,
     wallet_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<WalletMovement>, PaymentsError> {
     // Proving the wallet exists first turns a typo in the id into a 404 instead
-    // of an empty list that looks like "no movements yet".
-    repository::get_wallet(pool, wallet_id).await?;
-    Ok(repository::list_movements(pool, wallet_id, limit).await?)
+    // of an empty list that looks like "no movements yet". A primary-key probe
+    // costs one index lookup instead of summing the whole ledger via get_wallet.
+    if !repository::wallet_exists(pool, wallet_id).await? {
+        return Err(PaymentsError::WalletNotFound);
+    }
+    Ok(repository::list_movements(pool, wallet_id, limit, offset.max(0)).await?)
 }
 
 /// Record money moving by hand: an expense, or an adjustment for a mistake.

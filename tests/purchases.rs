@@ -334,7 +334,7 @@ async fn completes_a_purchase_atomically_adding_stock_and_deducting_wallets(pool
     assert_eq!(cash.balance, dec!(-500.00));
     assert_eq!(bank.balance, dec!(-755.00));
 
-    let cash_moves = payments::list_movements(&pool, cash_wallet, 10)
+    let cash_moves = payments::list_movements(&pool, cash_wallet, 10, 0)
         .await
         .unwrap();
     assert_eq!(cash_moves.len(), 1);
@@ -913,7 +913,7 @@ async fn pure_on_account_purchase_records_stock_and_payable_without_wallet_movem
         dec!(0.00)
     );
     assert!(
-        payments::list_movements(&pool, wallet_id, 10)
+        payments::list_movements(&pool, wallet_id, 10, 0)
             .await
             .unwrap()
             .is_empty()
@@ -983,7 +983,7 @@ async fn mixed_cash_and_on_account_purchase_writes_wallet_outflow_and_payable(po
     // Wallet outflow for the cash portion only.
     let wallet = payments::get_wallet(&pool, wallet_id).await.unwrap();
     assert_eq!(wallet.balance, dec!(-350.00));
-    let moves = payments::list_movements(&pool, wallet_id, 10)
+    let moves = payments::list_movements(&pool, wallet_id, 10, 0)
         .await
         .unwrap();
     assert_eq!(moves.len(), 1);

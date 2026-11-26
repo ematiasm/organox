@@ -212,12 +212,14 @@ prevents a deactivation from racing an on-account purchase.
   reports the balance the account really had at that entry, and
   `entries_total` always counts every entry.
 - **`GET /api/v1/suppliers/{id}/payments`**: write log of supplier payments,
-  newest first (`?limit=`, default 50, clamped to `1..=200`), joining wallet,
-  payment method, and note from `wallet_movements` and batch-loading
-  allocations inside a `REPEATABLE READ, READ ONLY` transaction.
+  newest first (`?limit=`, default 50, clamped to `1..=200`, `?offset=`,
+  default 0), joining wallet, payment method, and note from `wallet_movements`
+  and batch-loading allocations inside a `REPEATABLE READ, READ ONLY`
+  transaction.
 - **`GET /api/v1/suppliers/{id}/adjustments`**: write log of manual
-  adjustments, newest first (`?limit=`, default 50, clamped to `1..=200`), with
-  signed `amount`, inside a `REPEATABLE READ, READ ONLY` transaction.
+  adjustments, newest first (`?limit=`, default 50, clamped to `1..=200`,
+  `?offset=`, default 0), with signed `amount`, inside a `REPEATABLE READ, READ
+  ONLY` transaction.
 - **`GET /api/v1/accounts/payables`**: opens a `REPEATABLE READ, READ ONLY`
   transaction and lists every supplier with `balance != 0` or
   `unapplied_credit != 0` (ordered by `balance DESC, lower(name) ASC, id ASC`;
@@ -243,10 +245,10 @@ payments, and suppliers. Errors use `application/problem+json` (RFC 7807).
 | Method | Route | Result |
 |---|---|---|
 | GET | `/api/v1/suppliers/{id}/account` | `200` `SupplierAccountResponse` (position, oldest-first entries with running balance and `entries_total`, open purchases; `?limit=`/`?offset=` window the entries); `404` unknown supplier |
-| GET | `/api/v1/suppliers/{id}/payments?limit=` | `200` `SupplierPaymentLogResponse[]` (newest first, `limit` 1..=200); `404` unknown supplier |
+| GET | `/api/v1/suppliers/{id}/payments?limit=&offset=` | `200` `SupplierPaymentLogResponse[]` (newest first, `limit` 1..=200, `offset` default 0); `404` unknown supplier |
 | POST | `/api/v1/suppliers/{id}/payments` | `201` fresh / `200` replay `SupplierPaymentResponse`; `404` unknown supplier or purchase; `409` busy account or cross-kind key collision; `422` invalid method, amount, key or allocation |
 | POST | `/api/v1/suppliers/{id}/credit-refunds` | `201` fresh / `200` replay `SupplierCreditRefundResponse`; `404` unknown supplier; `409` busy account or cross-kind key collision; `422` invalid method, blank note, bad amount or insufficient credit |
-| GET | `/api/v1/suppliers/{id}/adjustments?limit=` | `200` `SupplierAdjustmentLogResponse[]` (newest first, `limit` 1..=200); `404` unknown supplier |
+| GET | `/api/v1/suppliers/{id}/adjustments?limit=&offset=` | `200` `SupplierAdjustmentLogResponse[]` (newest first, `limit` 1..=200, `offset` default 0); `404` unknown supplier |
 | POST | `/api/v1/suppliers/{id}/adjustments` | `201` `SupplierAdjustmentResponse`; `404` unknown supplier; `409` busy account; `422` blank note, bad amount or balance crossing below zero |
 | GET | `/api/v1/accounts/payables` | `200` `PayablesResponse` (portfolio totals, aging buckets, open-position suppliers, `items_total`; `?limit=`/`?offset=` window `items`) |
 

@@ -6,7 +6,7 @@
 //! to keep in sync, which is what makes the number trustworthy.
 
 use rust_decimal::Decimal;
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use uuid::Uuid;
 
 use super::model::{PaymentMethod, Wallet, WalletMovement, WalletMovementKind, WalletWithBalance};
@@ -194,6 +194,19 @@ pub async fn get_wallet(pool: &PgPool, id: Uuid) -> Result<WalletWithBalance, Re
         },
         balance: row.balance,
     })
+}
+
+/// Whether the wallet row exists. Read endpoints answer `404` when it does
+/// not, via one primary-key lookup instead of summing the ledger.
+pub async fn wallet_exists(
+    executor: impl PgExecutor<'_>,
+    wallet_id: Uuid,
+) -> Result<bool, RepoError> {
+    let found = sqlx::query!(r#"SELECT 1 AS found FROM wallets WHERE id = $1"#, wallet_id)
+        .fetch_optional(executor)
+        .await?;
+
+    Ok(found.is_some())
 }
 
 // --- Payment methods ----------------------------------------------------
@@ -420,6 +433,7 @@ pub async fn list_movements(
     pool: &PgPool,
     wallet_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<WalletMovement>, RepoError> {
     let rows = sqlx::query!(
         r#"
@@ -437,9 +451,11 @@ pub async fn list_movements(
         WHERE wallet_id = $1
         ORDER BY created_at DESC, id DESC
         LIMIT $2
+        OFFSET $3
         "#,
         wallet_id,
-        limit
+        limit,
+        offset
     )
     .fetch_all(pool)
     .await?;

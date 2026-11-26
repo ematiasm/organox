@@ -468,15 +468,17 @@ pub async fn list_payments(
     pool: &PgPool,
     supplier_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<SupplierPaymentLogItem>, SupplierAccountError> {
     let limit = limit.clamp(1, 200);
+    let offset = offset.max(0);
     let mut tx = begin_read_snapshot(pool).await?;
 
     if !repository::supplier_exists_in(&mut tx, supplier_id).await? {
         return Err(SupplierAccountError::SupplierNotFound);
     }
 
-    let payments = repository::list_payments_in(&mut tx, supplier_id, limit).await?;
+    let payments = repository::list_payments_in(&mut tx, supplier_id, limit, offset).await?;
     tx.commit().await?;
     Ok(payments)
 }
@@ -487,15 +489,17 @@ pub async fn list_adjustments(
     pool: &PgPool,
     supplier_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<SupplierAdjustmentLogItem>, SupplierAccountError> {
     let limit = limit.clamp(1, 200);
+    let offset = offset.max(0);
     let mut tx = begin_read_snapshot(pool).await?;
 
     if !repository::supplier_exists_in(&mut tx, supplier_id).await? {
         return Err(SupplierAccountError::SupplierNotFound);
     }
 
-    let adjustments = repository::list_adjustments_in(&mut tx, supplier_id, limit).await?;
+    let adjustments = repository::list_adjustments_in(&mut tx, supplier_id, limit, offset).await?;
     tx.commit().await?;
     Ok(adjustments)
 }

@@ -350,6 +350,91 @@ async fn balance_is_the_signed_sum_of_the_movements(pool: PgPool) {
     assert_eq!(rows[1]["signed_amount"], "250.00");
 }
 
+#[sqlx::test]
+async fn wallet_movements_page_with_offset_and_reject_unknown_wallet(pool: PgPool) {
+    let cookie = login(&pool).await;
+    let wallet = create_wallet(&pool, &cookie, "Cash Drawer").await;
+
+    assert_eq!(
+        record(&pool, &cookie, wallet, "adjustment_in", "100.00").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        record(&pool, &cookie, wallet, "expense", "25.00").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        record(&pool, &cookie, wallet, "adjustment_in", "50.00").await,
+        StatusCode::CREATED
+    );
+
+    let (s0, page0) = call(
+        &pool,
+        &cookie,
+        "GET",
+        &format!("/api/v1/wallets/{wallet}/movements?limit=1&offset=0"),
+        None,
+    )
+    .await;
+    assert_eq!(s0, StatusCode::OK);
+    let page0 = page0.as_array().unwrap();
+    assert_eq!(page0.len(), 1);
+    assert_eq!(page0[0]["amount"], "50.00");
+
+    let (s1, page1) = call(
+        &pool,
+        &cookie,
+        "GET",
+        &format!("/api/v1/wallets/{wallet}/movements?limit=1&offset=1"),
+        None,
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK);
+    let page1 = page1.as_array().unwrap();
+    assert_eq!(page1.len(), 1);
+    assert_eq!(page1[0]["kind"], "expense");
+    assert_eq!(page1[0]["amount"], "25.00");
+    assert_ne!(page1[0]["id"], page0[0]["id"]);
+
+    let (s2, page2) = call(
+        &pool,
+        &cookie,
+        "GET",
+        &format!("/api/v1/wallets/{wallet}/movements?limit=1&offset=2"),
+        None,
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK);
+    let page2 = page2.as_array().unwrap();
+    assert_eq!(page2.len(), 1);
+    assert_eq!(page2[0]["amount"], "100.00");
+    assert_ne!(page2[0]["id"], page0[0]["id"]);
+    assert_ne!(page2[0]["id"], page1[0]["id"]);
+
+    let (s_neg, neg) = call(
+        &pool,
+        &cookie,
+        "GET",
+        &format!("/api/v1/wallets/{wallet}/movements?limit=1&offset=-5"),
+        None,
+    )
+    .await;
+    assert_eq!(s_neg, StatusCode::OK);
+    assert_eq!(neg.as_array().unwrap()[0]["id"], page0[0]["id"]);
+
+    // Lightweight existence probe must still return 404 for an unknown wallet.
+    let missing = Uuid::now_v7();
+    let (s_missing, _) = call(
+        &pool,
+        &cookie,
+        "GET",
+        &format!("/api/v1/wallets/{missing}/movements"),
+        None,
+    )
+    .await;
+    assert_eq!(s_missing, StatusCode::NOT_FOUND);
+}
+
 /// Recording what happened is not the same as allowing it: an expense is
 /// accepted even if the wallet does not hold that much, and the negative
 /// balance is the honest answer.
