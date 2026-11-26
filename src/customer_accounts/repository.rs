@@ -835,27 +835,16 @@ async fn ensure_chargeable_sale(
     Ok(())
 }
 
-/// The movement a money-backed entry points at: it must exist, it must have
-/// carried exactly the money the entry claims, it must belong to this
-/// customer, and it must not be the till's own accounting of a sale. The
-/// foreign key proves the movement exists; only the comparison proves the two
-/// books agree on how much moved. The customer binding is the same lesson one
-/// step further: the amount alone cannot say whose money it was, and a
-/// movement that belongs to another customer's account would let one
-/// collection pay somebody else's debt. A movement without a customer (a
-/// manual adjustment, or any movement written before the column existed)
-/// keeps passing: the ledger's own fixtures and history have no attribution to
-/// compare. And a `sale_payment` or `sale_refund` movement collected for a
-/// sale at the till: it is not money that came from the customer's account, so
-/// an entry backed by it would count the same money twice. Likewise an inflow
-/// (`account_payment`) cannot back a credit refund and an outflow
-/// (`account_payment_refund`) cannot back a receipt.
+/// Verify that the linked `wallet_movements` row exists, carries the exact
+/// amount the entry claims, matches the exact expected customer account kind
+/// (`account_payment` for receipts, `account_payment_refund` for credit
+/// refunds), and belongs to this customer.
 async fn ensure_movement_backing(
     conn: &mut PgConnection,
     customer_id: Uuid,
     wallet_movement_id: Uuid,
     amount: Decimal,
-    forbidden_account_kind: &str,
+    expected_kind: &str,
 ) -> Result<Uuid, RepoError> {
     let movement = sqlx::query!(
         r#"SELECT amount, customer_id, wallet_id, kind::text AS "kind!" FROM wallet_movements WHERE id = $1"#,
@@ -872,20 +861,14 @@ async fn ensure_movement_backing(
         });
     }
 
-    if movement
-        .customer_id
-        .is_some_and(|owner| owner != customer_id)
-    {
-        return Err(RepoError::MovementOfAnotherCustomer);
-    }
-
-    if movement.kind == "sale_payment"
-        || movement.kind == "sale_refund"
-        || movement.kind == forbidden_account_kind
-    {
+    if movement.kind != expected_kind {
         return Err(RepoError::MovementNotFromAnAccount {
             kind: movement.kind,
         });
+    }
+
+    if movement.customer_id != Some(customer_id) {
+        return Err(RepoError::MovementOfAnotherCustomer);
     }
 
     Ok(movement.wallet_id)
@@ -1001,7 +984,7 @@ pub async fn record_receipt(
         receipt.customer_id,
         receipt.wallet_movement_id,
         receipt.amount,
-        "account_payment_refund",
+        "account_payment",
     )
     .await?;
 
@@ -1539,15 +1522,14 @@ pub async fn record_credit_refund_with_key(
     lock_customer(conn, refund.customer_id).await?;
 
     // The same checks the receipt makes, for the same reasons: the movement
-    // carried what the entry claims, it belongs to this customer, it is not a
-    // sale's own till money, and an inflow (`account_payment`) cannot back an
-    // outflow refund.
+    // carried what the entry claims, its kind is `account_payment_refund`, and
+    // it belongs to this customer.
     let refund_wallet_id = ensure_movement_backing(
         conn,
         refund.customer_id,
         refund.wallet_movement_id,
         refund.amount,
-        "account_payment",
+        "account_payment_refund",
     )
     .await?;
 
