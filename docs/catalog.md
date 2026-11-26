@@ -57,6 +57,11 @@ place (`MovementReason::sign`):
 | `purchase_return` | `−` | Return of purchased goods to a supplier |
 | `loss` | `−` | Breakage, expiry, theft |
 
+`return` and `purchase_return` cannot be recorded through the manual
+`POST /api/v1/products/{id}/movements` endpoint (`422 Unprocessable Entity`):
+they are written exclusively by credit notes and purchase returns so stock
+history stays linked to its source document.
+
 Storing negative quantities allows "a sale of -5" that adds stock: a sign error
 waiting to happen. With positive quantity and a derived sign, that bug is only
 representable if someone changes the reason.

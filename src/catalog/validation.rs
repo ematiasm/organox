@@ -6,6 +6,8 @@
 
 use rust_decimal::Decimal;
 
+use super::model::MovementReason;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
     #[error("the name cannot be blank")]
@@ -53,8 +55,8 @@ pub enum ValidationError {
     #[error("a service does not track stock")]
     ServiceHasNoStock,
 
-    #[error("purchase_return stock movements can only be written through a purchase return")]
-    NonManualReason,
+    #[error("{}", non_manual_reason_detail(*reason))]
+    NonManualReason { reason: MovementReason },
 
     #[error("the quantity was cancelled and insufficient stock remained")]
     InsufficientStock,
@@ -72,6 +74,18 @@ pub const MAX_NOTE_LEN: usize = 500;
 pub const QUANTITY_SCALE: u32 = 3;
 /// Money uses `numeric(12,2)`.
 pub const MONEY_SCALE: u32 = 2;
+
+fn non_manual_reason_detail(reason: MovementReason) -> String {
+    match reason {
+        MovementReason::Return => {
+            "return stock movements can only be written through a credit note".into()
+        }
+        MovementReason::PurchaseReturn => {
+            "purchase_return stock movements can only be written through a purchase return".into()
+        }
+        other => format!("{other} stock movements cannot be recorded manually"),
+    }
+}
 
 pub fn validate_name(raw: &str) -> Result<String, ValidationError> {
     let trimmed = raw.trim();
@@ -251,5 +265,26 @@ mod tests {
         assert!(validate_min_stock(Some(dec!(1_000_000_000))).is_err());
         assert!(validate_quantity(dec!(999_999_999.999)).is_ok());
         assert!(validate_quantity(dec!(1_000_000_000)).is_err());
+    }
+
+    #[test]
+    fn non_manual_reason_error_names_the_owning_document() {
+        let customer_return = ValidationError::NonManualReason {
+            reason: MovementReason::Return,
+        }
+        .to_string();
+        assert_eq!(
+            customer_return,
+            "return stock movements can only be written through a credit note"
+        );
+
+        let supplier_return = ValidationError::NonManualReason {
+            reason: MovementReason::PurchaseReturn,
+        }
+        .to_string();
+        assert_eq!(
+            supplier_return,
+            "purchase_return stock movements can only be written through a purchase return"
+        );
     }
 }

@@ -1134,3 +1134,124 @@ async fn http_catalog_rejects_values_above_numeric_column_ceilings_with_422(pool
     assert_eq!(stored.product.price, Some(dec!(9_999_999_999.99)));
     assert_eq!(stored.product.min_stock, Some(dec!(999_999_999.999)));
 }
+
+#[sqlx::test]
+async fn manual_stock_movement_rejects_non_manual_reasons(pool: PgPool) {
+    let (actor, password) =
+        seed_user_with_password(&pool, "manual-ret@pyme.com", Role::Manager).await;
+    let cookie = login_cookie(&pool, "manual-ret@pyme.com", &password).await;
+    let product = seed_product(&pool, ProductKind::Product, "Guard Item", None).await;
+
+    move_stock(&pool, actor, product, MovementReason::Purchase, dec!(5))
+        .await
+        .unwrap();
+
+    // Customer returns (`return`) must come through credit notes, never the
+    // manual movement endpoint.
+    let res = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/products/{product}/movements"))
+                .header("cookie", format!("session={cookie}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "reason": "return", "quantity": "2" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(res).await;
+    let detail = body["detail"].as_str().unwrap();
+    assert!(detail.contains("return"), "unexpected detail: {detail}");
+    assert!(
+        detail.contains("credit note"),
+        "unexpected detail: {detail}"
+    );
+    assert!(
+        !detail.contains("purchase_return"),
+        "return rejection must not mention purchase_return: {detail}"
+    );
+
+    // Supplier returns (`purchase_return`) stay rejected with their own message.
+    let res = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/products/{product}/movements"))
+                .header("cookie", format!("session={cookie}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "reason": "purchase_return", "quantity": "1" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = body_json(res).await;
+    let detail = body["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("purchase_return"),
+        "unexpected detail: {detail}"
+    );
+
+    // Neither rejection wrote a movement or changed stock.
+    assert_eq!(stock_of(&pool, product).await, dec!(5));
+
+    // Direct service calls also reject both reasons with `NonManualReason`.
+    for reason in [MovementReason::Return, MovementReason::PurchaseReturn] {
+        let err = move_stock(&pool, actor, product, reason, dec!(1))
+            .await
+            .expect_err("non-manual reason must be rejected");
+        assert!(
+            matches!(
+                err,
+                CatalogError::Validation(organox::catalog::validation::ValidationError::NonManualReason {
+                    reason: rejected,
+                }) if rejected == reason
+            ),
+            "unexpected error for {reason}: {err:?}"
+        );
+    }
+    assert_eq!(stock_of(&pool, product).await, dec!(5));
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM stock_movements WHERE product_id = $1")
+            .bind(product)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
+
+    // Manual reasons keep working through the same HTTP endpoint.
+    for (reason, quantity) in [
+        ("purchase", "3"),
+        ("sale", "2"),
+        ("adjustment", "1"),
+        ("loss", "1"),
+    ] {
+        let res = app(pool.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/products/{product}/movements"))
+                    .header("cookie", format!("session={cookie}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "reason": reason, "quantity": quantity }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::CREATED,
+            "manual reason {reason} should still succeed"
+        );
+    }
+    // 5 + 3 - 2 + 1 - 1 = 6
+    assert_eq!(stock_of(&pool, product).await, dec!(6));
+}
