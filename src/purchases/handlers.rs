@@ -379,11 +379,14 @@ impl From<PurchaseError> for AppError {
             | PurchaseError::UnitCostNegative
             | PurchaseError::UnitCostPrecision
             | PurchaseError::UnitCostTooLarge
+            | PurchaseError::TotalTooLarge
             | PurchaseError::PaymentAmountNotPositive
             | PurchaseError::PaymentAmountPrecision
+            | PurchaseError::PaymentAmountTooLarge
             | PurchaseError::PaymentMethodUnavailable
             | PurchaseError::OnAccountNegative
-            | PurchaseError::OnAccountPrecision => AppError::Validation(err.to_string()),
+            | PurchaseError::OnAccountPrecision
+            | PurchaseError::OnAccountTooLarge => AppError::Validation(err.to_string()),
             PurchaseError::SupplierLookup(inner) => AppError::Internal(inner.to_string()),
             PurchaseError::Internal(repo) => AppError::Internal(repo.to_string()),
         }

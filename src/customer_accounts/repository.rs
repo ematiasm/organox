@@ -50,6 +50,9 @@ pub enum RepoError {
     #[error("the amount {amount} carries more than two decimals")]
     TooManyDecimals { amount: Decimal },
 
+    #[error("the amount must be at most {max}")]
+    AmountTooLarge { max: Decimal },
+
     #[error("the allocation of {requested} exceeds the {outstanding} this sale still owes")]
     OutstandingExceeded {
         requested: Decimal,
@@ -630,6 +633,11 @@ fn ensure_cents(amount: Decimal) -> Result<(), RepoError> {
     if amount.round_dp(2) != amount {
         return Err(RepoError::TooManyDecimals { amount });
     }
+    if amount > crate::money::MAX_AMOUNT {
+        return Err(RepoError::AmountTooLarge {
+            max: crate::money::MAX_AMOUNT,
+        });
+    }
     Ok(())
 }
 
@@ -788,11 +796,14 @@ pub async fn authorize_credit(
 
     let position = account_position_in(conn, customer_id).await?;
 
-    let exposure = position.balance + amount;
+    let exposure = position.balance.checked_add(amount).unwrap_or(Decimal::MAX);
     if exposure > limit {
         return Err(RepoError::CreditLimitExceeded {
             requested: exposure,
-            available: (limit - position.balance).max(Decimal::ZERO),
+            available: limit
+                .checked_sub(position.balance)
+                .unwrap_or(Decimal::ZERO)
+                .max(Decimal::ZERO),
         });
     }
 
@@ -1039,7 +1050,11 @@ pub async fn record_receipt(
                 outstanding,
             });
         }
-        allocated += *amount;
+        allocated = crate::money::checked_add_amount(allocated, *amount).ok_or(
+            RepoError::AmountTooLarge {
+                max: crate::money::MAX_AMOUNT,
+            },
+        )?;
     }
     if allocated > receipt.amount {
         return Err(RepoError::ReceiptOverAllocated {
@@ -1185,7 +1200,10 @@ pub async fn allocate(
     .await?;
 
     let collected = -entry.amount;
-    if already + amount > collected {
+    if already
+        .checked_add(amount)
+        .is_none_or(|sum| sum > collected)
+    {
         return Err(RepoError::AllocationExceedsReceipt {
             collected,
             allocated: already,

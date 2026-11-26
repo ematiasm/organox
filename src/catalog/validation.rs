@@ -23,8 +23,14 @@ pub enum ValidationError {
     #[error("the price has more than 2 decimal places")]
     PricePrecision,
 
+    #[error("the price cannot exceed {max}")]
+    PriceTooLarge { max: Decimal },
+
     #[error("minimum stock cannot be negative")]
     MinStockNegative,
+
+    #[error("minimum stock cannot exceed {max}")]
+    MinStockTooLarge { max: Decimal },
 
     #[error("the quantity must be greater than zero")]
     QuantityNotPositive,
@@ -32,11 +38,17 @@ pub enum ValidationError {
     #[error("the quantity has more than 3 decimal places")]
     QuantityPrecision,
 
+    #[error("the quantity cannot exceed {max}")]
+    QuantityTooLarge { max: Decimal },
+
     #[error("the unit cost cannot be negative")]
     UnitCostNegative,
 
     #[error("the unit cost has more than 2 decimal places")]
     UnitCostPrecision,
+
+    #[error("the unit cost cannot exceed {max}")]
+    UnitCostTooLarge { max: Decimal },
 
     #[error("a service does not track stock")]
     ServiceHasNoStock,
@@ -94,6 +106,11 @@ pub fn validate_price(raw: Option<Decimal>) -> Result<Option<Decimal>, Validatio
     if price.normalize().scale() > MONEY_SCALE {
         return Err(ValidationError::PricePrecision);
     }
+    if price > crate::money::MAX_UNIT_PRICE {
+        return Err(ValidationError::PriceTooLarge {
+            max: crate::money::MAX_UNIT_PRICE,
+        });
+    }
     Ok(Some(price))
 }
 
@@ -105,6 +122,11 @@ pub fn validate_min_stock(raw: Option<Decimal>) -> Result<Option<Decimal>, Valid
     if min.normalize().scale() > QUANTITY_SCALE {
         return Err(ValidationError::QuantityPrecision);
     }
+    if min > crate::money::MAX_QUANTITY {
+        return Err(ValidationError::MinStockTooLarge {
+            max: crate::money::MAX_QUANTITY,
+        });
+    }
     Ok(Some(min))
 }
 
@@ -114,6 +136,11 @@ pub fn validate_quantity(raw: Decimal) -> Result<Decimal, ValidationError> {
     }
     if raw.normalize().scale() > QUANTITY_SCALE {
         return Err(ValidationError::QuantityPrecision);
+    }
+    if raw > crate::money::MAX_QUANTITY {
+        return Err(ValidationError::QuantityTooLarge {
+            max: crate::money::MAX_QUANTITY,
+        });
     }
     Ok(raw)
 }
@@ -125,6 +152,11 @@ pub fn validate_unit_cost(raw: Option<Decimal>) -> Result<Option<Decimal>, Valid
     }
     if cost.normalize().scale() > MONEY_SCALE {
         return Err(ValidationError::UnitCostPrecision);
+    }
+    if cost > crate::money::MAX_UNIT_PRICE {
+        return Err(ValidationError::UnitCostTooLarge {
+            max: crate::money::MAX_UNIT_PRICE,
+        });
     }
     Ok(Some(cost))
 }
@@ -204,5 +236,20 @@ mod tests {
         let long = "x".repeat(MAX_NOTE_LEN + 50);
         let note = validate_note(Some(&long)).unwrap().unwrap();
         assert_eq!(note.chars().count(), MAX_NOTE_LEN);
+    }
+
+    #[test]
+    fn numeric_column_ceilings_are_enforced() {
+        // numeric(12,2): max 9_999_999_999.99
+        assert!(validate_price(Some(dec!(9_999_999_999.99))).is_ok());
+        assert!(validate_price(Some(dec!(10_000_000_000.00))).is_err());
+        assert!(validate_unit_cost(Some(dec!(9_999_999_999.99))).is_ok());
+        assert!(validate_unit_cost(Some(dec!(10_000_000_000.00))).is_err());
+
+        // numeric(12,3): max 999_999_999.999
+        assert!(validate_min_stock(Some(dec!(999_999_999.999))).is_ok());
+        assert!(validate_min_stock(Some(dec!(1_000_000_000))).is_err());
+        assert!(validate_quantity(dec!(999_999_999.999)).is_ok());
+        assert!(validate_quantity(dec!(1_000_000_000)).is_err());
     }
 }

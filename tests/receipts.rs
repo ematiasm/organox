@@ -902,3 +902,56 @@ async fn a_multibyte_key_is_capped_in_characters_not_bytes(pool: PgPool) {
     );
     assert_eq!(account_payment_count(&pool, customer).await, 1);
 }
+
+#[sqlx::test]
+async fn receipt_allocation_rejects_decimal_max_without_panicking(pool: PgPool) {
+    let (_actor, password) = seed_owner(&pool).await;
+    let router = app(pool.clone());
+    let cookie = login(&router, "owner@pyme.com", &password).await;
+    let (method, _wallet) = seed_method(&pool, "Cash").await;
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    charge_sale(&pool, customer, sale, dec!(100.00)).await;
+
+    // Allocation exceeding numeric(14,2) on POST /receipts -> 422 and no wallet movement.
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/receipts"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method,
+            "amount": "50.00",
+            "allocations": [{ "sale_id": sale, "amount": Decimal::MAX.to_string() }],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(account_payment_count(&pool, customer).await, 0);
+
+    // Partial allocation followed by direct allocate(Decimal::MAX) must return AmountTooLarge, not panic.
+    let (status, created) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/receipts"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method,
+            "amount": "50.00",
+            "allocations": [{ "sale_id": sale, "amount": "10.00" }],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let entry_id: Uuid = created["receipt_id"].as_str().unwrap().parse().unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err =
+        organox::customer_accounts::repository::allocate(&mut tx, entry_id, sale, Decimal::MAX)
+            .await
+            .expect_err("Decimal::MAX allocation must fail");
+    assert!(matches!(
+        err,
+        organox::customer_accounts::repository::RepoError::AmountTooLarge { .. }
+    ));
+}

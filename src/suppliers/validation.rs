@@ -42,7 +42,7 @@ pub const MAX_PHONE_LEN: usize = 40;
 
 /// Largest value `numeric(14, 2)` holds.
 pub fn max_credit_limit() -> Decimal {
-    Decimal::new(99_999_999_999_999, 2)
+    crate::money::MAX_AMOUNT
 }
 
 pub fn validate_name(raw: &str) -> Result<String, ValidationError> {

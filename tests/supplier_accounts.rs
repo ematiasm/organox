@@ -1325,3 +1325,70 @@ async fn payables_report_computes_totals_aging_buckets_and_sorts_open_positions(
     assert_eq!(body["aging"]["days_61_90"], "130.00");
     assert_eq!(body["aging"]["days_90_plus"], "80.00");
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn supplier_payment_allocation_rejects_decimal_max_without_panicking(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let (_wallet_id, method_id) = seed_method(&pool, "Bank").await;
+    let product_id = seed_good(&pool, "Grain").await;
+    let app = app(pool.clone());
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    let supplier_id = create_supplier(&app, &cookie, "Grain Co", None, None).await;
+    let (purchase_id, _) = complete_on_account_purchase(
+        &app,
+        &cookie,
+        supplier_id,
+        product_id,
+        "2",
+        "50.00",
+        "100.00",
+    )
+    .await;
+
+    // Allocation exceeding numeric(14,2) on POST /payments -> 422 and no wallet movement.
+    let (st, _, _) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/payments"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method_id,
+            "amount": "50.00",
+            "allocations": [{ "purchase_id": purchase_id, "amount": Decimal::MAX.to_string() }],
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(supplier_wallet_movement_count(&pool, supplier_id).await, 0);
+
+    // Partial allocation followed by direct allocate(Decimal::MAX) must return AmountTooLarge, not panic.
+    let (st, _, created) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/payments"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method_id,
+            "amount": "50.00",
+            "allocations": [{ "purchase_id": purchase_id, "amount": "10.00" }],
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+    let entry_id: Uuid = created["payment_id"].as_str().unwrap().parse().unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let err = organox::supplier_accounts::repository::allocate(
+        &mut tx,
+        entry_id,
+        purchase_id,
+        Decimal::MAX,
+    )
+    .await
+    .expect_err("Decimal::MAX allocation must fail");
+    assert!(matches!(
+        err,
+        organox::supplier_accounts::repository::RepoError::AmountTooLarge { .. }
+    ));
+}

@@ -49,11 +49,14 @@ pub enum RepoError {
     #[error("a completed sale has no stored total")]
     SaleTotalMissing,
 
+    #[error("the credit note total exceeds the allowed maximum")]
+    TotalTooLarge,
+
     #[error(
         "the returns add up to {:.2} for a sale of {:.2}: only {:.2} is left to refund",
-        already_refunded + requested,
+        already_refunded.saturating_add(*requested),
         sale_total,
-        sale_total - already_refunded
+        sale_total.saturating_sub(*already_refunded)
     )]
     RefundExceedsSale {
         sale_total: Decimal,
@@ -669,17 +672,29 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
             });
         }
 
-        total += line.quantity * sold.unit_price;
+        let subtotal = line
+            .quantity
+            .checked_mul(sold.unit_price)
+            .ok_or(RepoError::TotalTooLarge)?;
+        total = total
+            .checked_add(subtotal)
+            .ok_or(RepoError::TotalTooLarge)?;
         accepted.push((sold, line.quantity));
     }
 
     // `numeric(14,2)`: rounded on save, not truncated.
     let total = total.round_dp(2);
+    if total > crate::money::MAX_AMOUNT {
+        return Err(RepoError::TotalTooLarge);
+    }
 
     // The per-product limit is not enough: rounding many small notes up can
     // return more money than the sale charged. The sale row is locked, so no
     // other note can move this sum between the read and the commit.
-    if already_refunded + total > sale_total {
+    if already_refunded
+        .checked_add(total)
+        .is_none_or(|sum| sum > sale_total)
+    {
         return Err(RepoError::RefundExceedsSale {
             sale_total,
             already_refunded,
@@ -852,7 +867,11 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
         // one must be non-negative: a short sum means the tenders do not hold
         // what the note promises in cash. Refusing whole is the only honest
         // answer.
-        let refunded: Decimal = shares.iter().copied().sum();
+        let refunded = shares
+            .iter()
+            .copied()
+            .try_fold(Decimal::ZERO, Decimal::checked_add)
+            .ok_or(RepoError::TotalTooLarge)?;
         if refunded != cash || shares.iter().any(|share| *share < Decimal::ZERO) {
             return Err(RepoError::RefundDoesNotAddUp { cash, refunded });
         }

@@ -1663,3 +1663,131 @@ async fn cash_purchase_for_inactive_supplier_returns_409_even_with_invalid_payme
         dec!(0.00)
     );
 }
+
+#[sqlx::test]
+async fn http_purchases_enforce_summed_quantity_total_and_payment_ceilings(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "buyer@pyme.com", Role::Owner).await;
+    let flour = seed_good(&pool, "Flour").await;
+    let supplier = seed_supplier(&pool, "Mill").await;
+    let (_wallet_id, method_id) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "buyer@pyme.com", &password).await;
+
+    let (draft_id, _) = purchases::open_draft(&pool, actor).await.unwrap();
+    purchases::set_supplier(&pool, draft_id, Some(supplier))
+        .await
+        .unwrap();
+
+    // Two adds of 600_000_000 for the same product exceed numeric(12,3) -> second returns 422, not 500.
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/items"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "product_id": flour,
+                        "quantity": "600000000",
+                        "unit_cost": "1.00"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/items"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "product_id": flour,
+                        "quantity": "600000000",
+                        "unit_cost": "1.00"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Updating the line so quantity * unit_cost exceeds numeric(14,2) -> 422, not 500.
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/purchases/{draft_id}/items/{flour}"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "quantity": "200000",
+                        "unit_cost": "10000000.00"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Completing with two Decimal::MAX payments -> 422, never panics.
+    let max = Decimal::MAX.to_string();
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [
+                            { "payment_method_id": method_id, "amount": max },
+                            { "payment_method_id": method_id, "amount": max }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Completing with on_account = Decimal::MAX -> 422, never panics.
+    let res = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft_id}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [],
+                        "on_account": max
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}

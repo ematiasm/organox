@@ -57,6 +57,7 @@ impl From<RepoError> for SupplierAccountError {
             RepoError::PurchaseNotFound => SupplierAccountError::PurchaseNotFound,
             RepoError::SupplierBusy => SupplierAccountError::SupplierBusy,
             RepoError::AlreadyRecorded => SupplierAccountError::AlreadyRecorded,
+            RepoError::AmountTooLarge { max } => SupplierAccountError::AmountTooLarge { max },
             RepoError::NonPositiveAmount
             | RepoError::TooManyDecimals { .. }
             | RepoError::PurchaseOfAnotherSupplier
@@ -95,7 +96,7 @@ impl From<wallets::RepoError> for SupplierAccountError {
 
 /// Exact capacity of `numeric(14, 2)`: 12 integer digits and 2 decimals.
 fn max_amount() -> Decimal {
-    Decimal::from_i128_with_scale(99_999_999_999_999, 2)
+    crate::money::MAX_AMOUNT
 }
 
 /// Boundary money validation in precedence order: sign, precision, magnitude.

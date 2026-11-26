@@ -18,8 +18,7 @@ const MAX_NAME_LEN: usize = 60;
 /// `numeric(14, 2)` cannot hold more than this; validating here turns a database
 /// overflow (a 500) into a 422 that names the problem.
 fn max_amount() -> Decimal {
-    // 12 integer digits and 2 decimals, the exact capacity of numeric(14, 2).
-    Decimal::from_i128_with_scale(99_999_999_999_999, 2)
+    crate::money::MAX_AMOUNT
 }
 
 #[derive(Debug, thiserror::Error)]

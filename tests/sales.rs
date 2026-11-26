@@ -2880,3 +2880,213 @@ async fn concurrent_http_item_mutations_and_complete_preserve_invariants(pool: P
     );
     assert_eq!(current_stock(&pool, sugar).await, dec!(50));
 }
+
+#[sqlx::test]
+async fn http_sale_complete_rejects_decimal_max_payments_without_panicking(pool: PgPool) {
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100.00)).await;
+    stock(&pool, actor, product, dec!(10)).await;
+    let method = cash(&pool).await;
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(1))
+        .await
+        .unwrap();
+
+    let cookie = login_cookie(&pool, &password).await;
+    let max = Decimal::MAX.to_string();
+
+    // Two Decimal::MAX payments must return 422, never panic the task.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft}/complete"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [
+                            { "payment_method_id": method, "amount": max },
+                            { "payment_method_id": method, "amount": max }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // on_account = Decimal::MAX must return 422, never panic.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft}/complete"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [],
+                        "on_account": max
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Two payments at numeric(14,2) ceiling whose sum exceeds numeric(14,2) -> 422.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft}/complete"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [
+                            { "payment_method_id": method, "amount": "999999999999.99" },
+                            { "payment_method_id": method, "amount": "999999999999.99" }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // paid + on_account crossing numeric(14,2) ceiling by 0.01 -> 422.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft}/complete"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [
+                            { "payment_method_id": method, "amount": "999999999999.99" }
+                        ],
+                        "on_account": "0.01"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Negative extreme on_account (Decimal::MIN) -> 422, no panic.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft}/complete"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [],
+                        "on_account": Decimal::MIN.to_string()
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Draft remains untouched.
+    assert_eq!(
+        sales::get(&pool, draft).await.unwrap().status,
+        SaleStatus::Draft
+    );
+}
+
+#[sqlx::test]
+async fn http_sale_items_enforce_quantity_and_total_ceilings(pool: PgPool) {
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let cheap = seed_product(&pool, "Bolt", dec!(1.00)).await;
+    let pricey = seed_product(&pool, "Machinery", dec!(10000000.00)).await;
+    let draft = sales::open_draft(&pool, actor).await.unwrap();
+    let cookie = login_cookie(&pool, &password).await;
+
+    // Single quantity above numeric(12,3) -> 422.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft}/items"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "product_id": cheap, "quantity": "1000000000" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Two adds of 600_000_000 sum to 1_200_000_000 > numeric(12,3) -> second returns 422, not 500.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft}/items"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "product_id": cheap, "quantity": "600000000" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft}/items"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "product_id": cheap, "quantity": "600000000" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Valid quantity * valid price exceeding numeric(14,2) -> 422, not 500.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft}/items"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "product_id": pricey, "quantity": "200000" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // set_item_quantity that would push sale total over numeric(14,2) -> 422, not 500.
+    sales::add_item(&pool, draft, pricey, dec!(1))
+        .await
+        .unwrap();
+    let res = app(pool.clone())
+        .oneshot(
+            with_session(
+                "PUT",
+                &format!("/api/v1/sales/{draft}/items/{pricey}"),
+                &cookie,
+            )
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "quantity": "200000" }).to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}

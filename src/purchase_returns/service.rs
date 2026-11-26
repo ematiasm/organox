@@ -27,6 +27,12 @@ pub enum PurchaseReturnsError {
     #[error("the quantity has more than 3 decimal places")]
     QuantityPrecision,
 
+    #[error("the quantity exceeds the allowed maximum")]
+    QuantityTooLarge,
+
+    #[error("the purchase return total exceeds the allowed maximum")]
+    TotalTooLarge,
+
     #[error("a product appears twice in the same purchase return")]
     DuplicateProduct,
 
@@ -61,9 +67,9 @@ pub enum PurchaseReturnsError {
 
     #[error(
         "the returns add up to {:.2} for a purchase of {:.2}: only {:.2} is left to return",
-        already_returned + requested,
+        already_returned.saturating_add(*requested),
         purchase_total,
-        purchase_total - already_returned
+        purchase_total.saturating_sub(*already_returned)
     )]
     ReturnExceedsPurchase {
         purchase_total: Decimal,
@@ -132,6 +138,7 @@ fn map_repo_error(err: RepoError) -> PurchaseReturnsError {
             requested,
             available,
         },
+        RepoError::TotalTooLarge => PurchaseReturnsError::TotalTooLarge,
         other => PurchaseReturnsError::Internal(other),
     }
 }
@@ -187,6 +194,9 @@ pub async fn create(
         }
         if line.quantity.round_dp(3) != line.quantity {
             return Err(PurchaseReturnsError::QuantityPrecision);
+        }
+        if line.quantity > crate::money::MAX_QUANTITY {
+            return Err(PurchaseReturnsError::QuantityTooLarge);
         }
         if !seen.insert(line.product_id) {
             return Err(PurchaseReturnsError::DuplicateProduct);

@@ -315,9 +315,11 @@ impl From<SalesError> for AppError {
         match err {
             SalesError::NotFound => AppError::NotFound,
             SalesError::ProductNotFound => AppError::NotFound,
-            SalesError::ServiceNotSellable | SalesError::QuantityNotPositive => {
-                AppError::Validation(err.to_string())
-            }
+            SalesError::ServiceNotSellable
+            | SalesError::QuantityNotPositive
+            | SalesError::QuantityPrecision
+            | SalesError::QuantityTooLarge
+            | SalesError::TotalTooLarge => AppError::Validation(err.to_string()),
             SalesError::InsufficientStock {
                 product_name,
                 available,
@@ -331,9 +333,11 @@ impl From<SalesError> for AppError {
             SalesError::EmptySale => AppError::Validation(err.to_string()),
             SalesError::PaymentAmountNotPositive
             | SalesError::PaymentAmountPrecision
+            | SalesError::PaymentAmountTooLarge
             | SalesError::PaymentMethodUnavailable
             | SalesError::OnAccountNegative
             | SalesError::OnAccountPrecision
+            | SalesError::OnAccountTooLarge
             | SalesError::OnAccountNeedsCustomer
             | SalesError::OnAccountNeedsActiveCustomer => AppError::Validation(err.to_string()),
             SalesError::OnAccountExceedsCreditLimit { available } => {

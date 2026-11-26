@@ -10,12 +10,12 @@ use crate::suppliers::service::{SupplierError, get_supplier};
 
 /// Maximum `numeric(12, 3)` quantity accepted at the boundary.
 fn max_quantity() -> Decimal {
-    Decimal::new(999_999_999_999, 3)
+    crate::money::MAX_QUANTITY
 }
 
 /// Maximum `numeric(12, 2)` unit cost accepted at the boundary.
 fn max_unit_cost() -> Decimal {
-    Decimal::new(999_999_999_999, 2)
+    crate::money::MAX_UNIT_PRICE
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -65,11 +65,17 @@ pub enum PurchaseError {
     #[error("the unit cost exceeds the allowed maximum")]
     UnitCostTooLarge,
 
+    #[error("the purchase total exceeds the allowed maximum")]
+    TotalTooLarge,
+
     #[error("the payment amount must be greater than zero")]
     PaymentAmountNotPositive,
 
     #[error("the payment amount has more than 2 decimal places")]
     PaymentAmountPrecision,
+
+    #[error("the payment amount exceeds the allowed maximum")]
+    PaymentAmountTooLarge,
 
     #[error("the payments ({paid:.2}) do not add up to the purchase total ({total:.2})")]
     PaymentMismatch {
@@ -86,6 +92,9 @@ pub enum PurchaseError {
 
     #[error("the on-account amount has more than 2 decimal places")]
     OnAccountPrecision,
+
+    #[error("the on-account amount exceeds the allowed maximum")]
+    OnAccountTooLarge,
 
     #[error("the on-account amount exceeds the supplier's available credit ({available:.2})")]
     OnAccountExceedsCreditLimit { available: Decimal },
@@ -251,8 +260,11 @@ fn map_repo_error(err: RepoError) -> PurchaseError {
         RepoError::SupplierRequired => PurchaseError::SupplierRequired,
         RepoError::SupplierNotFound => PurchaseError::SupplierNotFound,
         RepoError::SupplierInactive => PurchaseError::SupplierInactive,
+        RepoError::QuantityTooLarge => PurchaseError::QuantityTooLarge,
+        RepoError::TotalTooLarge => PurchaseError::TotalTooLarge,
         RepoError::PaymentAmountNotPositive => PurchaseError::PaymentAmountNotPositive,
         RepoError::PaymentAmountPrecision => PurchaseError::PaymentAmountPrecision,
+        RepoError::PaymentAmountTooLarge => PurchaseError::PaymentAmountTooLarge,
         RepoError::PaymentMismatch {
             total,
             paid,
@@ -265,6 +277,7 @@ fn map_repo_error(err: RepoError) -> PurchaseError {
         RepoError::PaymentMethodUnavailable => PurchaseError::PaymentMethodUnavailable,
         RepoError::OnAccountNegative => PurchaseError::OnAccountNegative,
         RepoError::OnAccountPrecision => PurchaseError::OnAccountPrecision,
+        RepoError::OnAccountTooLarge => PurchaseError::OnAccountTooLarge,
         RepoError::OnAccountExceedsCreditLimit { available } => {
             PurchaseError::OnAccountExceedsCreditLimit { available }
         }

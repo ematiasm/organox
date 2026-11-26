@@ -32,6 +32,12 @@ pub enum CreditNotesError {
     #[error("the quantity has more than 3 decimal places")]
     QuantityPrecision,
 
+    #[error("the quantity exceeds the allowed maximum")]
+    QuantityTooLarge,
+
+    #[error("the credit note total exceeds the allowed maximum")]
+    TotalTooLarge,
+
     #[error("a product appears twice in the same credit note")]
     DuplicateProduct,
 
@@ -59,9 +65,9 @@ pub enum CreditNotesError {
 
     #[error(
         "the returns add up to {:.2} for a sale of {:.2}: only {:.2} is left to refund",
-        already_refunded + requested,
+        already_refunded.saturating_add(*requested),
         sale_total,
-        sale_total - already_refunded
+        sale_total.saturating_sub(*already_refunded)
     )]
     RefundExceedsSale {
         sale_total: Decimal,
@@ -100,6 +106,7 @@ fn map_repo_error(err: RepoError) -> CreditNotesError {
             already_refunded,
             requested,
         },
+        RepoError::TotalTooLarge => CreditNotesError::TotalTooLarge,
         other => CreditNotesError::Internal(other),
     }
 }
@@ -170,6 +177,9 @@ pub async fn create_with_idempotency(
         // returning 1.0004 as 1.000 would quietly change the request.
         if line.quantity.round_dp(3) != line.quantity {
             return Err(CreditNotesError::QuantityPrecision);
+        }
+        if line.quantity > crate::money::MAX_QUANTITY {
+            return Err(CreditNotesError::QuantityTooLarge);
         }
         if !seen.insert(line.product_id) {
             return Err(CreditNotesError::DuplicateProduct);

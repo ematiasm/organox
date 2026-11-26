@@ -64,11 +64,14 @@ pub enum RepoError {
     #[error("a completed purchase has no linked supplier")]
     PurchaseSupplierMissing,
 
+    #[error("the purchase return total exceeds the allowed maximum")]
+    TotalTooLarge,
+
     #[error(
         "the returns add up to {:.2} for a purchase of {:.2}: only {:.2} is left to return",
-        already_returned + requested,
+        already_returned.saturating_add(*requested),
         purchase_total,
-        purchase_total - already_returned
+        purchase_total.saturating_sub(*already_returned)
     )]
     ReturnExceedsPurchase {
         purchase_total: Decimal,
@@ -715,13 +718,25 @@ pub async fn create(
             });
         }
 
-        total += line.quantity * purchased.unit_cost;
+        let subtotal = line
+            .quantity
+            .checked_mul(purchased.unit_cost)
+            .ok_or(RepoError::TotalTooLarge)?;
+        total = total
+            .checked_add(subtotal)
+            .ok_or(RepoError::TotalTooLarge)?;
         accepted.push((purchased, line.quantity));
     }
 
     let total = total.round_dp(2);
+    if total > crate::money::MAX_AMOUNT {
+        return Err(RepoError::TotalTooLarge);
+    }
 
-    if already_returned + total > purchase_total {
+    if already_returned
+        .checked_add(total)
+        .is_none_or(|sum| sum > purchase_total)
+    {
         return Err(RepoError::ReturnExceedsPurchase {
             purchase_total,
             already_returned,
@@ -793,7 +808,10 @@ pub async fn create(
             match new.surplus_mode {
                 SurplusMode::WalletRefund => {
                     let tenders = remaining_tenders(&mut *tx, new.purchase_id).await?;
-                    let capacity: Decimal = tenders.iter().map(|t| t.remaining).sum();
+                    let capacity = tenders
+                        .iter()
+                        .try_fold(Decimal::ZERO, |acc, t| acc.checked_add(t.remaining))
+                        .ok_or(RepoError::TotalTooLarge)?;
                     if surplus > capacity {
                         return Err(RepoError::InsufficientWalletRefundCapacity {
                             requested: surplus,
@@ -802,7 +820,11 @@ pub async fn create(
                     }
                     let caps: Vec<Decimal> = tenders.iter().map(|t| t.remaining).collect();
                     let shares = split_remaining_capacity(surplus, &caps);
-                    let refunded: Decimal = shares.iter().copied().sum();
+                    let refunded = shares
+                        .iter()
+                        .copied()
+                        .try_fold(Decimal::ZERO, Decimal::checked_add)
+                        .ok_or(RepoError::TotalTooLarge)?;
                     if refunded != surplus || shares.iter().any(|s| *s < Decimal::ZERO) {
                         return Err(RepoError::RefundDoesNotAddUp { surplus, refunded });
                     }

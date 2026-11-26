@@ -242,6 +242,8 @@ impl From<CreditNotesError> for AppError {
             CreditNotesError::Empty
             | CreditNotesError::QuantityNotPositive
             | CreditNotesError::QuantityPrecision
+            | CreditNotesError::QuantityTooLarge
+            | CreditNotesError::TotalTooLarge
             | CreditNotesError::DuplicateProduct
             | CreditNotesError::ReasonMissing
             | CreditNotesError::ReasonTooLong

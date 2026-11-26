@@ -988,3 +988,149 @@ async fn a_page_past_the_end_recounts_with_the_escaped_pattern(pool: PgPool) {
     assert!(empty.is_empty());
     assert_eq!(total, 1, "the re-count uses the escaped pattern too");
 }
+
+#[sqlx::test]
+async fn http_catalog_rejects_values_above_numeric_column_ceilings_with_422(pool: PgPool) {
+    let (_actor, password) = seed_user_with_password(&pool, "owner@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "owner@pyme.com", &password).await;
+
+    // Price above numeric(12,2) -> 422, not 500.
+    let res = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/products")
+                .header("cookie", format!("session={cookie}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "kind": "product",
+                        "name": "Too Pricey",
+                        "price": "10000000000.00"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // min_stock above numeric(12,3) -> 422, not 500.
+    let res = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/products")
+                .header("cookie", format!("session={cookie}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "kind": "product",
+                        "name": "Too Much Min Stock",
+                        "min_stock": "1000000000"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Exact ceilings succeed on create (201).
+    let res = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/products")
+                .header("cookie", format!("session={cookie}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "kind": "product",
+                        "name": "Max Boundary Item",
+                        "price": "9999999999.99",
+                        "min_stock": "999999999.999"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let product_id = created["id"].as_str().unwrap();
+
+    // Stock movement quantity above numeric(12,3) -> 422.
+    let res = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/products/{product_id}/movements"))
+                .header("cookie", format!("session={cookie}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "reason": "purchase",
+                        "quantity": "1000000000"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Stock movement unit_cost above numeric(12,2) -> 422.
+    let res = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/products/{product_id}/movements"))
+                .header("cookie", format!("session={cookie}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "reason": "purchase",
+                        "quantity": "1",
+                        "unit_cost": "10000000000.00"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // PATCH with price or min_stock above column ceilings -> 422 and stored values unchanged.
+    for payload in [
+        json!({ "price": "10000000000.00" }),
+        json!({ "min_stock": "1000000000" }),
+    ] {
+        let res = app(pool.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/v1/products/{product_id}"))
+                    .header("cookie", format!("session={cookie}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let product_uuid: Uuid = product_id.parse().unwrap();
+    let stored = service::get_product(&pool, product_uuid).await.unwrap();
+    assert_eq!(stored.product.price, Some(dec!(9_999_999_999.99)));
+    assert_eq!(stored.product.min_stock, Some(dec!(999_999_999.999)));
+}
