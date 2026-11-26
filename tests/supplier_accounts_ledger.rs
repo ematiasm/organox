@@ -1231,3 +1231,332 @@ async fn supplier_adjustment_in_reconciles_after_purchase_return_and_protects_re
     assert_eq!(pos.unapplied_credit, Decimal::ZERO);
     assert!(pos.is_consistent());
 }
+
+#[sqlx::test]
+async fn credit_refund_attribution_blocks_manual_allocate_handles_return_credits_and_enforces_triggers(
+    pool: PgPool,
+) {
+    let actor = setup_actor();
+    let (wallet_a, method_a) = setup_method(&pool, "Cash A").await;
+    let (wallet_b, method_b) = setup_method(&pool, "Bank B").await;
+    let supplier = setup_supplier(&pool, "RefundAttrCo", None).await;
+
+    // Case 1: Payment 1 ($100, Wallet A) refunded in full, then Payment 2 ($50, Wallet B).
+    let mv_p1 = insert_supplier_movement(
+        &pool,
+        wallet_a,
+        method_a,
+        supplier,
+        WalletMovementKind::SupplierAccountPayment,
+        dec!(100.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    let p1 = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: mv_p1,
+            amount: dec!(100.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    let mv_ref1 = insert_supplier_movement(
+        &pool,
+        wallet_a,
+        method_a,
+        supplier,
+        WalletMovementKind::SupplierAccountRefund,
+        dec!(100.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    let ref1 = ledger::record_credit_refund(
+        &mut tx,
+        NewSupplierCreditRefund {
+            supplier_id: supplier,
+            wallet_movement_id: mv_ref1,
+            amount: dec!(100.00),
+            idempotency_key: None,
+            note: Some("full refund"),
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mv_p2 = insert_supplier_movement(
+        &pool,
+        wallet_b,
+        method_b,
+        supplier,
+        WalletMovementKind::SupplierAccountPayment,
+        dec!(50.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    let p2 = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: mv_p2,
+            amount: dec!(50.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    let purchase1 =
+        setup_completed_purchase(&pool, supplier, "RefundAttrCo", dec!(50.00), actor).await;
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, purchase1, dec!(50.00), actor)
+        .await
+        .unwrap();
+
+    // Direct allocate on refunded Payment 1 fails with available = 0.
+    let err = ledger::allocate(&mut tx, p1, purchase1, dec!(50.00))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        RepoError::AllocationExceedsCredit {
+            requested,
+            available
+        } if requested == dec!(50.00) && available == Decimal::ZERO
+    ));
+
+    // Direct SQL insert on refunded Payment 1 fails at COMMIT via trigger.
+    sqlx::query(
+        "INSERT INTO supplier_account_allocations (id, entry_id, purchase_id, amount) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(p1)
+    .bind(purchase1)
+    .bind(dec!(50.00))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let commit_err = tx.commit().await.unwrap_err();
+    assert!(
+        commit_err
+            .to_string()
+            .contains("allocations (50.00) plus refunds (100.00) exceed"),
+        "expected payment ceiling trigger error, got: {commit_err}"
+    );
+
+    // Append-only trigger on supplier_account_credit_refund_allocations.
+    let del_err = sqlx::query(
+        "DELETE FROM supplier_account_credit_refund_allocations WHERE refund_entry_id = $1",
+    )
+    .bind(ref1)
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert!(
+        del_err.to_string().contains("append-only"),
+        "expected append-only error, got: {del_err}"
+    );
+
+    // Unattributed credit_refund raw SQL insert fails at COMMIT via completeness trigger.
+    let mv_orphan = insert_supplier_movement(
+        &pool,
+        wallet_b,
+        method_b,
+        supplier,
+        WalletMovementKind::SupplierAccountRefund,
+        dec!(10.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, wallet_movement_id, created_by)
+         VALUES ($1, $2, 'credit_refund', $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(supplier)
+    .bind(dec!(10.00))
+    .bind(mv_orphan)
+    .bind(actor)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let orphan_err = tx.commit().await.unwrap_err();
+    assert!(
+        orphan_err.to_string().contains("must be fully attributed"),
+        "expected completeness trigger error, got: {orphan_err}"
+    );
+
+    // apply_available_credit on purchase1 consumes Payment 2 ($50).
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, purchase1, dec!(50.00), actor)
+        .await
+        .unwrap();
+    let applied = ledger::apply_available_credit(&mut tx, supplier, purchase1, dec!(50.00))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(applied, dec!(50.00));
+
+    let allocs1: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT entry_id, amount FROM supplier_account_allocations WHERE purchase_id = $1",
+    )
+    .bind(purchase1)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(allocs1, vec![(p2, dec!(50.00))]);
+
+    // Case 2: Both a purchase_return_credit ($60, no wallet) and a payment ($50, Wallet B) exist.
+    // Refunding $50 into Wallet B consumes the Wallet B payment first (same wallet), then
+    // refunding $20 into Wallet A consumes $20 of the purchase_return_credit, leaving $40.
+    let ret = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchase_returns (id, purchase_id, total, surplus_mode, reason, created_by)
+         VALUES ($1, $2, 60.00, 'supplier_credit', 'Supplier credit probe', $3)",
+    )
+    .bind(ret)
+    .bind(purchase1)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mv_p3 = insert_supplier_movement(
+        &pool,
+        wallet_b,
+        method_b,
+        supplier,
+        WalletMovementKind::SupplierAccountPayment,
+        dec!(50.00),
+        actor,
+    )
+    .await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let rc_id = ledger::record_purchase_return_credit(
+        &mut tx,
+        supplier,
+        ret,
+        dec!(60.00),
+        Some("return credit"),
+        actor,
+    )
+    .await
+    .unwrap();
+    let p3 = ledger::record_payment(
+        &mut tx,
+        NewSupplierPayment {
+            supplier_id: supplier,
+            wallet_movement_id: mv_p3,
+            amount: dec!(50.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap()
+    .entry_id;
+    tx.commit().await.unwrap();
+
+    let mv_ref_b = insert_supplier_movement(
+        &pool,
+        wallet_b,
+        method_b,
+        supplier,
+        WalletMovementKind::SupplierAccountRefund,
+        dec!(50.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    let ref_b = ledger::record_credit_refund(
+        &mut tx,
+        NewSupplierCreditRefund {
+            supplier_id: supplier,
+            wallet_movement_id: mv_ref_b,
+            amount: dec!(50.00),
+            idempotency_key: None,
+            note: Some("refund bank"),
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let consumed_b: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT source_entry_id, amount FROM supplier_account_credit_refund_allocations WHERE refund_entry_id = $1",
+    )
+    .bind(ref_b)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(consumed_b, vec![(p3, dec!(50.00))]);
+
+    let mv_ref_a = insert_supplier_movement(
+        &pool,
+        wallet_a,
+        method_a,
+        supplier,
+        WalletMovementKind::SupplierAccountRefund,
+        dec!(20.00),
+        actor,
+    )
+    .await;
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_credit_refund(
+        &mut tx,
+        NewSupplierCreditRefund {
+            supplier_id: supplier,
+            wallet_movement_id: mv_ref_a,
+            amount: dec!(20.00),
+            idempotency_key: None,
+            note: Some("partial refund of return credit"),
+            created_by: actor,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let purchase2 =
+        setup_completed_purchase(&pool, supplier, "RefundAttrCo", dec!(60.00), actor).await;
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, purchase2, dec!(60.00), actor)
+        .await
+        .unwrap();
+    let applied2 = ledger::apply_available_credit(&mut tx, supplier, purchase2, dec!(60.00))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(applied2, dec!(40.00));
+
+    let allocs2: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT entry_id, amount FROM supplier_account_allocations WHERE purchase_id = $1",
+    )
+    .bind(purchase2)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(allocs2, vec![(rc_id, dec!(40.00))]);
+}

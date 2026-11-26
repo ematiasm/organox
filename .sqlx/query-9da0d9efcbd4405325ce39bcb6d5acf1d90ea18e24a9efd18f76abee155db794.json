@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO supplier_account_credit_refund_allocations\n                (id, refund_entry_id, source_entry_id, amount)\n            VALUES ($1, $2, $3, $4)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9da0d9efcbd4405325ce39bcb6d5acf1d90ea18e24a9efd18f76abee155db794"
+}

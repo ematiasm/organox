@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT amount, customer_id, kind::text AS \"kind!\" FROM wallet_movements WHERE id = $1",
+  "query": "SELECT amount, customer_id, wallet_id, kind::text AS \"kind!\" FROM wallet_movements WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "wallet_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "wallet_movements",
+            "name": "wallet_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "kind!",
         "type_info": "Text",
         "origin": "Expression"
@@ -40,8 +51,9 @@
     "nullable": [
       false,
       true,
+      false,
       null
     ]
   },
-  "hash": "426eaa77c95aca1e830d6ea95a6f51c574e5d7169270ff0d4b34fb9e759830e8"
+  "hash": "ae21d43b1bf3ea2fce5e5d7becbc2b3852c19fb8fdeb52e5f3e8175abe6b7304"
 }

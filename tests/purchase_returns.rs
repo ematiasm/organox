@@ -1044,3 +1044,235 @@ async fn purchase_return_rejects_quantity_above_numeric_ceiling_with_422(pool: P
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn refunded_supplier_payment_does_not_back_future_purchase_or_misroute_return_refund(
+    pool: PgPool,
+) {
+    let (actor, password) = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let (cash_wallet, cash_method) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+    let (bank_wallet, bank_method) = seed_wallet_and_method(&pool, "Bank", "Transfer").await;
+    let product = seed_product(&pool, "Flour").await;
+    let supplier = seed_supplier(&pool, "Mill").await;
+    let app = app(pool.clone());
+    let cookie = login_cookie(&app, "owner@pyme.com", &password).await;
+
+    // 1. Payment 1: $100 Cash (Wallet A), unallocated advance.
+    let (status, body) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/suppliers/{supplier}/payments"),
+        Some(json!({
+            "payment_method_id": cash_method,
+            "amount": "100.00",
+            "allocations": []
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "payment 1: {body}");
+
+    // 2. Refund $100 of unapplied supplier credit back into Cash (Wallet A).
+    let (status, body) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/suppliers/{supplier}/credit-refunds"),
+        Some(json!({
+            "payment_method_id": cash_method,
+            "amount": "100.00",
+            "note": "Supplier returned advance"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "refund: {body}");
+
+    // 3. Payment 2: $50 Transfer (Wallet B), unallocated advance.
+    let (status, body) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/suppliers/{supplier}/payments"),
+        Some(json!({
+            "payment_method_id": bank_method,
+            "amount": "50.00",
+            "allocations": []
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "payment 2: {body}");
+
+    // 4. Complete an on-account purchase for $50; apply_available_credit must
+    //    allocate from Payment 2 (Bank / Wallet B), never refunded Payment 1.
+    let (purchase_id, _) = purchases::open_draft(&pool, actor).await.unwrap();
+    purchases::set_supplier(&pool, purchase_id, Some(supplier))
+        .await
+        .unwrap();
+    purchases::add_item(&pool, purchase_id, product, dec!(1), dec!(50.00))
+        .await
+        .unwrap();
+    purchases::complete(&pool, purchase_id, actor, &[], dec!(50.00), None)
+        .await
+        .unwrap();
+
+    // 5. Return the $50 purchase for wallet_refund — refund must enter Bank
+    //    (Wallet B), leaving Cash (Wallet A) untouched at $0.
+    let (status, body) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/purchases/{purchase_id}/returns"),
+        Some(json!({
+            "reason": "Damaged goods",
+            "surplus_mode": "wallet_refund",
+            "items": [{ "product_id": product, "quantity": "1" }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "return: {body}");
+
+    let refunds = body["refunds"].as_array().expect("refunds array");
+    assert_eq!(refunds.len(), 1, "expected one refund leg: {body}");
+    assert_eq!(
+        refunds[0]["payment_method_id"].as_str(),
+        Some(bank_method.to_string().as_str()),
+        "purchase return refunded wrong payment method: {body}"
+    );
+
+    let cash_balance: Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(CASE WHEN kind IN ('sale_payment','account_payment','supplier_account_refund','purchase_refund','adjustment_in') THEN amount ELSE -amount END), 0)::numeric(14,2) FROM wallet_movements WHERE wallet_id = $1",
+    )
+    .bind(cash_wallet)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let bank_balance: Decimal = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(CASE WHEN kind IN ('sale_payment','account_payment','supplier_account_refund','purchase_refund','adjustment_in') THEN amount ELSE -amount END), 0)::numeric(14,2) FROM wallet_movements WHERE wallet_id = $1",
+    )
+    .bind(bank_wallet)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(cash_balance, Decimal::ZERO);
+    assert_eq!(bank_balance, Decimal::ZERO);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn refunded_supplier_purchase_return_credit_does_not_block_later_wallet_refund(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let (_cash_wallet, cash_method) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+    let (bank_wallet, bank_method) = seed_wallet_and_method(&pool, "Bank", "Transfer").await;
+    let product = seed_product(&pool, "Flour").await;
+    let supplier = seed_supplier(&pool, "Mill Return Credit").await;
+    let app = app(pool.clone());
+    let cookie = login_cookie(&app, "owner@pyme.com", &password).await;
+
+    // 1. Seed a $100 purchase_return_credit (no wallet backing) by completing a
+    //    cash purchase and returning it with surplus_mode = "supplier_credit".
+    let (p0, _) = purchases::open_draft(&pool, actor).await.unwrap();
+    purchases::set_supplier(&pool, p0, Some(supplier))
+        .await
+        .unwrap();
+    purchases::add_item(&pool, p0, product, dec!(2), dec!(50.00))
+        .await
+        .unwrap();
+    purchases::complete(
+        &pool,
+        p0,
+        actor,
+        &[PurchasePaymentInput {
+            payment_method_id: cash_method,
+            amount: dec!(100.00),
+        }],
+        Decimal::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/purchases/{p0}/returns"),
+        Some(json!({
+            "reason": "Grant return credit",
+            "surplus_mode": "supplier_credit",
+            "items": [{ "product_id": product, "quantity": "2" }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "grant return credit: {body}");
+
+    // 2. Refund the $100 purchase_return_credit via Cash.
+    let (status, body) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/suppliers/{supplier}/credit-refunds"),
+        Some(json!({
+            "payment_method_id": cash_method,
+            "amount": "100.00",
+            "note": "Supplier settled return credit in cash"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "refund return credit: {body}");
+
+    // 3. Record Payment 2 ($50, Bank / Wallet B), unallocated advance.
+    let (status, body) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/suppliers/{supplier}/payments"),
+        Some(json!({
+            "payment_method_id": bank_method,
+            "amount": "50.00",
+            "allocations": []
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "payment 2: {body}");
+
+    // 4. Complete an on-account purchase for $50. Before this fix,
+    //    apply_available_credit would allocate from the refunded
+    //    purchase_return_credit (which has no wallet) instead of Payment 2.
+    let (p1, _) = purchases::open_draft(&pool, actor).await.unwrap();
+    purchases::set_supplier(&pool, p1, Some(supplier))
+        .await
+        .unwrap();
+    purchases::add_item(&pool, p1, product, dec!(1), dec!(50.00))
+        .await
+        .unwrap();
+    purchases::complete(&pool, p1, actor, &[], dec!(50.00), None)
+        .await
+        .unwrap();
+
+    // 5. Return p1 with wallet_refund: must succeed (201) and refund into Bank
+    //    (Wallet B), instead of failing with 422 InsufficientWalletRefundCapacity.
+    let (status, body) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/purchases/{p1}/returns"),
+        Some(json!({
+            "reason": "Return second purchase",
+            "surplus_mode": "wallet_refund",
+            "items": [{ "product_id": product, "quantity": "1" }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "return p1: {body}");
+
+    let refunds = body["refunds"].as_array().expect("refunds array");
+    assert_eq!(refunds.len(), 1, "expected one refund leg: {body}");
+    assert_eq!(
+        refunds[0]["payment_method_id"].as_str(),
+        Some(bank_method.to_string().as_str()),
+        "expected refund into Bank: {body}"
+    );
+    assert_eq!(
+        refunds[0]["wallet_id"].as_str(),
+        Some(bank_wallet.to_string().as_str())
+    );
+}

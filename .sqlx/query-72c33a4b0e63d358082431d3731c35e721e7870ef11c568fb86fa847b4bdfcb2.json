@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT COALESCE(SUM(amount), 0)::numeric(14, 2) AS \"refunded!: Decimal\"\n        FROM supplier_account_credit_refund_allocations\n        WHERE source_entry_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "refunded!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "72c33a4b0e63d358082431d3731c35e721e7870ef11c568fb86fa847b4bdfcb2"
+}
