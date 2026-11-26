@@ -1791,3 +1791,187 @@ async fn http_purchases_enforce_summed_quantity_total_and_payment_ceilings(pool:
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[sqlx::test]
+async fn midpoint_rounding_and_line_subtotal_sum_stay_consistent_between_db_and_rust(pool: PgPool) {
+    let (actor, password) = seed_user(&pool, "round@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Rounding Mill").await;
+    let (_wallet_id, method_id) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+    let p_mid = seed_good(&pool, "Midpoint Grain").await;
+    let p_a = seed_good(&pool, "Herb A").await;
+    let p_b = seed_good(&pool, "Herb B").await;
+
+    let router = app(pool.clone());
+    let cookie = login_cookie(&router, "round@organox.test", &password).await;
+
+    // 1. 1.500 * 1.07 = 1.605 -> 1.61 in DB refresh_total, GET response, and complete().
+    let draft1 =
+        prepare_http_draft(&pool, actor, supplier_id, p_mid, dec!(1.500), dec!(1.07)).await;
+    let db_total1: Decimal = sqlx::query_scalar("SELECT total FROM purchases WHERE id = $1")
+        .bind(draft1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_total1, dec!(1.61));
+
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/purchases/{draft1}"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body1 = json_body(res).await;
+    assert_eq!(body1["items"][0]["subtotal"], "1.61");
+    assert_eq!(body1["total"], "1.61");
+
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft1}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [{ "payment_method_id": method_id, "amount": "1.61" }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let done1 = json_body(res).await;
+    assert_eq!(done1["total"], "1.61");
+
+    // 2. Two 0.500 * 1.01 = 0.505 lines -> "0.51" + "0.51" = "1.02" in DB, GET, and complete().
+    let draft2 = prepare_http_draft(&pool, actor, supplier_id, p_a, dec!(0.500), dec!(1.01)).await;
+    purchases::add_item(&pool, draft2, p_b, dec!(0.500), dec!(1.01))
+        .await
+        .unwrap();
+
+    let db_total2: Decimal = sqlx::query_scalar("SELECT total FROM purchases WHERE id = $1")
+        .bind(draft2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_total2, dec!(1.02));
+
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/purchases/{draft2}"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body2 = json_body(res).await;
+    assert_eq!(body2["items"][0]["subtotal"], "0.51");
+    assert_eq!(body2["items"][1]["subtotal"], "0.51");
+    assert_eq!(body2["total"], "1.02");
+
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/purchases/{draft2}/complete"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [{ "payment_method_id": method_id, "amount": "1.02" }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let done2 = json_body(res).await;
+    assert_eq!(done2["total"], "1.02");
+
+    // 3. Frozen purchases.total: a historical completed purchase whose stored total
+    //    differs from the per-line sum formula must return its frozen total on get
+    //    and list endpoints rather than recomputing.
+    let legacy_purchase = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchases (id, status, supplier_id, supplier_name, total, created_by, completed_by, completed_at)
+         VALUES ($1, 'completed', $2, 'Rounding Mill', 1.01, $3, $3, now())",
+    )
+    .bind(legacy_purchase)
+    .bind(supplier_id)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for prod in [p_a, p_b] {
+        sqlx::query(
+            "INSERT INTO purchase_items (id, purchase_id, product_id, quantity, unit_cost)
+             VALUES ($1, $2, $3, 0.500, 1.01)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(legacy_purchase)
+        .bind(prod)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let fetched = purchases::get_purchase(&pool, legacy_purchase)
+        .await
+        .unwrap();
+    assert_eq!(fetched.total(), dec!(1.01));
+
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/purchases/{legacy_purchase}"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let legacy_detail = json_body(res).await;
+    assert_eq!(legacy_detail["total"], "1.01");
+
+    let res = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/purchases")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let list_body = json_body(res).await;
+    let listed = list_body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"].as_str() == Some(legacy_purchase.to_string().as_str()))
+        .expect("legacy purchase in list");
+    assert_eq!(listed["total"], "1.01");
+}

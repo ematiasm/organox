@@ -3090,3 +3090,250 @@ async fn http_sale_items_enforce_quantity_and_total_ceilings(pool: PgPool) {
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[sqlx::test]
+async fn midpoint_rounding_line_subtotals_and_frozen_total_stay_consistent(pool: PgPool) {
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let cookie = login_cookie(&pool, &password).await;
+    let method = cash(&pool).await;
+
+    // 1. Exact issue #103 repro: 1.500 * 1.07 = 1.605 (midpoint with even hundredths digit).
+    //    Half-away-from-zero rounds 1.605 -> 1.61 across Postgres refresh_total, GET, and complete.
+    let p_mid = seed_product(&pool, "Midpoint Flour", dec!(1.07)).await;
+    stock(&pool, actor, p_mid, dec!(10)).await;
+    let draft1 = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft1, p_mid, dec!(1.500))
+        .await
+        .unwrap();
+
+    let db_total1: Decimal = sqlx::query_scalar("SELECT total FROM sales WHERE id = $1")
+        .bind(draft1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_total1, dec!(1.61));
+
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("GET", &format!("/api/v1/sales/{draft1}"), &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["items"][0]["subtotal"], "1.61");
+    assert_eq!(body["total"], "1.61");
+
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft1}/complete"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [{ "payment_method_id": method, "amount": "1.61" }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let done: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(done["total"], "1.61");
+
+    // 2. Two 0.500 * 1.01 = 0.505 lines: each line rounds half-away-from-zero to 0.51,
+    //    and the document total equals the sum of rounded line subtotals (1.02) in DB and Rust.
+    let p_a = seed_product(&pool, "Spice A", dec!(1.01)).await;
+    let p_b = seed_product(&pool, "Spice B", dec!(1.01)).await;
+    stock(&pool, actor, p_a, dec!(10)).await;
+    stock(&pool, actor, p_b, dec!(10)).await;
+
+    let draft2 = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft2, p_a, dec!(0.500))
+        .await
+        .unwrap();
+    sales::add_item(&pool, draft2, p_b, dec!(0.500))
+        .await
+        .unwrap();
+
+    let db_total2: Decimal = sqlx::query_scalar("SELECT total FROM sales WHERE id = $1")
+        .bind(draft2)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_total2, dec!(1.02));
+
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("GET", &format!("/api/v1/sales/{draft2}"), &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body2: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body2["items"][0]["subtotal"], "0.51");
+    assert_eq!(body2["items"][1]["subtotal"], "0.51");
+    assert_eq!(body2["total"], "1.02");
+
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft2}/complete"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "payments": [{ "payment_method_id": method, "amount": "1.02" }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // 3. Frozen sales.total: a historical completed sale whose stored total differs from
+    //    the new line-sum formula must report its frozen sales.total rather than recomputing.
+    let legacy_sale = Uuid::now_v7();
+    sqlx::query("INSERT INTO sales (id, status, created_by) VALUES ($1, 'draft', $2)")
+        .bind(legacy_sale)
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for prod in [p_a, p_b] {
+        sqlx::query(
+            "INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price)
+             VALUES ($1, $2, $3, 0.500, 1.01)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(legacy_sale)
+        .bind(prod)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "UPDATE sales
+         SET status = 'completed', total = 1.01, completed_by = $2, completed_at = now()
+         WHERE id = $1",
+    )
+    .bind(legacy_sale)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let fetched = sales::get(&pool, legacy_sale).await.unwrap();
+    assert_eq!(fetched.total(), dec!(1.01));
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("GET", &format!("/api/v1/sales/{legacy_sale}"), &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let legacy_body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(legacy_body["total"], "1.01");
+
+    // GET /api/v1/sales (list_completed) must also preserve the frozen total.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("GET", "/api/v1/sales", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let list_body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let listed = list_body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"].as_str() == Some(legacy_sale.to_string().as_str()))
+        .expect("legacy sale in list");
+    assert_eq!(listed["total"], "1.01");
+
+    // 4. MAX_AMOUNT boundary with half-away-from-zero midpoint: a draft already at
+    //    MAX_AMOUNT (999_999_999_999.99) rejects (0.005 * 1.00 -> 0.01) with 422,
+    //    and accepts (0.004 * 1.00 -> 0.00) keeping db_total == MAX_AMOUNT.
+    let p_big1 = seed_product(&pool, "Big 1", dec!(999_999.99)).await;
+    let p_big2 = seed_product(&pool, "Big 2", dec!(9_999.99)).await;
+    let p_unit = seed_product(&pool, "Unit 1", dec!(1.00)).await;
+    let draft_cap = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft_cap, p_big1, dec!(1_000_000))
+        .await
+        .unwrap();
+    sales::add_item(&pool, draft_cap, p_big2, dec!(1))
+        .await
+        .unwrap();
+
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft_cap}/items"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "product_id": p_unit, "quantity": "0.005" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let res = app(pool.clone())
+        .oneshot(
+            with_session("POST", &format!("/api/v1/sales/{draft_cap}/items"), &cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "product_id": p_unit, "quantity": "0.004" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let db_cap: Decimal = sqlx::query_scalar("SELECT total FROM sales WHERE id = $1")
+        .bind(draft_cap)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db_cap, organox::money::MAX_AMOUNT);
+}

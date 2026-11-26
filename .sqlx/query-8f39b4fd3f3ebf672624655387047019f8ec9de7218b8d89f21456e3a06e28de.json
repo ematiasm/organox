@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sales\n        SET total = COALESCE((\n            SELECT SUM(ROUND(quantity * unit_price, 2)) FROM sale_items WHERE sale_id = $1\n        ), 0)\n        WHERE id = $1 AND status = 'draft'\n        RETURNING COALESCE(total, 0) AS \"total!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total!",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8f39b4fd3f3ebf672624655387047019f8ec9de7218b8d89f21456e3a06e28de"
+}

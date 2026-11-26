@@ -10,7 +10,7 @@
 //! (`numeric_value_out_of_range`) errors into `422 Unprocessable Entity`
 //! responses.
 
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 
 const fn from_u64_scale(n: u64, scale: u32) -> Decimal {
     Decimal::from_parts(n as u32, (n >> 32) as u32, 0, false, scale)
@@ -37,19 +37,50 @@ pub fn checked_add_amount(a: Decimal, b: Decimal) -> Option<Decimal> {
         .filter(|sum| *sum <= MAX_AMOUNT && *sum >= -MAX_AMOUNT)
 }
 
-/// Compute `SUM(quantity * unit_price)` rounded to 2 decimal places using checked
-/// arithmetic, returning `None` on overflow or if the rounded total exceeds
-/// `numeric(14, 2)`.
+/// Round a monetary value to 2 decimal places using half-away-from-zero,
+/// matching Postgres `ROUND(..., 2)` and `numeric(..., 2)` casts.
+///
+/// Normalizes `-0.00` to `0.00` so formatting never emits a negative zero.
+pub fn round_money(value: Decimal) -> Decimal {
+    let rounded = value.round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero);
+    if rounded.is_zero() {
+        Decimal::ZERO
+    } else {
+        rounded
+    }
+}
+
+/// Format a monetary value with exactly 2 decimal places using [`round_money`]
+/// so `Display` never falls back to banker's rounding on values with >2 decimals.
+pub fn format_money(value: Decimal) -> String {
+    format!("{:.2}", round_money(value))
+}
+
+/// Compute a single document line's rounded subtotal (`ROUND(quantity * unit_price, 2)`
+/// half-away-from-zero).
+pub fn line_subtotal(quantity: Decimal, unit_price: Decimal) -> Decimal {
+    round_money(quantity * unit_price)
+}
+
+/// Checked version of [`line_subtotal`], returning `None` on overflow or if
+/// the rounded subtotal exceeds `numeric(14, 2)`.
+pub fn checked_line_subtotal(quantity: Decimal, unit_price: Decimal) -> Option<Decimal> {
+    let rounded = round_money(quantity.checked_mul(unit_price)?);
+    (rounded <= MAX_AMOUNT && rounded >= -MAX_AMOUNT).then_some(rounded)
+}
+
+/// Compute `SUM(ROUND(quantity * unit_price, 2))` using half-away-from-zero
+/// per-line rounding and checked arithmetic, returning `None` on overflow or
+/// if any line or the document total exceeds `numeric(14, 2)`.
 pub fn checked_document_total(
     lines: impl IntoIterator<Item = (Decimal, Decimal)>,
 ) -> Option<Decimal> {
     let mut sum = Decimal::ZERO;
     for (quantity, unit_price) in lines {
-        let subtotal = quantity.checked_mul(unit_price)?;
-        sum = sum.checked_add(subtotal)?;
+        let subtotal = checked_line_subtotal(quantity, unit_price)?;
+        sum = checked_add_amount(sum, subtotal)?;
     }
-    let rounded = sum.round_dp(2);
-    (rounded <= MAX_AMOUNT && rounded >= -MAX_AMOUNT).then_some(rounded)
+    Some(sum)
 }
 
 #[cfg(test)]
@@ -102,8 +133,9 @@ mod tests {
             Some(MAX_AMOUNT)
         );
 
-        // 999_999_999_999.995 rounds up to 1_000_000_000_000.00 (> numeric(14,2))
-        // in both banker's rounding (hundredths digit 9 is odd) and half-away-from-zero.
+        // 0.005 * 1.00 = 0.005 rounds up to 0.01 under half-away-from-zero (banker's
+        // rounding would have rounded to 0.00), pushing the total to 1_000_000_000_000.00
+        // (> numeric(14,2)).
         assert_eq!(
             checked_document_total([
                 (dec!(1_000_000), dec!(999_999.99)),
@@ -121,5 +153,35 @@ mod tests {
 
         // Decimal::MAX multiplication overflows without panicking.
         assert_eq!(checked_document_total([(Decimal::MAX, dec!(2))]), None);
+    }
+
+    #[test]
+    fn round_and_format_money_use_half_away_from_zero_and_normalize_negative_zero() {
+        // Midpoints with even hundredths digit must round away from zero (matching Postgres).
+        assert_eq!(round_money(dec!(0.005)), dec!(0.01));
+        assert_eq!(round_money(dec!(1.605)), dec!(1.61));
+        assert_eq!(round_money(dec!(0.505)), dec!(0.51));
+        assert_eq!(round_money(dec!(2.505)), dec!(2.51));
+        assert_eq!(round_money(dec!(-1.605)), dec!(-1.61));
+        assert_eq!(round_money(dec!(-2.505)), dec!(-2.51));
+        assert_eq!(round_money(dec!(-0.005)), dec!(-0.01));
+        assert_eq!(round_money(dec!(-0.004)), dec!(0.00));
+
+        assert_eq!(format_money(dec!(1.605)), "1.61");
+        assert_eq!(format_money(dec!(0.505)), "0.51");
+        assert_eq!(format_money(dec!(-1.605)), "-1.61");
+        assert_eq!(format_money(dec!(-0.004)), "0.00");
+        assert_eq!(format_money(-dec!(0.00)), "0.00");
+
+        // Empty documents total zero, and extreme line products fail closed.
+        assert_eq!(checked_document_total([]), Some(Decimal::ZERO));
+        assert_eq!(checked_line_subtotal(MAX_QUANTITY, MAX_UNIT_PRICE), None);
+
+        // Two 0.500 * 1.01 = 0.505 lines round individually to 0.51 and sum to 1.02.
+        assert_eq!(line_subtotal(dec!(0.500), dec!(1.01)), dec!(0.51));
+        assert_eq!(
+            checked_document_total([(dec!(0.500), dec!(1.01)), (dec!(0.500), dec!(1.01))]),
+            Some(dec!(1.02))
+        );
     }
 }

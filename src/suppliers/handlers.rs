@@ -203,9 +203,7 @@ async fn deactivate_supplier(
 
 // --- Conversions --------------------------------------------------------
 
-fn format_money(value: Decimal) -> String {
-    format!("{value:.2}")
-}
+use crate::money::format_money;
 
 fn to_response(supplier: Supplier) -> SupplierResponse {
     SupplierResponse {

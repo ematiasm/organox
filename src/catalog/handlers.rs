@@ -264,11 +264,7 @@ async fn list_movements(
 
 // --- Conversions --------------------------------------------------------
 
-/// Money with exactly 2 decimals: `"1500.50"`, not `"1500.5"` or
-/// `"1500.500"`. A price is always displayed with its cents.
-fn format_money(value: Decimal) -> String {
-    format!("{value:.2}")
-}
+use crate::money::format_money;
 
 /// Quantity without extra zeros: `"12.5"`, not `"12.500"`. The column is
 /// `numeric(12,3)` and `SUM` returns the full scale; displaying it that way

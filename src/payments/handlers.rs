@@ -273,10 +273,7 @@ async fn update_payment_method(
 
 // --- Conversions --------------------------------------------------------
 
-/// Money with exactly 2 decimals, negative included: `"-1500.00"`.
-fn format_money(value: Decimal) -> String {
-    format!("{value:.2}")
-}
+use crate::money::format_money;
 
 fn to_wallet_response(item: WalletWithBalance) -> WalletResponse {
     WalletResponse {

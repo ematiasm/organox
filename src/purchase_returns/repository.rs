@@ -586,9 +586,8 @@ pub async fn for_purchase(
     let purchase_total = purchase.total.unwrap_or_else(|| {
         lines
             .iter()
-            .map(|line| line.quantity * line.unit_cost)
+            .map(|line| crate::money::line_subtotal(line.quantity, line.unit_cost))
             .sum::<Decimal>()
-            .round_dp(2)
     });
 
     let returns = load_returns_in(&mut tx, purchase_id, None).await?;
@@ -718,19 +717,11 @@ pub async fn create(
             });
         }
 
-        let subtotal = line
-            .quantity
-            .checked_mul(purchased.unit_cost)
+        let subtotal = crate::money::checked_line_subtotal(line.quantity, purchased.unit_cost)
             .ok_or(RepoError::TotalTooLarge)?;
-        total = total
-            .checked_add(subtotal)
-            .ok_or(RepoError::TotalTooLarge)?;
+        total =
+            crate::money::checked_add_amount(total, subtotal).ok_or(RepoError::TotalTooLarge)?;
         accepted.push((purchased, line.quantity));
-    }
-
-    let total = total.round_dp(2);
-    if total > crate::money::MAX_AMOUNT {
-        return Err(RepoError::TotalTooLarge);
     }
 
     if already_returned
