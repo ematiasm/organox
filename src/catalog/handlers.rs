@@ -5,7 +5,7 @@
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
@@ -23,6 +23,7 @@ use crate::catalog::service::{
 };
 use crate::catalog::validation::ValidationError;
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath, AppQuery};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -145,7 +146,7 @@ pub struct ListMovementsQuery {
 async fn list_products(
     State(state): State<AppState>,
     _user: AuthUser,
-    Query(query): Query<ListProductsQuery>,
+    AppQuery(query): AppQuery<ListProductsQuery>,
 ) -> Result<Json<ProductListResponse>, AppError> {
     let limit = query.limit.unwrap_or(50);
     let offset = query.offset.unwrap_or(0);
@@ -171,7 +172,7 @@ async fn list_products(
 async fn create_product(
     State(state): State<AppState>,
     _user: AuthUser,
-    Json(body): Json<CreateProductRequest>,
+    AppJson(body): AppJson<CreateProductRequest>,
 ) -> Result<(StatusCode, Json<IdResponse>), AppError> {
     let id = service::create_product(
         &state.pool,
@@ -192,7 +193,7 @@ async fn create_product(
 async fn get_product(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<Json<ProductResponse>, AppError> {
     let item = service::get_product(&state.pool, id).await?;
     Ok(Json(to_response(item)))
@@ -201,8 +202,8 @@ async fn get_product(
 async fn update_product(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<UpdateProductRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<UpdateProductRequest>,
 ) -> Result<StatusCode, AppError> {
     service::update_product(
         &state.pool,
@@ -224,7 +225,7 @@ async fn update_product(
 async fn deactivate_product(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
     service::deactivate_product(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -233,8 +234,8 @@ async fn deactivate_product(
 async fn record_movement(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<RecordMovementRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<RecordMovementRequest>,
 ) -> Result<(StatusCode, Json<IdResponse>), AppError> {
     let id = service::record_movement(
         &state.pool,
@@ -255,8 +256,8 @@ async fn record_movement(
 async fn list_movements(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Query(query): Query<ListMovementsQuery>,
+    AppPath(id): AppPath<Uuid>,
+    AppQuery(query): AppQuery<ListMovementsQuery>,
 ) -> Result<Json<Vec<MovementResponse>>, AppError> {
     let rows = service::list_movements(&state.pool, id, query.limit.unwrap_or(50)).await?;
     Ok(Json(rows.into_iter().map(to_movement_response).collect()))

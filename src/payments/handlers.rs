@@ -7,7 +7,7 @@
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, patch};
 use chrono::{DateTime, Utc};
@@ -19,6 +19,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath, AppQuery};
 use crate::payments::model::{
     PaymentMethod, WalletMovement, WalletMovementKind, WalletWithBalance,
 };
@@ -154,7 +155,7 @@ pub struct ManualMovementRequest {
 async fn list_wallets(
     State(state): State<AppState>,
     _user: AuthUser,
-    Query(query): Query<ListQuery>,
+    AppQuery(query): AppQuery<ListQuery>,
 ) -> Result<Json<Vec<WalletResponse>>, AppError> {
     let wallets = service::list_wallets(&state.pool, query.include_inactive).await?;
     Ok(Json(wallets.into_iter().map(to_wallet_response).collect()))
@@ -163,7 +164,7 @@ async fn list_wallets(
 async fn create_wallet(
     State(state): State<AppState>,
     _user: AuthUser,
-    Json(body): Json<CreateWalletRequest>,
+    AppJson(body): AppJson<CreateWalletRequest>,
 ) -> Result<(StatusCode, Json<IdResponse>), AppError> {
     let id = service::create_wallet(&state.pool, CreateWalletInput { name: body.name }).await?;
     Ok((StatusCode::CREATED, Json(IdResponse { id })))
@@ -172,7 +173,7 @@ async fn create_wallet(
 async fn get_wallet(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<Json<WalletResponse>, AppError> {
     let wallet = service::get_wallet(&state.pool, id).await?;
     Ok(Json(to_wallet_response(wallet)))
@@ -181,8 +182,8 @@ async fn get_wallet(
 async fn update_wallet(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<UpdateWalletRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<UpdateWalletRequest>,
 ) -> Result<StatusCode, AppError> {
     service::update_wallet(
         &state.pool,
@@ -199,8 +200,8 @@ async fn update_wallet(
 async fn list_wallet_movements(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Query(query): Query<ListMovementsQuery>,
+    AppPath(id): AppPath<Uuid>,
+    AppQuery(query): AppQuery<ListMovementsQuery>,
 ) -> Result<Json<Vec<WalletMovementResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let rows = service::list_movements(&state.pool, id, limit).await?;
@@ -210,8 +211,8 @@ async fn list_wallet_movements(
 async fn record_manual_movement(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<ManualMovementRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<ManualMovementRequest>,
 ) -> Result<(StatusCode, Json<IdResponse>), AppError> {
     let id = service::record_manual_movement(
         &state.pool,
@@ -230,7 +231,7 @@ async fn record_manual_movement(
 async fn list_payment_methods(
     State(state): State<AppState>,
     _user: AuthUser,
-    Query(query): Query<ListQuery>,
+    AppQuery(query): AppQuery<ListQuery>,
 ) -> Result<Json<Vec<PaymentMethodResponse>>, AppError> {
     let methods = service::list_methods(&state.pool, query.include_inactive).await?;
     Ok(Json(methods.into_iter().map(to_method_response).collect()))
@@ -239,7 +240,7 @@ async fn list_payment_methods(
 async fn create_payment_method(
     State(state): State<AppState>,
     _user: AuthUser,
-    Json(body): Json<CreatePaymentMethodRequest>,
+    AppJson(body): AppJson<CreatePaymentMethodRequest>,
 ) -> Result<(StatusCode, Json<IdResponse>), AppError> {
     let id = service::create_method(
         &state.pool,
@@ -255,8 +256,8 @@ async fn create_payment_method(
 async fn update_payment_method(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<UpdatePaymentMethodRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<UpdatePaymentMethodRequest>,
 ) -> Result<StatusCode, AppError> {
     service::update_method(
         &state.pool,

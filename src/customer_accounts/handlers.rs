@@ -11,7 +11,7 @@
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
@@ -31,6 +31,7 @@ use crate::customer_accounts::service::{
     self, CollectedReceipt, ReceiptsError, RecordedAdjustment, RefundedCredit,
 };
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath, AppQuery};
 
 /// The published contract caps the idempotency key at this many characters.
 /// utoipa attributes do not validate, and the ledger stores the key as text,
@@ -352,8 +353,8 @@ fn normalize_idempotency_key(raw: Option<String>) -> Result<Option<String>, AppE
 async fn collect_receipt(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<CollectReceiptRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<CollectReceiptRequest>,
 ) -> Result<(StatusCode, Json<ReceiptResponse>), AppError> {
     let allocations: Vec<(Uuid, Decimal)> = body
         .allocations
@@ -397,8 +398,8 @@ async fn collect_receipt(
 async fn refund_credit(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<RefundCreditRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<RefundCreditRequest>,
 ) -> Result<(StatusCode, Json<CreditRefundResponse>), AppError> {
     let idempotency_key = normalize_idempotency_key(body.idempotency_key)?;
 
@@ -426,8 +427,8 @@ async fn refund_credit(
 async fn record_adjustment(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<RecordAdjustmentRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<RecordAdjustmentRequest>,
 ) -> Result<(StatusCode, Json<AdjustmentResponse>), AppError> {
     let recorded = service::adjust(
         &state.pool,
@@ -447,7 +448,7 @@ async fn record_adjustment(
 async fn get_account_statement(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<Json<CustomerAccountResponse>, AppError> {
     let statement = service::account_statement(&state.pool, id).await?;
     Ok(Json(to_account_response(statement)))
@@ -456,8 +457,8 @@ async fn get_account_statement(
 async fn list_receipts(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Query(query): Query<ListAccountLogQuery>,
+    AppPath(id): AppPath<Uuid>,
+    AppQuery(query): AppQuery<ListAccountLogQuery>,
 ) -> Result<Json<Vec<ReceiptLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let receipts = service::list_receipts(&state.pool, id, limit).await?;
@@ -467,8 +468,8 @@ async fn list_receipts(
 async fn list_adjustments(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Query(query): Query<ListAccountLogQuery>,
+    AppPath(id): AppPath<Uuid>,
+    AppQuery(query): AppQuery<ListAccountLogQuery>,
 ) -> Result<Json<Vec<AdjustmentLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let adjustments = service::list_adjustments(&state.pool, id, limit).await?;

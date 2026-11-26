@@ -333,7 +333,3 @@ duplicate document) are enforced by the database as well.
   and only when present.
 - **Hard delete**: no route, by decision. A customer created by mistake is
   deactivated, and its document stays taken until the row is edited.
-- **Malformed bodies answer `text/plain`**: a malformed JSON body gets axum's
-  default rejection instead of problem+json, on every route in the tree, not
-  just customers' — a boundary older than this feature, recorded in
-  `odd/tasks/customers.md`.

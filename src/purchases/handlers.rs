@@ -6,7 +6,7 @@
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use chrono::{DateTime, Utc};
@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath, AppQuery};
 use crate::purchases::model::{Purchase, PurchasePaymentInput, PurchaseStatus};
 use crate::purchases::service::{self, PurchaseError};
 
@@ -179,7 +180,7 @@ async fn open_draft(
 async fn list_purchases(
     State(state): State<AppState>,
     _user: AuthUser,
-    Query(query): Query<ListPurchasesQuery>,
+    AppQuery(query): AppQuery<ListPurchasesQuery>,
 ) -> Result<Json<PurchaseListResponse>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0).max(0);
@@ -199,7 +200,7 @@ async fn list_purchases(
 async fn get_purchase(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<Json<PurchaseResponse>, AppError> {
     let purchase = service::get_purchase(&state.pool, id).await?;
     Ok(Json(to_response(purchase)))
@@ -208,8 +209,8 @@ async fn get_purchase(
 async fn set_purchase_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<SetPurchaseSupplierRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<SetPurchaseSupplierRequest>,
 ) -> Result<StatusCode, AppError> {
     let supplier_id = body.supplier_id.ok_or_else(|| {
         AppError::Validation("the supplier_id field is required; pass null to clear it".into())
@@ -221,8 +222,8 @@ async fn set_purchase_supplier(
 async fn add_item(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<AddPurchaseItemRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<AddPurchaseItemRequest>,
 ) -> Result<Json<PurchaseResponse>, AppError> {
     let purchase = service::add_item(
         &state.pool,
@@ -238,8 +239,8 @@ async fn add_item(
 async fn set_item(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path((id, product_id)): Path<(Uuid, Uuid)>,
-    Json(body): Json<SetPurchaseItemRequest>,
+    AppPath((id, product_id)): AppPath<(Uuid, Uuid)>,
+    AppJson(body): AppJson<SetPurchaseItemRequest>,
 ) -> Result<Json<PurchaseResponse>, AppError> {
     let purchase =
         service::set_item(&state.pool, id, product_id, body.quantity, body.unit_cost).await?;
@@ -249,7 +250,7 @@ async fn set_item(
 async fn remove_item(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path((id, product_id)): Path<(Uuid, Uuid)>,
+    AppPath((id, product_id)): AppPath<(Uuid, Uuid)>,
 ) -> Result<Json<PurchaseResponse>, AppError> {
     let purchase = service::remove_item(&state.pool, id, product_id).await?;
     Ok(Json(to_response(purchase)))
@@ -258,8 +259,8 @@ async fn remove_item(
 async fn complete_purchase(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<CompletePurchaseRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<CompletePurchaseRequest>,
 ) -> Result<Json<CompletedPurchaseResponse>, AppError> {
     let payments: Vec<PurchasePaymentInput> = body
         .payments
@@ -293,7 +294,7 @@ async fn complete_purchase(
 async fn cancel_purchase(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
     service::cancel(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)

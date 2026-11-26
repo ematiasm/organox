@@ -7,7 +7,7 @@
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
 use chrono::{DateTime, Utc};
@@ -21,6 +21,7 @@ use crate::auth::AuthUser;
 use crate::credit_notes::model::{CreditNoteDetail, ReturnLine};
 use crate::credit_notes::service::{self, CreditNotesError};
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath};
 
 pub fn router() -> Router<AppState> {
     Router::new().route(
@@ -115,8 +116,8 @@ pub struct SaleCreditNotesResponse {
 async fn create_credit_note(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(sale_id): Path<Uuid>,
-    Json(body): Json<CreateCreditNoteRequest>,
+    AppPath(sale_id): AppPath<Uuid>,
+    AppJson(body): AppJson<CreateCreditNoteRequest>,
 ) -> Result<(StatusCode, Json<CreditNoteResponse>), AppError> {
     let lines: Vec<ReturnLine> = body
         .items
@@ -150,7 +151,7 @@ async fn create_credit_note(
 async fn sale_credit_notes(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(sale_id): Path<Uuid>,
+    AppPath(sale_id): AppPath<Uuid>,
 ) -> Result<Json<SaleCreditNotesResponse>, AppError> {
     let summary = service::for_sale(&state.pool, sale_id).await?;
 

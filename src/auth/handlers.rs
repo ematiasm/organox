@@ -3,7 +3,7 @@
 //! Limited responsibility: translate HTTP ↔ use cases. No SQL, business rules,
 //! or authorization decisions (those live in the service and extractors).
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
@@ -20,6 +20,7 @@ use crate::auth::model::Role;
 use crate::auth::repository;
 use crate::auth::service::{self, AuthError, LoginOutcome};
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath};
 
 pub fn router(state: AppState) -> Router<AppState> {
     router_with_body_limit(state, crate::routes::AUTH_BODY_LIMIT_BYTES)
@@ -104,7 +105,7 @@ async fn login(
     State(state): State<AppState>,
     cookies: Cookies,
     headers: HeaderMap,
-    Json(body): Json<LoginRequest>,
+    AppJson(body): AppJson<LoginRequest>,
 ) -> Result<Response, AppError> {
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
@@ -200,7 +201,7 @@ async fn list_users(
 async fn create_user(
     State(state): State<AppState>,
     user: AuthUser,
-    Json(body): Json<CreateUserRequest>,
+    AppJson(body): AppJson<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<CreateUserResponse>), AppError> {
     // 403 before touching the DB or spending an argon2 hash.
     user.require_user_management()?;
@@ -220,7 +221,7 @@ async fn create_user(
 async fn change_password(
     State(state): State<AppState>,
     user: AuthUser,
-    Json(body): Json<ChangePasswordRequest>,
+    AppJson(body): AppJson<ChangePasswordRequest>,
 ) -> Result<StatusCode, AppError> {
     service::change_password(
         &state.pool,
@@ -237,8 +238,8 @@ async fn change_password(
 async fn reset_password(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<ResetPasswordRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<ResetPasswordRequest>,
 ) -> Result<StatusCode, AppError> {
     // Same owner-only gate as user creation, before any DB work or hashing.
     user.require_user_management()?;

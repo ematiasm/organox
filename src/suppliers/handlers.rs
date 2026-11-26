@@ -5,7 +5,7 @@
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
+use crate::extract::{AppJson, AppPath, AppQuery};
 use crate::suppliers::model::Supplier;
 use crate::suppliers::service::{self, CreateSupplierInput, SupplierError, UpdateSupplierInput};
 
@@ -118,7 +119,7 @@ pub struct ListSuppliersQuery {
 async fn list_suppliers(
     State(state): State<AppState>,
     _user: AuthUser,
-    Query(query): Query<ListSuppliersQuery>,
+    AppQuery(query): AppQuery<ListSuppliersQuery>,
 ) -> Result<Json<SupplierListResponse>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0).max(0);
@@ -143,7 +144,7 @@ async fn list_suppliers(
 async fn create_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
-    Json(body): Json<CreateSupplierRequest>,
+    AppJson(body): AppJson<CreateSupplierRequest>,
 ) -> Result<(StatusCode, Json<SupplierIdResponse>), AppError> {
     let id = service::create_supplier(
         &state.pool,
@@ -163,7 +164,7 @@ async fn create_supplier(
 async fn get_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<Json<SupplierResponse>, AppError> {
     let supplier = service::get_supplier(&state.pool, id).await?;
     Ok(Json(to_response(supplier)))
@@ -172,8 +173,8 @@ async fn get_supplier(
 async fn update_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
-    Json(body): Json<UpdateSupplierRequest>,
+    AppPath(id): AppPath<Uuid>,
+    AppJson(body): AppJson<UpdateSupplierRequest>,
 ) -> Result<StatusCode, AppError> {
     service::update_supplier(
         &state.pool,
@@ -195,7 +196,7 @@ async fn update_supplier(
 async fn deactivate_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
-    Path(id): Path<Uuid>,
+    AppPath(id): AppPath<Uuid>,
 ) -> Result<StatusCode, AppError> {
     service::deactivate_supplier(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
