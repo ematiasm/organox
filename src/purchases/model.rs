@@ -65,7 +65,7 @@ pub struct PurchaseItem {
 
 impl PurchaseItem {
     pub fn subtotal(&self) -> Decimal {
-        (self.quantity * self.unit_cost).round_dp(2)
+        crate::money::line_subtotal(self.quantity, self.unit_cost)
     }
 }
 
@@ -93,15 +93,11 @@ pub struct Purchase {
 }
 
 impl Purchase {
-    /// Server-calculated total. Completed purchases return their frozen value.
+    /// Server-calculated total. Completed purchases return their frozen value;
+    /// drafts sum each line's rounded subtotal.
     pub fn total(&self) -> Decimal {
-        self.frozen_total.unwrap_or_else(|| {
-            self.items
-                .iter()
-                .map(|item| item.quantity * item.unit_cost)
-                .sum::<Decimal>()
-                .round_dp(2)
-        })
+        self.frozen_total
+            .unwrap_or_else(|| self.items.iter().map(PurchaseItem::subtotal).sum())
     }
 
     pub fn item_count(&self) -> usize {

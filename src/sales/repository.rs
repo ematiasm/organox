@@ -126,7 +126,7 @@ async fn refresh_total(
         r#"
         UPDATE sales
         SET total = COALESCE((
-            SELECT SUM(quantity * unit_price) FROM sale_items WHERE sale_id = $1
+            SELECT SUM(ROUND(quantity * unit_price, 2)) FROM sale_items WHERE sale_id = $1
         ), 0)
         WHERE id = $1 AND status = 'draft'
         RETURNING COALESCE(total, 0) AS "total!"
@@ -411,7 +411,7 @@ pub async fn cancel(pool: &PgPool, sale_id: Uuid) -> Result<(), RepoError> {
 pub async fn find_sale(pool: &PgPool, sale_id: Uuid) -> Result<Option<Sale>, RepoError> {
     let row = sqlx::query!(
         r#"
-        SELECT s.id, s.status AS "status: SaleStatus", s.created_by, s.created_at, s.completed_at,
+        SELECT s.id, s.status AS "status: SaleStatus", s.total, s.created_by, s.created_at, s.completed_at,
                -- Name precedence: a completed sale carries the frozen snapshot
                -- (non-NULL), which wins; a draft has none yet, so the joined
                -- live name shows and still tracks a rename.
@@ -441,9 +441,16 @@ pub async fn find_sale(pool: &PgPool, sale_id: Uuid) -> Result<Option<Sale>, Rep
     .fetch_all(pool)
     .await?;
 
+    let frozen_total = if row.status == SaleStatus::Completed {
+        row.total
+    } else {
+        None
+    };
+
     Ok(Some(Sale {
         id: row.id,
         status: row.status,
+        frozen_total,
         created_by: row.created_by,
         created_at: row.created_at,
         completed_at: row.completed_at,
@@ -752,19 +759,10 @@ pub async fn complete(
             });
         }
 
-        let subtotal = item
-            .quantity
-            .checked_mul(item.unit_price)
+        let subtotal = crate::money::checked_line_subtotal(item.quantity, item.unit_price)
             .ok_or(RepoError::TotalTooLarge)?;
-        total = total
-            .checked_add(subtotal)
-            .ok_or(RepoError::TotalTooLarge)?;
-    }
-
-    // `numeric(14,2)`: rounded on save, not truncated.
-    let total = total.round_dp(2);
-    if total > crate::money::MAX_AMOUNT {
-        return Err(RepoError::TotalTooLarge);
+        total =
+            crate::money::checked_add_amount(total, subtotal).ok_or(RepoError::TotalTooLarge)?;
     }
 
     // The money must add up to the total the server computed — the wallets'

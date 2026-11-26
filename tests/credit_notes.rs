@@ -2715,3 +2715,74 @@ async fn refunded_receipt_does_not_back_future_sale_or_misroute_credit_note_refu
     assert_eq!(balance(&pool, cash_wallet).await, Decimal::ZERO);
     assert_eq!(balance(&pool, card_wallet).await, Decimal::ZERO);
 }
+
+#[sqlx::test]
+async fn credit_notes_match_per_line_half_away_from_zero_rounding_across_two_midpoint_items(
+    pool: PgPool,
+) {
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let p_a = seed_product(&pool, "Spice A", dec!(1.01)).await;
+    let p_b = seed_product(&pool, "Spice B", dec!(1.01)).await;
+    stock(&pool, actor, p_a, dec!(5)).await;
+    stock(&pool, actor, p_b, dec!(5)).await;
+    let method = cash(&pool).await;
+    let wallet = wallet_of(&pool, method).await;
+
+    // Two 0.500 * 1.01 = 0.505 lines -> 0.51 + 0.51 = 1.02 total.
+    let sale = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, sale, p_a, dec!(0.500))
+        .await
+        .unwrap();
+    sales::add_item(&pool, sale, p_b, dec!(0.500))
+        .await
+        .unwrap();
+    sales::complete(
+        &pool,
+        sale,
+        actor,
+        &[SalePaymentInput {
+            payment_method_id: method,
+            amount: dec!(1.02),
+        }],
+    )
+    .await
+    .unwrap();
+    let cookie = login_cookie(&pool, &password).await;
+
+    // Return both items in one credit note: subtotals 0.51 + 0.51 == note total 1.02.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session(
+                "POST",
+                &format!("/api/v1/sales/{sale}/credit-notes"),
+                &cookie,
+            )
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({
+                    "reason": "Midpoint full return",
+                    "items": [
+                        { "product_id": p_a, "quantity": "0.500" },
+                        { "product_id": p_b, "quantity": "0.500" }
+                    ]
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), axum::http::StatusCode::CREATED);
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["items"][0]["subtotal"], "0.51");
+    assert_eq!(body["items"][1]["subtotal"], "0.51");
+    assert_eq!(body["total"], "1.02");
+    assert_eq!(balance(&pool, wallet).await, Decimal::ZERO);
+}

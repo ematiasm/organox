@@ -1276,3 +1276,75 @@ async fn refunded_supplier_purchase_return_credit_does_not_block_later_wallet_re
         Some(bank_wallet.to_string().as_str())
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn purchase_returns_match_per_line_half_away_from_zero_rounding_across_two_midpoint_items(
+    pool: PgPool,
+) {
+    let (actor, password) = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
+    let (_cash_wallet, cash_method) = seed_wallet_and_method(&pool, "Cash", "Cash").await;
+    let p_a = seed_product(&pool, "Spice A").await;
+    let p_b = seed_product(&pool, "Spice B").await;
+    let supplier = seed_supplier(&pool, "Midpoint Spice Co").await;
+    let app = app(pool.clone());
+    let cookie = login_cookie(&app, "owner@pyme.com", &password).await;
+
+    // Two 0.500 * 1.01 = 0.505 lines -> 0.51 + 0.51 = 1.02 total.
+    let (purchase_id, _) = purchases::open_draft(&pool, actor).await.unwrap();
+    purchases::set_supplier(&pool, purchase_id, Some(supplier))
+        .await
+        .unwrap();
+    purchases::add_item(&pool, purchase_id, p_a, dec!(0.500), dec!(1.01))
+        .await
+        .unwrap();
+    purchases::add_item(&pool, purchase_id, p_b, dec!(0.500), dec!(1.01))
+        .await
+        .unwrap();
+    purchases::complete(
+        &pool,
+        purchase_id,
+        actor,
+        &[PurchasePaymentInput {
+            payment_method_id: cash_method,
+            amount: dec!(1.02),
+        }],
+        Decimal::ZERO,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Returning each item in its own purchase return sums cleanly to 0.51 + 0.51 = 1.02
+    // without cross-line rounding drift.
+    let (s1, b1) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/purchases/{purchase_id}/returns"),
+        Some(json!({
+            "reason": "Return A",
+            "surplus_mode": "wallet_refund",
+            "items": [{ "product_id": p_a, "quantity": "0.500" }]
+        })),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::CREATED, "return 1: {b1}");
+    assert_eq!(b1["items"][0]["subtotal"], "0.51");
+    assert_eq!(b1["total"], "0.51");
+
+    let (s2, b2) = call_json(
+        &app,
+        Some(&cookie),
+        "POST",
+        &format!("/api/v1/purchases/{purchase_id}/returns"),
+        Some(json!({
+            "reason": "Return B",
+            "surplus_mode": "wallet_refund",
+            "items": [{ "product_id": p_b, "quantity": "0.500" }]
+        })),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::CREATED, "return 2: {b2}");
+    assert_eq!(b2["items"][0]["subtotal"], "0.51");
+    assert_eq!(b2["total"], "0.51");
+}

@@ -487,10 +487,7 @@ async fn list_receivables(
 
 // --- Conversions --------------------------------------------------------
 
-/// Money with exactly 2 decimals, negative included: `"-50.00"`.
-fn format_money(value: Decimal) -> String {
-    format!("{value:.2}")
-}
+use crate::money::format_money;
 
 fn to_response(collected: CollectedReceipt) -> ReceiptResponse {
     ReceiptResponse {

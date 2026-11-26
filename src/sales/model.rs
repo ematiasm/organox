@@ -72,8 +72,10 @@ pub struct SaleItem {
 }
 
 impl SaleItem {
+    /// Line subtotal rounded half-away-from-zero to cents, matching Postgres
+    /// `ROUND(quantity * unit_price, 2)`.
     pub fn subtotal(&self) -> Decimal {
-        self.quantity * self.unit_price
+        crate::money::line_subtotal(self.quantity, self.unit_price)
     }
 }
 
@@ -93,6 +95,8 @@ pub struct Sale {
     pub id: Uuid,
     pub status: SaleStatus,
     pub items: Vec<SaleItem>,
+    /// Frozen total persisted when the sale was completed; `None` while draft.
+    pub frozen_total: Option<Decimal>,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -105,10 +109,11 @@ pub struct Sale {
 }
 
 impl Sale {
-    /// Server-calculated total. The client may show its own total, but this is
-    /// the one charged.
+    /// Server-calculated total. Completed sales return their frozen `sales.total`;
+    /// drafts sum each line's rounded subtotal.
     pub fn total(&self) -> Decimal {
-        self.items.iter().map(SaleItem::subtotal).sum()
+        self.frozen_total
+            .unwrap_or_else(|| self.items.iter().map(SaleItem::subtotal).sum())
     }
 
     pub fn item_count(&self) -> usize {
@@ -141,6 +146,7 @@ mod tests {
                 item(dec!(1.5), dec!(1200.33)),
                 item(dec!(3), dec!(0.10)),
             ],
+            frozen_total: None,
             created_by: Uuid::now_v7(),
             created_at: Utc::now(),
             completed_at: None,
@@ -148,10 +154,24 @@ mod tests {
             customer_name: None,
         };
 
-        // 5600.00 + 1800.495 + 0.30 = 7400.795
-        // DB `numeric` is (12,3) for quantity and (12,2) for price: the
-        // product can have 3 decimals and is rounded to 2 when persisting total.
-        assert_eq!(sale.total(), dec!(7400.795));
+        // 5600.00 + ROUND(1800.495, 2) [= 1800.50] + 0.30 = 7400.80
+        assert_eq!(sale.total(), dec!(7400.80));
+    }
+
+    #[test]
+    fn completed_sale_prefers_frozen_total() {
+        let sale = Sale {
+            id: Uuid::now_v7(),
+            status: SaleStatus::Completed,
+            items: vec![item(dec!(0.500), dec!(1.01)), item(dec!(0.500), dec!(1.01))],
+            frozen_total: Some(dec!(1.01)),
+            created_by: Uuid::now_v7(),
+            created_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            customer_id: None,
+            customer_name: None,
+        };
+        assert_eq!(sale.total(), dec!(1.01));
     }
 
     #[test]
@@ -160,6 +180,7 @@ mod tests {
             id: Uuid::now_v7(),
             status: SaleStatus::Draft,
             items: vec![],
+            frozen_total: None,
             created_by: Uuid::now_v7(),
             created_at: Utc::now(),
             completed_at: None,

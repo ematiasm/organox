@@ -53,7 +53,7 @@ pub struct PurchaseReturnItem {
 
 impl PurchaseReturnItem {
     pub fn subtotal(&self) -> Decimal {
-        (self.quantity * self.unit_cost).round_dp(2)
+        crate::money::line_subtotal(self.quantity, self.unit_cost)
     }
 }
 

@@ -301,9 +301,7 @@ async fn cancel_purchase(
 
 // --- Conversions --------------------------------------------------------
 
-fn format_money(value: Decimal) -> String {
-    format!("{value:.2}")
-}
+use crate::money::format_money;
 
 fn to_response(purchase: Purchase) -> PurchaseResponse {
     let total = purchase.total();

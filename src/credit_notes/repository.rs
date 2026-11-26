@@ -305,15 +305,14 @@ pub async fn for_sale(
     };
 
     let lines = creditable_lines(&mut *tx, sale_id).await?;
-    // A draft need not have a frozen total. Round exactly like checkout does
-    // (`round_dp(2)` before the value reaches `numeric(14,2)`), so a draft and
-    // the sale it becomes never disagree by a cent.
+    // A draft need not have a frozen total. Sum rounded per-line subtotals
+    // exactly like checkout does, so a draft and the sale it becomes never
+    // disagree by a cent.
     let sale_total = sale.total.unwrap_or_else(|| {
         lines
             .iter()
-            .map(|line| line.quantity * line.unit_price)
+            .map(|line| crate::money::line_subtotal(line.quantity, line.unit_price))
             .sum::<Decimal>()
-            .round_dp(2)
     });
 
     let notes = load_notes_in(&mut tx, sale_id, None).await?;
@@ -672,20 +671,11 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
             });
         }
 
-        let subtotal = line
-            .quantity
-            .checked_mul(sold.unit_price)
+        let subtotal = crate::money::checked_line_subtotal(line.quantity, sold.unit_price)
             .ok_or(RepoError::TotalTooLarge)?;
-        total = total
-            .checked_add(subtotal)
-            .ok_or(RepoError::TotalTooLarge)?;
+        total =
+            crate::money::checked_add_amount(total, subtotal).ok_or(RepoError::TotalTooLarge)?;
         accepted.push((sold, line.quantity));
-    }
-
-    // `numeric(14,2)`: rounded on save, not truncated.
-    let total = total.round_dp(2);
-    if total > crate::money::MAX_AMOUNT {
-        return Err(RepoError::TotalTooLarge);
     }
 
     // The per-product limit is not enough: rounding many small notes up can

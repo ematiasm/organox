@@ -195,9 +195,7 @@ async fn purchase_returns(
 
 // --- Mapping ------------------------------------------------------------
 
-fn format_money(value: Decimal) -> String {
-    format!("{value:.2}")
-}
+use crate::money::format_money;
 
 fn format_quantity(value: Decimal) -> String {
     value.normalize().to_string()

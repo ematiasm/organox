@@ -129,9 +129,9 @@ async fn refresh_total_in(
     sqlx::query!(
         r#"
         UPDATE purchases
-        SET total = ROUND(COALESCE((
-            SELECT SUM(quantity * unit_cost) FROM purchase_items WHERE purchase_id = $1
-        ), 0), 2)
+        SET total = COALESCE((
+            SELECT SUM(ROUND(quantity * unit_cost, 2)) FROM purchase_items WHERE purchase_id = $1
+        ), 0)
         WHERE id = $1
         "#,
         purchase_id
@@ -780,18 +780,10 @@ pub async fn complete(
             return Err(RepoError::ProductDoesNotTrackStock);
         }
 
-        let subtotal = item
-            .quantity
-            .checked_mul(item.unit_cost)
+        let subtotal = crate::money::checked_line_subtotal(item.quantity, item.unit_cost)
             .ok_or(RepoError::TotalTooLarge)?;
-        total = total
-            .checked_add(subtotal)
-            .ok_or(RepoError::TotalTooLarge)?;
-    }
-
-    let total = total.round_dp(2);
-    if total > crate::money::MAX_AMOUNT {
-        return Err(RepoError::TotalTooLarge);
+        total =
+            crate::money::checked_add_amount(total, subtotal).ok_or(RepoError::TotalTooLarge)?;
     }
 
     // Lock and validate the supplier and payments before any write.

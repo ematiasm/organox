@@ -274,10 +274,7 @@ async fn list_sales(
 
 // --- Conversions --------------------------------------------------------
 
-/// Money with exactly 2 decimals (`"1500.50"`), as in the catalog.
-fn format_money(value: Decimal) -> String {
-    format!("{value:.2}")
-}
+use crate::money::format_money;
 
 /// Quantities without extra zeros (`"2"`, `"1.5"`).
 fn format_quantity(value: Decimal) -> String {

@@ -214,10 +214,7 @@ async fn deactivate_customer(
 
 // --- Conversions --------------------------------------------------------
 
-/// Money with exactly 2 decimals (`"100.00"`), as in the catalog and sales.
-fn format_money(value: Decimal) -> String {
-    format!("{value:.2}")
-}
+use crate::money::format_money;
 
 fn to_response(customer: Customer) -> CustomerResponse {
     CustomerResponse {

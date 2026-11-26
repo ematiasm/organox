@@ -53,7 +53,7 @@ impl CreditNoteItem {
     /// 3.00 = 0.999); showing 0.99 next to a note total of 1.00 would make
     /// the document contradict itself.
     pub fn subtotal(&self) -> Decimal {
-        (self.quantity * self.unit_price).round_dp(2)
+        crate::money::line_subtotal(self.quantity, self.unit_price)
     }
 }
 
