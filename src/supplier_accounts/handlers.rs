@@ -28,9 +28,6 @@ use crate::supplier_accounts::service::{
     self, RecordedAdjustment, RecordedPayment, RefundedCredit, SupplierAccountError,
 };
 
-/// Maximum accepted length of an optional idempotency key in characters.
-const MAX_IDEMPOTENCY_KEY_LEN: usize = 100;
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/suppliers/{id}/account", get(get_account_statement))
@@ -364,22 +361,6 @@ pub struct PayablesResponse {
 
 // --- Handlers -----------------------------------------------------------
 
-/// Normalize an optional idempotency key at the HTTP boundary: blank keys
-/// become `None`; non-blank keys keep their exact characters and must be at
-/// most `MAX_IDEMPOTENCY_KEY_LEN` characters.
-fn normalize_idempotency_key(raw: Option<String>) -> Result<Option<String>, AppError> {
-    let key = raw.filter(|key| !key.trim().is_empty());
-    if key
-        .as_ref()
-        .is_some_and(|key| key.chars().count() > MAX_IDEMPOTENCY_KEY_LEN)
-    {
-        return Err(AppError::Validation(format!(
-            "the idempotency key exceeds {MAX_IDEMPOTENCY_KEY_LEN} characters"
-        )));
-    }
-    Ok(key)
-}
-
 async fn record_payment(
     State(state): State<AppState>,
     user: AuthUser,
@@ -397,8 +378,6 @@ async fn record_payment(
         .map(|note| note.trim().to_string())
         .filter(|note| !note.is_empty());
 
-    let idempotency_key = normalize_idempotency_key(body.idempotency_key)?;
-
     let recorded = service::record_payment(
         &state.pool,
         id,
@@ -406,7 +385,7 @@ async fn record_payment(
             payment_method_id: body.payment_method_id,
             amount: body.amount,
             allocations: &allocations,
-            idempotency_key: idempotency_key.as_deref(),
+            idempotency_key: body.idempotency_key.as_deref(),
             note: note.as_deref(),
             actor: user.id(),
         },
@@ -427,8 +406,6 @@ async fn refund_credit(
     AppPath(id): AppPath<Uuid>,
     AppJson(body): AppJson<RefundSupplierCreditRequest>,
 ) -> Result<(StatusCode, Json<SupplierCreditRefundResponse>), AppError> {
-    let idempotency_key = normalize_idempotency_key(body.idempotency_key)?;
-
     let refunded = service::refund_credit(
         &state.pool,
         id,
@@ -436,7 +413,7 @@ async fn refund_credit(
             payment_method_id: body.payment_method_id,
             amount: body.amount,
             note: &body.note,
-            idempotency_key: idempotency_key.as_deref(),
+            idempotency_key: body.idempotency_key.as_deref(),
             actor: user.id(),
         },
     )
@@ -694,6 +671,8 @@ impl From<SupplierAccountError> for AppError {
             SupplierAccountError::MethodUnavailable
             | SupplierAccountError::AmountTooLarge { .. }
             | SupplierAccountError::RefundNoteRequired
+            | SupplierAccountError::IdempotencyKeyMissing
+            | SupplierAccountError::IdempotencyKeyTooLong
             | SupplierAccountError::Validation(_) => AppError::Validation(err.to_string()),
             SupplierAccountError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
@@ -894,26 +873,29 @@ mod tests {
     use rust_decimal_macros::dec;
 
     #[test]
-    fn normalize_idempotency_key_discards_blank_and_enforces_limit() {
-        assert_eq!(normalize_idempotency_key(None).unwrap(), None);
-        assert_eq!(
-            normalize_idempotency_key(Some("   ".to_string())).unwrap(),
-            None
-        );
-        let padded = " key-1 ".to_string();
-        assert_eq!(
-            normalize_idempotency_key(Some(padded.clone())).unwrap(),
-            Some(padded)
-        );
-        let max_key = "a".repeat(MAX_IDEMPOTENCY_KEY_LEN);
-        assert_eq!(
-            normalize_idempotency_key(Some(max_key.clone())).unwrap(),
-            Some(max_key)
-        );
-        let too_long = "a".repeat(MAX_IDEMPOTENCY_KEY_LEN + 1);
+    fn normalize_idempotency_key_trims_rejects_blank_and_enforces_limit() {
+        assert_eq!(service::normalize_idempotency_key(None).unwrap(), None);
         assert!(matches!(
-            normalize_idempotency_key(Some(too_long)),
-            Err(AppError::Validation(_))
+            service::normalize_idempotency_key(Some("")),
+            Err(SupplierAccountError::IdempotencyKeyMissing)
+        ));
+        assert!(matches!(
+            service::normalize_idempotency_key(Some("   ")),
+            Err(SupplierAccountError::IdempotencyKeyMissing)
+        ));
+        assert_eq!(
+            service::normalize_idempotency_key(Some(" key-1 ")).unwrap(),
+            Some("key-1")
+        );
+        let max_key = "a".repeat(service::MAX_IDEMPOTENCY_KEY_LEN);
+        assert_eq!(
+            service::normalize_idempotency_key(Some(&max_key)).unwrap(),
+            Some(max_key.as_str())
+        );
+        let too_long = "a".repeat(service::MAX_IDEMPOTENCY_KEY_LEN + 1);
+        assert!(matches!(
+            service::normalize_idempotency_key(Some(&too_long)),
+            Err(SupplierAccountError::IdempotencyKeyTooLong)
         ));
     }
 

@@ -19,6 +19,10 @@ use crate::supplier_accounts::model::{
 };
 use crate::supplier_accounts::repository::{self, RepoError};
 
+/// Maximum accepted length of an optional idempotency key in characters
+/// (measured after trimming surrounding whitespace).
+pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 100;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SupplierAccountError {
     #[error("the payment method is unknown or inactive")]
@@ -41,6 +45,12 @@ pub enum SupplierAccountError {
 
     #[error("a credit refund needs a reason")]
     RefundNoteRequired,
+
+    #[error("an idempotency key cannot be blank")]
+    IdempotencyKeyMissing,
+
+    #[error("the idempotency key exceeds {MAX_IDEMPOTENCY_KEY_LEN} characters")]
+    IdempotencyKeyTooLong,
 
     /// Typed rejections from the payables ledger with actionable messages.
     #[error("{0}")]
@@ -157,6 +167,24 @@ async fn position_with_outstanding(
     Ok((position.balance, position.unapplied_credit, outstanding))
 }
 
+/// Validate and trim an optional idempotency key, matching `credit_notes`,
+/// `purchase_returns`, and `customer_accounts`: whitespace is not an identity,
+/// blank strings are rejected with `422`, and the 100-character cap counts
+/// trimmed characters.
+pub fn normalize_idempotency_key(raw: Option<&str>) -> Result<Option<&str>, SupplierAccountError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(SupplierAccountError::IdempotencyKeyMissing);
+    }
+    if trimmed.chars().count() > MAX_IDEMPOTENCY_KEY_LEN {
+        return Err(SupplierAccountError::IdempotencyKeyTooLong);
+    }
+    Ok(Some(trimmed))
+}
+
 /// Pay money against a supplier's account (`supplier_account_payment` wallet
 /// outflow + `payment` ledger entry + explicit allocations) in one transaction.
 pub async fn record_payment(
@@ -164,12 +192,13 @@ pub async fn record_payment(
     supplier_id: Uuid,
     input: RecordPaymentInput<'_>,
 ) -> Result<RecordedPayment, SupplierAccountError> {
+    let idempotency_key = normalize_idempotency_key(input.idempotency_key)?;
     validate_amount(input.amount)?;
 
     let mut tx = pool.begin().await?;
     repository::lock_supplier(&mut tx, supplier_id).await?;
 
-    if let Some(key) = input.idempotency_key
+    if let Some(key) = idempotency_key
         && let Some(existing) = repository::payment_by_key_in(&mut tx, supplier_id, key).await?
     {
         let (balance, unapplied_credit, allocations) =
@@ -220,7 +249,7 @@ pub async fn record_payment(
             wallet_movement_id: movement_id,
             amount: input.amount,
             allocations: input.allocations,
-            idempotency_key: input.idempotency_key,
+            idempotency_key,
             note: input.note,
             created_by: input.actor,
         },
@@ -275,6 +304,7 @@ pub async fn refund_credit(
     supplier_id: Uuid,
     input: RefundCreditInput<'_>,
 ) -> Result<RefundedCredit, SupplierAccountError> {
+    let idempotency_key = normalize_idempotency_key(input.idempotency_key)?;
     validate_amount(input.amount)?;
     let note = input.note.trim();
     if note.is_empty() {
@@ -284,7 +314,7 @@ pub async fn refund_credit(
     let mut tx = pool.begin().await?;
     repository::lock_supplier(&mut tx, supplier_id).await?;
 
-    if let Some(key) = input.idempotency_key
+    if let Some(key) = idempotency_key
         && let Some(existing) =
             repository::credit_refund_by_key_in(&mut tx, supplier_id, key).await?
     {
@@ -331,7 +361,7 @@ pub async fn refund_credit(
             supplier_id,
             wallet_movement_id: movement_id,
             amount: input.amount,
-            idempotency_key: input.idempotency_key,
+            idempotency_key,
             note: Some(note),
             created_by: input.actor,
         },
