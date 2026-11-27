@@ -15,13 +15,13 @@
           "supplier_accounts"
         ],
         "summary": "Accounts payable report across every supplier with an open position.",
-        "description": "Lists every supplier whose `balance != 0` or `unapplied_credit != 0`,\nordered by highest balance first, with open-purchase aging buckets computed\nfrom each purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`).\nOmitting `limit` returns the whole report; `limit`/`offset` window `items`\nwhile totals, aging, and `items_total` always describe the whole report.",
+        "description": "Lists suppliers whose `balance != 0` or `unapplied_credit != 0`, ordered by\nhighest balance first, with open-purchase aging buckets computed from each\npurchase's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is\nbounded with `limit` (default 50, clamped to 1..=200) and `offset`\n(default 0), while totals, aging, and `items_total` always describe the\nwhole report.",
         "operationId": "list_payables_doc",
         "parameters": [
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of suppliers to return (default: all of them).",
+            "description": "Maximum number of suppliers to return (default 50, clamped to 1..=200).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -68,14 +68,14 @@
         "tags": [
           "customer_accounts"
         ],
-        "summary": "Accounts receivable report across every customer with an open position.",
-        "description": "Lists every customer whose `balance != 0` or `unapplied_credit != 0`,\nordered by highest balance first, with open-sale aging buckets computed\nfrom each sale's completion date (`0-30`, `31-60`, `61-90`, `90+`).",
+        "summary": "Accounts receivable report across customers with an open position.",
+        "description": "Lists customers whose `balance != 0` or `unapplied_credit != 0`, ordered by\nhighest balance first, with open-sale aging buckets computed from each\nsale's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is\nbounded with `limit` (default 50, clamped to 1..=200) and `offset`\n(default 0), while totals, aging, and `items_total` always describe the\nwhole report.",
         "operationId": "list_receivables_doc",
         "parameters": [
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of customers to return (default: all of them).",
+            "description": "Maximum number of customers to return (default 50, clamped to 1..=200).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -548,7 +548,7 @@
           "customer_accounts"
         ],
         "summary": "Customer account statement.",
-        "description": "Returns ledger entries oldest first with their running balance, the\ncustomer's current balance and unapplied credit (`U`), and every sale that\nstill owes money — all read from one consistent snapshot. Omitting `limit`\nreturns the whole ledger; `limit`/`offset` return a bounded window and\n`entries_total` always reports the whole ledger.",
+        "description": "Returns ledger entries oldest first with their running balance, the\ncustomer's current balance and unapplied credit (`U`), and every sale that\nstill owes money — all read from one consistent snapshot. Entries are\nbounded with `limit` (default 100, clamped to 1..=500) and `offset`\n(default 0), while `entries_total` always reports the whole ledger.",
         "operationId": "get_account_statement_doc",
         "parameters": [
           {
@@ -564,7 +564,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of entries to return (default: all of them).",
+            "description": "Maximum number of entries to return (default 100, clamped to 1..=500).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -2502,6 +2502,7 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "Maximum number of sales to return (default 50, clamped to 1..=200).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -2511,6 +2512,7 @@
           {
             "name": "offset",
             "in": "query",
+            "description": "Sales to skip from the newest (default 0).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -3490,7 +3492,7 @@
           "supplier_accounts"
         ],
         "summary": "Supplier account statement.",
-        "description": "Returns ledger entries oldest first with their running balance, the\nsupplier's current balance and unapplied credit, and every completed\npurchase with an open payable — all read from one consistent snapshot.\nOmitting `limit` returns the whole ledger; `limit`/`offset` return a bounded\nwindow and `entries_total` always reports the whole ledger.",
+        "description": "Returns ledger entries oldest first with their running balance, the\nsupplier's current balance and unapplied credit, and every completed\npurchase with an open payable — all read from one consistent snapshot.\nEntries are bounded with `limit` (default 100, clamped to 1..=500) and\n`offset` (default 0), while `entries_total` always reports the whole ledger.",
         "operationId": "get_account_statement_doc",
         "parameters": [
           {
@@ -3506,7 +3508,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Maximum number of entries to return (default: all of them).",
+            "description": "Maximum number of entries to return (default 100, clamped to 1..=500).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -5459,7 +5461,7 @@
             "items": {
               "$ref": "#/components/schemas/AccountStatementEntryResponse"
             },
-            "description": "Ledger entries oldest first, each carrying the running balance after it.\nPaginated only when `limit` is asked for; `entries_total` is the whole\nledger either way."
+            "description": "Ledger entries oldest first, each carrying the running balance after it\n(default 100 per page, clamped to 1..=500). `entries_total` is the whole\nledger either way."
           },
           "entries_total": {
             "type": "integer",
@@ -7261,7 +7263,7 @@
             "items": {
               "$ref": "#/components/schemas/SupplierAccountStatementEntryResponse"
             },
-            "description": "Ledger entries oldest first, each carrying the running balance after it.\nPaginated only when `limit` is asked for; `entries_total` is the whole\nledger either way."
+            "description": "Ledger entries oldest first, each carrying the running balance after it\n(default 100 per page, clamped to 1..=500). `entries_total` is the whole\nledger either way."
           },
           "entries_total": {
             "type": "integer",

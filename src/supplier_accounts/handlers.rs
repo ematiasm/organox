@@ -182,13 +182,12 @@ pub struct ListSupplierAccountLogQuery {
 
 /// Window over a portfolio report (`/accounts/payables`).
 ///
-/// Omitting `limit` returns the whole report, which is what the report screen
-/// loads. The totals and aging describe the whole report either way; only the
-/// `items` array is windowed.
+/// The totals and aging describe the whole report either way; only the `items`
+/// array is windowed (default 50, clamped to 1..=200).
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListReportQuery {
-    /// Maximum number of suppliers to return (default: all of them).
+    /// Maximum number of suppliers to return (default 50, clamped to 1..=200).
     pub limit: Option<i64>,
     /// Suppliers to skip from the first (default 0).
     pub offset: Option<i64>,
@@ -196,13 +195,12 @@ pub struct ListReportQuery {
 
 /// Window over the ledger entries of a supplier account statement.
 ///
-/// Omitting `limit` returns every entry, which is what the account panel needs
-/// to pair each charge with its purchase return. Passing it returns a bounded
-/// window and `entries_total` still reports the whole ledger.
+/// Entries are paginated by default (default 100, clamped to 1..=500);
+/// `entries_total` still reports the whole ledger.
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListStatementQuery {
-    /// Maximum number of entries to return (default: all of them).
+    /// Maximum number of entries to return (default 100, clamped to 1..=500).
     pub limit: Option<i64>,
     /// Entries to skip from the oldest (default 0).
     pub offset: Option<i64>,
@@ -260,8 +258,8 @@ pub struct SupplierAccountResponse {
     /// Sum of what every open purchase still owes.
     #[schema(value_type = String, example = "100.00")]
     pub outstanding_total: String,
-    /// Ledger entries oldest first, each carrying the running balance after it.
-    /// Paginated only when `limit` is asked for; `entries_total` is the whole
+    /// Ledger entries oldest first, each carrying the running balance after it
+    /// (default 100 per page, clamped to 1..=500). `entries_total` is the whole
     /// ledger either way.
     pub entries: Vec<SupplierAccountStatementEntryResponse>,
     /// Ledger entries in the whole statement, not just this page.
@@ -479,7 +477,7 @@ async fn get_account_statement(
     AppPath(id): AppPath<Uuid>,
     AppQuery(query): AppQuery<ListStatementQuery>,
 ) -> Result<Json<SupplierAccountResponse>, AppError> {
-    let limit = query.limit.map(|limit| limit.clamp(1, 500));
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let offset = query.offset.unwrap_or(0).max(0);
 
     let statement = service::account_statement(&state.pool, id, limit, offset).await?;
@@ -517,7 +515,7 @@ async fn list_payables(
     _user: AuthUser,
     AppQuery(query): AppQuery<ListReportQuery>,
 ) -> Result<Json<PayablesResponse>, AppError> {
-    let limit = query.limit.map(|limit| limit.clamp(1, 200));
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0).max(0);
 
     let summary = service::payables(&state.pool, limit, offset).await?;
@@ -801,8 +799,8 @@ fn record_adjustment_doc() {}
 /// Returns ledger entries oldest first with their running balance, the
 /// supplier's current balance and unapplied credit, and every completed
 /// purchase with an open payable — all read from one consistent snapshot.
-/// Omitting `limit` returns the whole ledger; `limit`/`offset` return a bounded
-/// window and `entries_total` always reports the whole ledger.
+/// Entries are bounded with `limit` (default 100, clamped to 1..=500) and
+/// `offset` (default 0), while `entries_total` always reports the whole ledger.
 #[utoipa::path(
     get,
     path = "/api/v1/suppliers/{id}/account",
@@ -870,11 +868,12 @@ fn list_adjustments_doc() {}
 
 /// Accounts payable report across every supplier with an open position.
 ///
-/// Lists every supplier whose `balance != 0` or `unapplied_credit != 0`,
-/// ordered by highest balance first, with open-purchase aging buckets computed
-/// from each purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`).
-/// Omitting `limit` returns the whole report; `limit`/`offset` window `items`
-/// while totals, aging, and `items_total` always describe the whole report.
+/// Lists suppliers whose `balance != 0` or `unapplied_credit != 0`, ordered by
+/// highest balance first, with open-purchase aging buckets computed from each
+/// purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
+/// bounded with `limit` (default 50, clamped to 1..=200) and `offset`
+/// (default 0), while totals, aging, and `items_total` always describe the
+/// whole report.
 #[utoipa::path(
     get,
     path = "/api/v1/accounts/payables",

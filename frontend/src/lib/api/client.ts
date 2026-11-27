@@ -437,8 +437,10 @@ export const api = {
 	// Debt ledger, receipts, credit refunds, manual adjustments and receivables.
 	// Amounts travel as decimal strings; the server owns every invariant.
 
-	getCustomerAccount: (customerId: string) =>
-		request<CustomerAccount>(`/api/v1/customers/${encodeURIComponent(customerId)}/account`),
+	getCustomerAccount: (customerId: string, params?: { limit?: number; offset?: number }) =>
+		request<CustomerAccount>(`/api/v1/customers/${encodeURIComponent(customerId)}/account`, {
+			query: { limit: params?.limit, offset: params?.offset }
+		}),
 
 	listCustomerReceipts: (customerId: string, limit?: number) =>
 		request<ReceiptLog[]>(`/api/v1/customers/${encodeURIComponent(customerId)}/receipts`, {
@@ -468,7 +470,10 @@ export const api = {
 			body
 		}),
 
-	getReceivables: () => request<Receivables>('/api/v1/accounts/receivables'),
+	getReceivables: (params?: { limit?: number; offset?: number }) =>
+		request<Receivables>('/api/v1/accounts/receivables', {
+			query: { limit: params?.limit, offset: params?.offset }
+		}),
 
 	// --- Supplier accounts ---
 	//
@@ -476,8 +481,10 @@ export const api = {
 	// aging report. Amounts travel as decimal strings; the server owns every
 	// invariant.
 
-	getSupplierAccount: (supplierId: string) =>
-		request<SupplierAccount>(`/api/v1/suppliers/${encodeURIComponent(supplierId)}/account`),
+	getSupplierAccount: (supplierId: string, params?: { limit?: number; offset?: number }) =>
+		request<SupplierAccount>(`/api/v1/suppliers/${encodeURIComponent(supplierId)}/account`, {
+			query: { limit: params?.limit, offset: params?.offset }
+		}),
 
 	listSupplierPayments: (supplierId: string, limit?: number) =>
 		request<SupplierPaymentLog[]>(`/api/v1/suppliers/${encodeURIComponent(supplierId)}/payments`, {
@@ -516,7 +523,10 @@ export const api = {
 			}
 		),
 
-	getPayables: () => request<Payables>('/api/v1/accounts/payables'),
+	getPayables: (params?: { limit?: number; offset?: number }) =>
+		request<Payables>('/api/v1/accounts/payables', {
+			query: { limit: params?.limit, offset: params?.offset }
+		}),
 
 	// --- Wallets and payment methods ---
 	//

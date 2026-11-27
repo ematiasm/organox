@@ -1,7 +1,8 @@
 # Read paths: batching and pagination (#109)
 
-Issue #109, delivered as one PR with three work-unit commits: sales reads,
-account statements and receivables/payables, then payments and the ledger logs.
+Issue #109, delivered as one PR with three planned work-unit commits (sales reads,
+account statements and receivables/payables, payments and ledger logs) plus
+follow-up fixes from review.
 
 ## Specs
 
@@ -24,8 +25,8 @@ semantics."
 
 T1 | S1, S2 | inline | U1 (commit eb58eb7): batch `sales::list_completed` with `ANY($1)` and paginate `GET /sales` with a `{items, limit, offset, total}` envelope; update the sales screen.
 T2 | S2 | inline | U2 (commit b66a82e): accept bounded `limit`/`offset` on customer and supplier statements plus receivables/payables, reporting the full count; totals, aging, and the position stay computed over the whole account.
-T3 | S2, S3 | inline | U3: check wallet existence with `SELECT 1` instead of the full ledger read, and accept `offset` on wallet movement and account log endpoints.
-T4 | S2 | inline | Regenerate the OpenAPI spec and TS types, update the docs tables, and run the full local checks.
+T3 | S2, S3 | inline | U3 (commit 09e3732): check wallet existence with `SELECT 1` instead of the full ledger read, and accept `offset` on wallet movement and account log endpoints.
+T4 | S2 | inline | Follow-up commits `01aed7e` (OpenAPI `parameter_in = Query` + contract test), `794dbfd` (log offset clamp and terminal-page tests), and PR #136 review fixes (bounded fallback, read snapshot on receivables, service-layer clamping, unconstrained portfolio sum casts, frontend/OpenAPI polish).
 
 ## Log
 
@@ -54,3 +55,10 @@ L6. The supplier half of U2 mirrors the customer half function for function:
 `list_entries_in` + `count_entries_in`, `payables_page` + the past-the-end
 re-read, and the same two query structs in the handlers. A later change to one
 side has to change the other.
+
+L7. Decision (human, superseding L3): statements and portfolio reports are
+bounded by default — `limit` defaults to 50 (clamped 1..=200) on receivables
+and payables, and 100 (clamped 1..=500) on customer and supplier statements.
+The `/receivables` and `/payables` screens paginate with `?page=`, and both
+account panels paginate their ledgers starting on the latest page so recent
+activity is always shown first.

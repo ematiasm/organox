@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id,\n               supplier_id,\n               kind AS \"kind: SupplierAccountEntryKind\",\n               amount,\n               purchase_id,\n               purchase_return_id,\n               wallet_movement_id,\n               note,\n               created_by,\n               created_at,\n               (SUM(amount) OVER (\n                   ORDER BY created_at ASC, id ASC\n                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n               ))::numeric(14, 2) AS \"running_balance!: Decimal\",\n               COUNT(*) OVER () AS \"entries_total!\"\n        FROM supplier_account_entries\n        WHERE supplier_id = $1\n        ORDER BY created_at ASC, id ASC\n        LIMIT $2 OFFSET $3\n        ",
+  "query": "\n        SELECT id,\n               supplier_id,\n               kind AS \"kind: SupplierAccountEntryKind\",\n               amount,\n               purchase_id,\n               purchase_return_id,\n               wallet_movement_id,\n               note,\n               created_by,\n               created_at,\n               (SUM(amount) OVER (\n                   ORDER BY created_at ASC, id ASC\n                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n               ))::numeric AS \"running_balance!: Decimal\",\n               COUNT(*) OVER () AS \"entries_total!\"\n        FROM supplier_account_entries\n        WHERE supplier_id = $1\n        ORDER BY created_at ASC, id ASC\n        LIMIT $2 OFFSET $3\n        ",
   "describe": {
     "columns": [
       {
@@ -163,5 +163,5 @@
       null
     ]
   },
-  "hash": "a8b870220d1da28c9c4dcaa4e1ba4fbffa0ff6fcb83a73cd1ec366d50ed5e0cf"
+  "hash": "584abebf7954cd52fa3907db5adfe4140157937f2c449016cf963adae06c0781"
 }

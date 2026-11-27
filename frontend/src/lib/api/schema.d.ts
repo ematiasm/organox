@@ -13,11 +13,12 @@ export interface paths {
         };
         /**
          * Accounts payable report across every supplier with an open position.
-         * @description Lists every supplier whose `balance != 0` or `unapplied_credit != 0`,
-         *     ordered by highest balance first, with open-purchase aging buckets computed
-         *     from each purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`).
-         *     Omitting `limit` returns the whole report; `limit`/`offset` window `items`
-         *     while totals, aging, and `items_total` always describe the whole report.
+         * @description Lists suppliers whose `balance != 0` or `unapplied_credit != 0`, ordered by
+         *     highest balance first, with open-purchase aging buckets computed from each
+         *     purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
+         *     bounded with `limit` (default 50, clamped to 1..=200) and `offset`
+         *     (default 0), while totals, aging, and `items_total` always describe the
+         *     whole report.
          */
         get: operations["list_payables_doc"];
         put?: never;
@@ -36,10 +37,13 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Accounts receivable report across every customer with an open position.
-         * @description Lists every customer whose `balance != 0` or `unapplied_credit != 0`,
-         *     ordered by highest balance first, with open-sale aging buckets computed
-         *     from each sale's completion date (`0-30`, `31-60`, `61-90`, `90+`).
+         * Accounts receivable report across customers with an open position.
+         * @description Lists customers whose `balance != 0` or `unapplied_credit != 0`, ordered by
+         *     highest balance first, with open-sale aging buckets computed from each
+         *     sale's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
+         *     bounded with `limit` (default 50, clamped to 1..=200) and `offset`
+         *     (default 0), while totals, aging, and `items_total` always describe the
+         *     whole report.
          */
         get: operations["list_receivables_doc"];
         put?: never;
@@ -187,9 +191,9 @@ export interface paths {
          * Customer account statement.
          * @description Returns ledger entries oldest first with their running balance, the
          *     customer's current balance and unapplied credit (`U`), and every sale that
-         *     still owes money — all read from one consistent snapshot. Omitting `limit`
-         *     returns the whole ledger; `limit`/`offset` return a bounded window and
-         *     `entries_total` always reports the whole ledger.
+         *     still owes money — all read from one consistent snapshot. Entries are
+         *     bounded with `limit` (default 100, clamped to 1..=500) and `offset`
+         *     (default 0), while `entries_total` always reports the whole ledger.
          */
         get: operations["get_account_statement_doc"];
         put?: never;
@@ -846,8 +850,8 @@ export interface paths {
          * @description Returns ledger entries oldest first with their running balance, the
          *     supplier's current balance and unapplied credit, and every completed
          *     purchase with an open payable — all read from one consistent snapshot.
-         *     Omitting `limit` returns the whole ledger; `limit`/`offset` return a bounded
-         *     window and `entries_total` always reports the whole ledger.
+         *     Entries are bounded with `limit` (default 100, clamped to 1..=500) and
+         *     `offset` (default 0), while `entries_total` always reports the whole ledger.
          */
         get: operations["get_account_statement_doc"];
         put?: never;
@@ -1432,8 +1436,8 @@ export interface components {
             /** Format: uuid */
             customer_id: string;
             /**
-             * @description Ledger entries oldest first, each carrying the running balance after it.
-             *     Paginated only when `limit` is asked for; `entries_total` is the whole
+             * @description Ledger entries oldest first, each carrying the running balance after it
+             *     (default 100 per page, clamped to 1..=500). `entries_total` is the whole
              *     ledger either way.
              */
             entries: components["schemas"]["AccountStatementEntryResponse"][];
@@ -2202,8 +2206,8 @@ export interface components {
              */
             balance: string;
             /**
-             * @description Ledger entries oldest first, each carrying the running balance after it.
-             *     Paginated only when `limit` is asked for; `entries_total` is the whole
+             * @description Ledger entries oldest first, each carrying the running balance after it
+             *     (default 100 per page, clamped to 1..=500). `entries_total` is the whole
              *     ledger either way.
              */
             entries: components["schemas"]["SupplierAccountStatementEntryResponse"][];
@@ -2582,7 +2586,7 @@ export interface operations {
     list_payables_doc: {
         parameters: {
             query?: {
-                /** @description Maximum number of suppliers to return (default: all of them). */
+                /** @description Maximum number of suppliers to return (default 50, clamped to 1..=200). */
                 limit?: number;
                 /** @description Suppliers to skip from the first (default 0). */
                 offset?: number;
@@ -2616,7 +2620,7 @@ export interface operations {
     list_receivables_doc: {
         parameters: {
             query?: {
-                /** @description Maximum number of customers to return (default: all of them). */
+                /** @description Maximum number of customers to return (default 50, clamped to 1..=200). */
                 limit?: number;
                 /** @description Customers to skip from the first (default 0). */
                 offset?: number;
@@ -2981,7 +2985,7 @@ export interface operations {
     get_account_statement_doc: {
         parameters: {
             query?: {
-                /** @description Maximum number of entries to return (default: all of them). */
+                /** @description Maximum number of entries to return (default 100, clamped to 1..=500). */
                 limit?: number;
                 /** @description Entries to skip from the oldest (default 0). */
                 offset?: number;
@@ -4423,7 +4427,9 @@ export interface operations {
     list_sales_doc: {
         parameters: {
             query?: {
+                /** @description Maximum number of sales to return (default 50, clamped to 1..=200). */
                 limit?: number;
+                /** @description Sales to skip from the newest (default 0). */
                 offset?: number;
             };
             header?: never;
@@ -5170,7 +5176,7 @@ export interface operations {
     get_account_statement_doc: {
         parameters: {
             query?: {
-                /** @description Maximum number of entries to return (default: all of them). */
+                /** @description Maximum number of entries to return (default 100, clamped to 1..=500). */
                 limit?: number;
                 /** @description Entries to skip from the oldest (default 0). */
                 offset?: number;

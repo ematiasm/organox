@@ -330,14 +330,14 @@ pub async fn list_completed(
         .map_err(map_repo_error)?;
 
     // A page past the end returns no rows, so `COUNT(*) OVER ()` has nothing
-    // to report and the repository sends `-1`; count separately rather than
-    // answering `total = 0` for an account that has sales.
-    let total = if total < 0 {
+    // to report and the repository sends `-1`. Only re-count when `offset > 0`:
+    // an empty first page already proves there are zero completed sales.
+    let total = if total < 0 && offset > 0 {
         repository::count_completed(pool)
             .await
             .map_err(map_repo_error)?
     } else {
-        total
+        total.max(0)
     };
 
     Ok((sales, total))

@@ -423,9 +423,11 @@ async fn begin_read_snapshot(
 pub async fn account_statement(
     pool: &PgPool,
     supplier_id: Uuid,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<SupplierAccountStatement, SupplierAccountError> {
+    let limit = limit.clamp(1, 500);
+    let offset = offset.max(0);
     let mut tx = begin_read_snapshot(pool).await?;
 
     if !repository::supplier_exists_in(&mut tx, supplier_id).await? {
@@ -435,12 +437,12 @@ pub async fn account_statement(
     let position = repository::account_position_in(&mut tx, supplier_id).await?;
     let (rows, entries_total) =
         repository::list_entries_in(&mut tx, supplier_id, limit, offset).await?;
-    // A window past the end carries no count; the ledger still has entries, so
-    // count them instead of answering zero.
-    let entries_total = if entries_total < 0 {
+    // A window past the end carries no count; only re-count when offset > 0,
+    // since an empty first page already proves the ledger has zero entries.
+    let entries_total = if entries_total < 0 && offset > 0 {
         repository::count_entries_in(&mut tx, supplier_id).await?
     } else {
-        entries_total
+        entries_total.max(0)
     };
     let outstanding_purchases =
         repository::outstanding_by_purchase_in(&mut tx, supplier_id).await?;
@@ -509,10 +511,10 @@ pub async fn list_adjustments(
 /// summed across all listed suppliers in one consistent read-only snapshot.
 pub async fn payables(
     pool: &PgPool,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<PayablesSummary, SupplierAccountError> {
-    let limit = limit.map(|limit| limit.clamp(1, 200));
+    let limit = limit.clamp(1, 200);
     let offset = offset.max(0);
 
     let mut tx = begin_read_snapshot(pool).await?;

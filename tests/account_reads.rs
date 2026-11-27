@@ -517,6 +517,93 @@ async fn account_statement_windows_entries_and_keeps_the_running_balance(pool: P
     assert_eq!(beyond["balance"], "60.00");
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn account_statement_service_clamps_limit_and_offset(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool.clone());
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+    let customer_id = create_customer(&app, &cookie, "Clamp Co", None, None).await;
+
+    // Empty account at offset 0 returns 0 entries without failing.
+    let empty = organox::customer_accounts::service::account_statement(&pool, customer_id, 10, 0)
+        .await
+        .expect("empty statement");
+    assert!(empty.entries.is_empty());
+    assert_eq!(empty.entries_total, 0);
+
+    for (amount, note) in [("10.00", "one"), ("20.00", "two"), ("30.00", "three")] {
+        let (status, body) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/customers/{customer_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": "in", "amount": amount, "note": note })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "adjustment: {body}");
+    }
+
+    // Service must clamp limit to 1..=500 and negative offset to 0 even when
+    // called directly without going through the HTTP handler.
+    let clamped = organox::customer_accounts::service::account_statement(&pool, customer_id, 0, -5)
+        .await
+        .expect("service clamps limit and negative offset");
+    assert_eq!(clamped.entries.len(), 1);
+    assert_eq!(clamped.entries_total, 3);
+    assert_eq!(clamped.entries[0].running_balance, dec!(10.00));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn account_statement_defaults_to_100_entries_per_page(pool: PgPool) {
+    let (owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool.clone());
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+    let customer_id = create_customer(&app, &cookie, "High Volume Co", None, None).await;
+
+    for i in 0..101 {
+        sqlx::query(
+            "INSERT INTO customer_account_entries (id, customer_id, kind, amount, note, created_by) \
+             VALUES ($1, $2, 'adjustment_in', 1.00, $3, $4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(customer_id)
+        .bind(format!("entry-{i}"))
+        .bind(owner_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    // Omitting limit returns the default 100 entries, never an unbounded ledger.
+    let (status, page1) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/account"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "default page: {page1}");
+    let entries1 = page1["entries"].as_array().unwrap();
+    assert_eq!(entries1.len(), 100);
+    assert_eq!(page1["entries_total"], 101);
+    assert_eq!(entries1[99]["running_balance"], "100.00");
+
+    let (status, page2) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/account?offset=100"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second page: {page2}");
+    let entries2 = page2["entries"].as_array().unwrap();
+    assert_eq!(entries2.len(), 1);
+    assert_eq!(page2["entries_total"], 101);
+    assert_eq!(entries2[0]["running_balance"], "101.00");
+}
+
 // =========================================================================
 // 2. GET /customers/{id}/receipts & GET /customers/{id}/adjustments
 // =========================================================================
@@ -1036,6 +1123,125 @@ async fn receivables_windows_items_and_keeps_the_portfolio_totals(pool: PgPool) 
     assert_eq!(beyond["items"].as_array().unwrap().len(), 0);
     assert_eq!(beyond["items_total"], 2);
     assert_eq!(beyond["total_balance"], full["total_balance"]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn receivables_handles_empty_window_and_portfolio_totals_above_single_column_cap(
+    pool: PgPool,
+) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool);
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    // Empty report with a window at offset 0 returns zeroes cleanly.
+    let (status, empty) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/receivables?limit=10",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "empty report: {empty}");
+    assert_eq!(empty["items"].as_array().unwrap().len(), 0);
+    assert_eq!(empty["items_total"], 0);
+    assert_eq!(empty["total_balance"], "0.00");
+
+    // Two customers each within numeric(14, 2) whose combined portfolio balance
+    // exceeds numeric(14, 2) (1.2e12 > 9.99e11) must not overflow SQL casts.
+    for name in ["Whale One", "Whale Two"] {
+        let customer_id = create_customer(&app, &cookie, name, None, None).await;
+        let (status, body) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/customers/{customer_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": "in", "amount": "600000000000.00", "note": "opening" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "adjustment: {body}");
+    }
+
+    let (status, page) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/receivables?limit=1",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "large portfolio page: {page}");
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["items_total"], 2);
+    assert_eq!(page["total_balance"], "1200000000000.00");
+    assert_eq!(page["total_adjustments"], "1200000000000.00");
+
+    let (status, beyond) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/receivables?limit=1&offset=5",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "large portfolio past end: {beyond}");
+    assert_eq!(beyond["items"].as_array().unwrap().len(), 0);
+    assert_eq!(beyond["items_total"], 2);
+    assert_eq!(beyond["total_balance"], "1200000000000.00");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn receivables_defaults_to_50_items_per_page(pool: PgPool) {
+    let (owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool.clone());
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    for i in 0..51 {
+        let customer_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO customers (id, name) VALUES ($1, $2)")
+            .bind(customer_id)
+            .bind(format!("Debtor {i:02}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO customer_account_entries (id, customer_id, kind, amount, note, created_by) \
+             VALUES ($1, $2, 'adjustment_in', 10.00, 'opening', $3)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(customer_id)
+        .bind(owner_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    // Omitting limit returns the default 50 items while totals span all 51.
+    let (status, page1) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/receivables",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "default receivables: {page1}");
+    assert_eq!(page1["items"].as_array().unwrap().len(), 50);
+    assert_eq!(page1["items_total"], 51);
+    assert_eq!(page1["total_balance"], "510.00");
+
+    let (status, page2) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/receivables?offset=50",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second receivables page: {page2}");
+    assert_eq!(page2["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page2["items_total"], 51);
+    assert_eq!(page2["total_balance"], "510.00");
 }
 
 // =========================================================================

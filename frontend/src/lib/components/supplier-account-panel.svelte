@@ -71,11 +71,14 @@
 		purchaseReturns: SupplierAccountStatementEntry[];
 	};
 
+	const STATEMENT_PAGE_SIZE = 100;
+
 	let activeForm = $state<ActiveForm>(null);
 	let selectedDoc = $state<AccountDocumentTarget | null>(null);
 	let loading = $state(false);
 	let loadError = $state<string | null>(null);
 	let account = $state<SupplierAccount | null>(null);
+	let statementPage = $state(1);
 	let methods = $state<PaymentMethod[]>([]);
 	let submitting = $state(false);
 	let lastOutcome = $state<ActionOutcome | null>(null);
@@ -257,17 +260,54 @@
 		activeForm = activeForm === next ? null : next;
 	}
 
-	async function loadAccount(id: string) {
+	const statementLastPage = $derived(
+		account ? Math.max(1, Math.ceil(account.entries_total / STATEMENT_PAGE_SIZE)) : 1
+	);
+	const statementRange = $derived.by(() => {
+		if (!account || account.entries_total === 0) return '';
+		const from = (statementPage - 1) * STATEMENT_PAGE_SIZE + 1;
+		const to = (statementPage - 1) * STATEMENT_PAGE_SIZE + account.entries.length;
+		return `${from}–${to} of ${account.entries_total}`;
+	});
+
+	async function loadAccount(id: string, requestedPage?: number) {
 		const seq = ++loadSeq;
 		loading = true;
 		loadError = null;
 		try {
-			const [nextAccount, nextMethods] = await Promise.all([
-				api.getSupplierAccount(id),
+			if (requestedPage !== undefined) {
+				const targetPage = Math.max(1, requestedPage);
+				const nextAccount = await api.getSupplierAccount(id, {
+					limit: STATEMENT_PAGE_SIZE,
+					offset: (targetPage - 1) * STATEMENT_PAGE_SIZE
+				});
+				if (seq !== loadSeq) return;
+				account = nextAccount;
+				statementPage = targetPage;
+				return;
+			}
+
+			// Default to the latest page of the oldest-first ledger so the operator
+			// always sees recent activity first. Accounts with <= 100 entries finish
+			// in one request.
+			const [firstPage, nextMethods] = await Promise.all([
+				api.getSupplierAccount(id, { limit: STATEMENT_PAGE_SIZE, offset: 0 }),
 				api.listPaymentMethods()
 			]);
 			if (seq !== loadSeq) return;
-			account = nextAccount;
+
+			const lastPage = Math.max(1, Math.ceil(firstPage.entries_total / STATEMENT_PAGE_SIZE));
+			let resolvedAccount = firstPage;
+			if (lastPage > 1) {
+				resolvedAccount = await api.getSupplierAccount(id, {
+					limit: STATEMENT_PAGE_SIZE,
+					offset: (lastPage - 1) * STATEMENT_PAGE_SIZE
+				});
+				if (seq !== loadSeq) return;
+			}
+
+			account = resolvedAccount;
+			statementPage = lastPage;
 			methods = nextMethods.filter((m) => m.is_active);
 		} catch (error) {
 			if (seq !== loadSeq) return;
@@ -287,6 +327,7 @@
 		activeForm = null;
 		selectedDoc = null;
 		account = null;
+		statementPage = 1;
 		lastOutcome = null;
 		paymentMethodId = '';
 		refundPaymentMethodId = '';
@@ -877,7 +918,7 @@
 		<h3 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
 			Balance ledger
 			{#if account}
-				({account.entries.length})
+				({account.entries_total})
 			{/if}
 		</h3>
 		{#if account && account.outstanding_purchases.length > 0}
@@ -1027,6 +1068,27 @@
 				</div>
 			{/each}
 		</div>
+
+		{#if statementLastPage > 1}
+			<div class="flex items-center justify-between gap-2 pt-1 text-xs text-muted-foreground">
+				<span class="tabular-nums">{statementRange}</span>
+				<div class="flex items-center gap-1.5">
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={loading || statementPage <= 1}
+						onclick={() => loadAccount(supplierId, statementPage - 1)}>Older</Button
+					>
+					<span class="tabular-nums">Page {statementPage} of {statementLastPage}</span>
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={loading || statementPage >= statementLastPage}
+						onclick={() => loadAccount(supplierId, statementPage + 1)}>Newer</Button
+					>
+				</div>
+			</div>
+		{/if}
 	{/if}
 </section>
 

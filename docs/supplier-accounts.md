@@ -205,12 +205,11 @@ prevents a deactivation from racing an on-account purchase.
   `unapplied_credit`, `outstanding_total`), ledger `entries` (oldest first with
   `running_balance`), and `outstanding_purchases` (oldest first with `charged`,
   `allocated`, `outstanding`) all come from one consistent snapshot with zero
-  write locks. Entries are paginated only on request (`?limit=` clamped to
-  `1..=500`, `?offset=`); omitting `limit` returns the whole ledger, which is
-  what the account panel needs to pair each charge with its purchase return.
-  `running_balance` is a window over the whole ledger, so a later page still
-  reports the balance the account really had at that entry, and
-  `entries_total` always counts every entry.
+  write locks. Entries are paginated by default (`?limit=` default 100, clamped
+  to `1..=500`, `?offset=` default 0). `running_balance` is a window over the
+  whole ledger, so a later page still reports the balance the account really
+  had at that entry, and `entries_total` always counts every entry. The account
+  panel opens on the latest page so recent activity is visible immediately.
 - **`GET /api/v1/suppliers/{id}/payments`**: write log of supplier payments,
   newest first (`?limit=`, default 50, clamped to `1..=200`, `?offset=`,
   default 0), joining wallet, payment method, and note from `wallet_movements`
@@ -223,9 +222,9 @@ prevents a deactivation from racing an on-account purchase.
 - **`GET /api/v1/accounts/payables`**: opens a `REPEATABLE READ, READ ONLY`
   transaction and lists every supplier with `balance != 0` or
   `unapplied_credit != 0` (ordered by `balance DESC, lower(name) ASC, id ASC`;
-  `items` windowed on request with `?limit=` clamped to `1..=200` and
-  `?offset=`, while totals, aging and `items_total` always describe the whole
-  report),
+  `items` paginated by default with `?limit=` default 50, clamped to `1..=200`,
+  and `?offset=` default 0, while totals, aging and `items_total` always
+  describe the whole report),
   plus portfolio totals (`total_balance`, `total_unapplied_credit`,
   `total_outstanding`, `total_adjustments`) and 4 aging buckets (`0-30`,
   `31-60`, `61-90`, `90+`) computed from each open purchase's
@@ -244,13 +243,13 @@ payments, and suppliers. Errors use `application/problem+json` (RFC 7807).
 
 | Method | Route | Result |
 |---|---|---|
-| GET | `/api/v1/suppliers/{id}/account` | `200` `SupplierAccountResponse` (position, oldest-first entries with running balance and `entries_total`, open purchases; `?limit=`/`?offset=` window the entries); `404` unknown supplier |
+| GET | `/api/v1/suppliers/{id}/account` | `200` `SupplierAccountResponse` (position, oldest-first entries with running balance and `entries_total`, open purchases; `?limit=` default 100, 1..=500, `?offset=` default 0); `404` unknown supplier |
 | GET | `/api/v1/suppliers/{id}/payments?limit=&offset=` | `200` `SupplierPaymentLogResponse[]` (newest first, `limit` 1..=200, `offset` default 0); `404` unknown supplier |
 | POST | `/api/v1/suppliers/{id}/payments` | `201` fresh / `200` replay `SupplierPaymentResponse`; `404` unknown supplier or purchase; `409` busy account or cross-kind key collision; `422` invalid method, amount, key or allocation |
 | POST | `/api/v1/suppliers/{id}/credit-refunds` | `201` fresh / `200` replay `SupplierCreditRefundResponse`; `404` unknown supplier; `409` busy account or cross-kind key collision; `422` invalid method, blank note, bad amount or insufficient credit |
 | GET | `/api/v1/suppliers/{id}/adjustments?limit=&offset=` | `200` `SupplierAdjustmentLogResponse[]` (newest first, `limit` 1..=200, `offset` default 0); `404` unknown supplier |
 | POST | `/api/v1/suppliers/{id}/adjustments` | `201` `SupplierAdjustmentResponse`; `404` unknown supplier; `409` busy account; `422` blank note, bad amount or balance crossing below zero |
-| GET | `/api/v1/accounts/payables` | `200` `PayablesResponse` (portfolio totals, aging buckets, open-position suppliers, `items_total`; `?limit=`/`?offset=` window `items`) |
+| GET | `/api/v1/accounts/payables` | `200` `PayablesResponse` (portfolio totals, aging buckets, open-position suppliers, `items_total`; `?limit=` default 50, 1..=200, `?offset=` default 0) |
 
 Purchase completion (`POST /api/v1/purchases/{id}/complete`) and supplier
 management (`GET/POST/PATCH /api/v1/suppliers`,

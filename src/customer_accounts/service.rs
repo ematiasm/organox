@@ -473,9 +473,11 @@ async fn begin_read_snapshot(
 pub async fn account_statement(
     pool: &PgPool,
     customer_id: Uuid,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<AccountStatement, ReceiptsError> {
+    let limit = limit.clamp(1, 500);
+    let offset = offset.max(0);
     let mut tx = begin_read_snapshot(pool).await?;
 
     if !repository::customer_exists_in(&mut tx, customer_id).await? {
@@ -485,12 +487,12 @@ pub async fn account_statement(
     let position = repository::account_position_in(&mut tx, customer_id).await?;
     let (rows, entries_total) =
         repository::list_entries_in(&mut tx, customer_id, limit, offset).await?;
-    // A window past the end carries no count; the ledger still has entries, so
-    // count them instead of answering zero.
-    let entries_total = if entries_total < 0 {
+    // A window past the end carries no count; only re-count when offset > 0,
+    // since an empty first page already proves the ledger has zero entries.
+    let entries_total = if entries_total < 0 && offset > 0 {
         repository::count_entries_in(&mut tx, customer_id).await?
     } else {
-        entries_total
+        entries_total.max(0)
     };
     let outstanding_sales = repository::outstanding_by_sale_in(&mut tx, customer_id).await?;
     tx.commit().await?;
@@ -558,15 +560,17 @@ pub async fn list_adjustments(
 /// across all listed customers.
 pub async fn receivables(
     pool: &PgPool,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<ReceivablesSummary, ReceiptsError> {
-    let limit = limit.map(|limit| limit.clamp(1, 200));
+    let limit = limit.clamp(1, 200);
     let offset = offset.max(0);
 
+    let mut tx = begin_read_snapshot(pool).await?;
     // The repository already reports totals over the whole report, so paging
     // never changes what the portfolio owes — only which customers come back.
-    let (items, totals) = repository::list_receivables(pool, limit, offset).await?;
+    let (items, totals) = repository::list_receivables_in(&mut tx, limit, offset).await?;
+    tx.commit().await?;
 
     Ok(ReceivablesSummary {
         total_balance: totals.total_balance,

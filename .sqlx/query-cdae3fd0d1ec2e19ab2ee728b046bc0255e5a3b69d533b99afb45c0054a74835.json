@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id,\n               customer_id,\n               kind AS \"kind: CustomerAccountEntryKind\",\n               amount,\n               sale_id,\n               credit_note_id,\n               wallet_movement_id,\n               note,\n               created_by,\n               created_at,\n               (SUM(amount) OVER (\n                   ORDER BY created_at ASC, id ASC\n                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n               ))::numeric(14, 2) AS \"running_balance!: Decimal\",\n               COUNT(*) OVER () AS \"entries_total!\"\n        FROM customer_account_entries\n        WHERE customer_id = $1\n        ORDER BY created_at ASC, id ASC\n        LIMIT $2 OFFSET $3\n        ",
+  "query": "\n        SELECT id,\n               customer_id,\n               kind AS \"kind: CustomerAccountEntryKind\",\n               amount,\n               sale_id,\n               credit_note_id,\n               wallet_movement_id,\n               note,\n               created_by,\n               created_at,\n               (SUM(amount) OVER (\n                   ORDER BY created_at ASC, id ASC\n                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n               ))::numeric AS \"running_balance!: Decimal\",\n               COUNT(*) OVER () AS \"entries_total!\"\n        FROM customer_account_entries\n        WHERE customer_id = $1\n        ORDER BY created_at ASC, id ASC\n        LIMIT $2 OFFSET $3\n        ",
   "describe": {
     "columns": [
       {
@@ -162,5 +162,5 @@
       null
     ]
   },
-  "hash": "bcaf17d0fde83979f835475294fa2cebf77c843eb0357ad2aa3fbaa1c75cccc7"
+  "hash": "cdae3fd0d1ec2e19ab2ee728b046bc0255e5a3b69d533b99afb45c0054a74835"
 }

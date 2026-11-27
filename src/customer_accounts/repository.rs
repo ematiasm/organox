@@ -324,21 +324,20 @@ pub async fn customer_exists_in(
     Ok(found.is_some())
 }
 
-/// Every ledger entry for a customer, oldest first (`created_at ASC, id ASC`),
-/// each carrying the running balance after it.
+/// A bounded window of ledger entries for a customer, oldest first
+/// (`created_at ASC, id ASC`), each carrying the running balance after it.
 ///
 /// The running balance is a window over the whole ledger, not over the page:
 /// `limit`/`offset` only choose which entries come back, so a later page still
 /// reports the balance the account really had at that entry instead of
-/// restarting from zero. `limit = None` returns every entry, which is what the
-/// account panel needs to pair each charge with its credit note.
+/// restarting from zero.
 ///
 /// The `id` tie-breaker (UUIDv7) keeps the order deterministic when two entries
 /// share the same database timestamp.
 pub async fn list_entries_in(
     conn: &mut PgConnection,
     customer_id: Uuid,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<(Vec<(CustomerAccountEntry, Decimal)>, i64), RepoError> {
     let rows = sqlx::query!(
@@ -356,7 +355,7 @@ pub async fn list_entries_in(
                (SUM(amount) OVER (
                    ORDER BY created_at ASC, id ASC
                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-               ))::numeric(14, 2) AS "running_balance!: Decimal",
+               ))::numeric AS "running_balance!: Decimal",
                COUNT(*) OVER () AS "entries_total!"
         FROM customer_account_entries
         WHERE customer_id = $1
@@ -540,36 +539,41 @@ pub async fn list_adjustments_in(
         .collect())
 }
 
-/// Every customer with an open account position (`balance != 0` or
-/// `unapplied_credit != 0`), with open-sale aging buckets computed from each
-/// sale's `completed_at` timestamp in one consistent snapshot.
-///
-/// Elapsed whole days `floor((now - completed_at) / 86400)` partition every
-/// open sale into exactly one bucket (`<= 30`, `31..=60`, `61..=90`, `> 90`),
 /// Portfolio-wide receivables report: one row per customer with an open
-/// position, plus totals over the whole report.
+/// position (`balance != 0` or `unapplied_credit != 0`), plus totals over the
+/// whole report.
 ///
 /// `limit`/`offset` choose which customers come back; the totals are window
 /// aggregates over the filtered set, so they describe every customer with a
-/// balance no matter which page the caller asked for. `limit = None` returns
-/// the whole report, which is what the report screen loads.
+/// balance no matter which page the caller asked for.
 ///
 /// Elapsed whole days `floor((now - completed_at) / 86400)` partition every
 /// open sale into exactly one bucket (`<= 30`, `31..=60`, `61..=90`, `> 90`),
 /// so the four buckets always sum to `outstanding_total`.
 pub async fn list_receivables(
     pool: &PgPool,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<(Vec<ReceivableCustomer>, ReceivablesTotals), RepoError> {
-    let (items, totals) = receivables_page(pool, limit, offset).await?;
+    let mut conn = pool.acquire().await?;
+    list_receivables_in(&mut conn, limit, offset).await
+}
+
+/// [`list_receivables`] inside an open transaction (such as a `REPEATABLE READ,
+/// READ ONLY` snapshot).
+pub async fn list_receivables_in(
+    conn: &mut PgConnection,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<ReceivableCustomer>, ReceivablesTotals), RepoError> {
+    let (items, totals) = receivables_page(conn, limit, offset).await?;
 
     // A window past the end has no rows to carry the aggregates, and answering
-    // zeroed totals for a report that has customers would be a lie. Re-read the
-    // unwindowed report only in that case; it is the same query with other
-    // binds, never a duplicated one.
-    if items.is_empty() && (limit.is_some() || offset > 0) {
-        let (_, totals) = receivables_page(pool, None, 0).await?;
+    // zeroed totals for a report that has customers would be a lie. Only
+    // re-read when `offset > 0` (an empty first page proves the report is empty)
+    // and bound the fallback to `LIMIT 1` so window totals come back in one row.
+    if items.is_empty() && offset > 0 {
+        let (_, totals) = receivables_page(conn, 1, 0).await?;
         return Ok((Vec::new(), totals));
     }
 
@@ -577,8 +581,8 @@ pub async fn list_receivables(
 }
 
 async fn receivables_page(
-    pool: &PgPool,
-    limit: Option<i64>,
+    conn: &mut PgConnection,
+    limit: i64,
     offset: i64,
 ) -> Result<(Vec<ReceivableCustomer>, ReceivablesTotals), RepoError> {
     let rows = sqlx::query!(
@@ -663,19 +667,19 @@ async fn receivables_page(
             COALESCE(ag.days_61_90, 0)::numeric(14, 2) AS "days_61_90!: Decimal",
             COALESCE(ag.days_90_plus, 0)::numeric(14, 2) AS "days_90_plus!: Decimal",
             COUNT(*) OVER () AS "items_total!",
-            (SUM(et.balance) OVER ())::numeric(14, 2) AS "total_balance!: Decimal",
+            (SUM(et.balance) OVER ())::numeric AS "total_balance!: Decimal",
             (SUM(et.received - et.refunded - COALESCE(ca.total, 0)) OVER ())
-                ::numeric(14, 2) AS "total_unapplied_credit!: Decimal",
-            (SUM(COALESCE(ag.outstanding_total, 0)) OVER ())::numeric(14, 2)
+                ::numeric AS "total_unapplied_credit!: Decimal",
+            (SUM(COALESCE(ag.outstanding_total, 0)) OVER ())::numeric
                 AS "total_outstanding!: Decimal",
-            (SUM(et.adjustments) OVER ())::numeric(14, 2) AS "total_adjustments!: Decimal",
-            (SUM(COALESCE(ag.days_0_30, 0)) OVER ())::numeric(14, 2)
+            (SUM(et.adjustments) OVER ())::numeric AS "total_adjustments!: Decimal",
+            (SUM(COALESCE(ag.days_0_30, 0)) OVER ())::numeric
                 AS "aging_days_0_30!: Decimal",
-            (SUM(COALESCE(ag.days_31_60, 0)) OVER ())::numeric(14, 2)
+            (SUM(COALESCE(ag.days_31_60, 0)) OVER ())::numeric
                 AS "aging_days_31_60!: Decimal",
-            (SUM(COALESCE(ag.days_61_90, 0)) OVER ())::numeric(14, 2)
+            (SUM(COALESCE(ag.days_61_90, 0)) OVER ())::numeric
                 AS "aging_days_61_90!: Decimal",
-            (SUM(COALESCE(ag.days_90_plus, 0)) OVER ())::numeric(14, 2)
+            (SUM(COALESCE(ag.days_90_plus, 0)) OVER ())::numeric
                 AS "aging_days_90_plus!: Decimal"
         FROM entry_totals et
         JOIN customers c ON c.id = et.customer_id
@@ -689,7 +693,7 @@ async fn receivables_page(
         limit,
         offset
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let Some(first) = rows.first() else {

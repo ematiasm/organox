@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -18,6 +18,11 @@
 	let search = $state('');
 	let refreshing = $state(false);
 
+	function goTo(page: number) {
+		search = '';
+		goto(page > 1 ? `/receivables?page=${page}` : '/receivables');
+	}
+
 	const filtered = $derived.by(() => {
 		const term = search.trim().toLowerCase();
 		if (!term) return data.report.items;
@@ -26,6 +31,18 @@
 				item.customer_name.toLowerCase().includes(term) ||
 				(item.tax_id ?? '').toLowerCase().includes(term)
 		);
+	});
+
+	const counter = $derived.by(() => {
+		if (data.total === 0) return '0 accounts';
+		if (search.trim()) {
+			const shown = filtered.length;
+			return `${shown} ${shown === 1 ? 'account' : 'accounts'} matching on this page (${data.total} total)`;
+		}
+		const from = data.offset + 1;
+		const to = data.offset + data.report.items.length;
+		const noun = data.total === 1 ? 'account' : 'accounts';
+		return `${from}–${to} of ${data.total} ${noun}`;
 	});
 
 	async function refresh() {
@@ -95,15 +112,28 @@
 	</div>
 </div>
 
-{#if data.report.items.length === 0}
+{#if data.total === 0}
 	<div class="rounded-lg border border-border p-10 text-center text-sm text-muted-foreground">
 		No customers with an open balance or unapplied credit.
+	</div>
+{:else if data.report.items.length === 0}
+	<div class="rounded-lg border border-border p-10 text-center text-sm text-muted-foreground">
+		<p>
+			No customers on page {data.page}. There are {data.total}
+			{data.total === 1 ? 'account' : 'accounts'} across {data.lastPage}
+			{data.lastPage === 1 ? 'page' : 'pages'}.
+		</p>
+		<Button variant="outline" size="sm" class="mt-4" onclick={() => goTo(data.lastPage)}>
+			Go to page {data.lastPage}
+		</Button>
 	</div>
 {:else}
 	<div class="mb-4 max-w-sm">
 		<Input
 			type="search"
-			placeholder="Filter by customer or document…"
+			placeholder={data.lastPage > 1
+				? 'Filter this page by customer or document…'
+				: 'Filter by customer or document…'}
 			bind:value={search}
 		/>
 	</div>
@@ -175,10 +205,26 @@
 			</Table>
 		</div>
 
-		<p class="mt-3 text-sm text-muted-foreground">
-			{filtered.length}
-			{filtered.length === 1 ? 'account' : 'accounts'} shown
-			{#if search.trim()}(of {data.report.items.length} total){/if}
-		</p>
+		<div class="mt-3 flex items-center justify-between gap-4 text-sm text-muted-foreground">
+			<span>{counter}</span>
+
+			{#if data.lastPage > 1}
+				<div class="flex items-center gap-2">
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={data.page <= 1}
+						onclick={() => goTo(data.page - 1)}>Previous</Button
+					>
+					<span class="tabular-nums">Page {data.page} of {data.lastPage}</span>
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={data.page >= data.lastPage}
+						onclick={() => goTo(data.page + 1)}>Next</Button
+					>
+				</div>
+			{/if}
+		</div>
 	{/if}
 {/if}

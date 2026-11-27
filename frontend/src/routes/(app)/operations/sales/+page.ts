@@ -10,8 +10,11 @@ const PAGE_SIZE = 50;
  * the browser; a sale is never charged twice by this list.
  */
 export async function load({ url }: { url: URL }) {
-	// `page` is 1-based in the URL; `offset` is 0-based for SQL.
-	const page = Math.max(1, Number(url.searchParams.get('page') ?? '1') || 1);
+	// `page` is 1-based in the URL; `offset` is 0-based for SQL. Truncate to an
+	// integer so fractional query values like `?page=1.5` never produce skewed
+	// offsets.
+	const rawPage = Number(url.searchParams.get('page') ?? '1');
+	const page = Number.isFinite(rawPage) && rawPage >= 1 ? Math.trunc(rawPage) : 1;
 
 	const list = await api.listSales({
 		limit: PAGE_SIZE,

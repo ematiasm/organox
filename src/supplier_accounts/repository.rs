@@ -297,21 +297,20 @@ pub async fn supplier_exists_in(
     Ok(found.is_some())
 }
 
-/// Every ledger entry for a supplier, oldest first (`created_at ASC, id ASC`),
-/// each carrying the running balance after it.
+/// A bounded window of ledger entries for a supplier, oldest first
+/// (`created_at ASC, id ASC`), each carrying the running balance after it.
 ///
 /// The running balance is a window over the whole ledger, not over the page:
 /// `limit`/`offset` only choose which entries come back, so a later page still
 /// reports the balance the account really had at that entry instead of
-/// restarting from zero. `limit = None` returns every entry, which is what the
-/// account panel needs to pair each charge with its purchase return.
+/// restarting from zero.
 ///
 /// The `id` tie-breaker (UUIDv7) keeps the order deterministic when two entries
 /// share the same database timestamp.
 pub async fn list_entries_in(
     conn: &mut PgConnection,
     supplier_id: Uuid,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<(Vec<(SupplierAccountEntry, Decimal)>, i64), RepoError> {
     let rows = sqlx::query!(
@@ -329,7 +328,7 @@ pub async fn list_entries_in(
                (SUM(amount) OVER (
                    ORDER BY created_at ASC, id ASC
                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-               ))::numeric(14, 2) AS "running_balance!: Decimal",
+               ))::numeric AS "running_balance!: Decimal",
                COUNT(*) OVER () AS "entries_total!"
         FROM supplier_account_entries
         WHERE supplier_id = $1
@@ -519,15 +518,14 @@ pub async fn list_adjustments_in(
 ///
 /// `limit`/`offset` choose which suppliers come back; the totals are window
 /// aggregates over the filtered set, so they describe every supplier with a
-/// balance no matter which page the caller asked for. `limit = None` returns
-/// the whole report, which is what the report screen loads.
+/// balance no matter which page the caller asked for.
 ///
 /// Elapsed whole days `floor((now - completed_at) / 86400)` partition every
 /// open purchase into exactly one bucket (`<= 30`, `31..=60`, `61..=90`,
 /// `> 90`), so the four buckets always sum to `outstanding_total`.
 pub async fn list_payables(
     pool: &PgPool,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<(Vec<PayableSupplier>, PayablesTotals), RepoError> {
     let mut conn = pool.acquire().await?;
@@ -538,17 +536,17 @@ pub async fn list_payables(
 /// READ ONLY` snapshot).
 pub async fn list_payables_in(
     conn: &mut PgConnection,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<(Vec<PayableSupplier>, PayablesTotals), RepoError> {
     let (items, totals) = payables_page(conn, limit, offset).await?;
 
     // A window past the end has no rows to carry the aggregates, and answering
-    // zeroed totals for a report that has suppliers would be a lie. Re-read the
-    // unwindowed report only in that case; it is the same query with other
-    // binds, never a duplicated one.
-    if items.is_empty() && (limit.is_some() || offset > 0) {
-        let (_, totals) = payables_page(conn, None, 0).await?;
+    // zeroed totals for a report that has suppliers would be a lie. Only
+    // re-read when `offset > 0` (an empty first page proves the report is empty)
+    // and bound the fallback to `LIMIT 1` so window totals come back in one row.
+    if items.is_empty() && offset > 0 {
+        let (_, totals) = payables_page(conn, 1, 0).await?;
         return Ok((Vec::new(), totals));
     }
 
@@ -557,7 +555,7 @@ pub async fn list_payables_in(
 
 async fn payables_page(
     conn: &mut PgConnection,
-    limit: Option<i64>,
+    limit: i64,
     offset: i64,
 ) -> Result<(Vec<PayableSupplier>, PayablesTotals), RepoError> {
     let rows = sqlx::query!(
@@ -642,19 +640,19 @@ async fn payables_page(
             COALESCE(ag.days_61_90, 0)::numeric(14, 2) AS "days_61_90!: Decimal",
             COALESCE(ag.days_90_plus, 0)::numeric(14, 2) AS "days_90_plus!: Decimal",
             COUNT(*) OVER () AS "items_total!",
-            (SUM(et.balance) OVER ())::numeric(14, 2) AS "total_balance!: Decimal",
+            (SUM(et.balance) OVER ())::numeric AS "total_balance!: Decimal",
             (SUM(et.paid - et.refunded - COALESCE(sa.total, 0)) OVER ())
-                ::numeric(14, 2) AS "total_unapplied_credit!: Decimal",
-            (SUM(COALESCE(ag.outstanding_total, 0)) OVER ())::numeric(14, 2)
+                ::numeric AS "total_unapplied_credit!: Decimal",
+            (SUM(COALESCE(ag.outstanding_total, 0)) OVER ())::numeric
                 AS "total_outstanding!: Decimal",
-            (SUM(et.adjustments) OVER ())::numeric(14, 2) AS "total_adjustments!: Decimal",
-            (SUM(COALESCE(ag.days_0_30, 0)) OVER ())::numeric(14, 2)
+            (SUM(et.adjustments) OVER ())::numeric AS "total_adjustments!: Decimal",
+            (SUM(COALESCE(ag.days_0_30, 0)) OVER ())::numeric
                 AS "aging_days_0_30!: Decimal",
-            (SUM(COALESCE(ag.days_31_60, 0)) OVER ())::numeric(14, 2)
+            (SUM(COALESCE(ag.days_31_60, 0)) OVER ())::numeric
                 AS "aging_days_31_60!: Decimal",
-            (SUM(COALESCE(ag.days_61_90, 0)) OVER ())::numeric(14, 2)
+            (SUM(COALESCE(ag.days_61_90, 0)) OVER ())::numeric
                 AS "aging_days_61_90!: Decimal",
-            (SUM(COALESCE(ag.days_90_plus, 0)) OVER ())::numeric(14, 2)
+            (SUM(COALESCE(ag.days_90_plus, 0)) OVER ())::numeric
                 AS "aging_days_90_plus!: Decimal"
         FROM entry_totals et
         JOIN suppliers s ON s.id = et.supplier_id

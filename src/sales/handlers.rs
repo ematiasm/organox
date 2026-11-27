@@ -272,7 +272,9 @@ async fn set_sale_customer(
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListSalesQuery {
+    /// Maximum number of sales to return (default 50, clamped to 1..=200).
     pub limit: Option<i64>,
+    /// Sales to skip from the newest (default 0).
     pub offset: Option<i64>,
 }
 

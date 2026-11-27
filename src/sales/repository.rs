@@ -923,8 +923,9 @@ pub async fn complete(
 /// sales.
 ///
 /// Items are fetched for every sale on the page in one `ANY($1)` query and
-/// re-assembled in memory: a per-row `find_sale` would cost `1 + 2N` queries
-/// and would read each sale outside one another's snapshot.
+/// re-assembled in memory: a per-row `find_sale` would cost `1 + 2N` queries.
+/// Completed sales and their lines are immutable, so the two statements stay
+/// consistent without holding a snapshot transaction.
 pub async fn list_completed(
     pool: &PgPool,
     limit: i64,

@@ -448,6 +448,32 @@ async fn wallet_movements_page_with_offset_and_reject_unknown_wallet(pool: PgPoo
     assert_eq!(s_missing, StatusCode::NOT_FOUND);
 }
 
+#[sqlx::test]
+async fn list_movements_service_clamps_limit_and_offset(pool: PgPool) {
+    let cookie = login(&pool).await;
+    let wallet = create_wallet(&pool, &cookie, "Clamp Drawer").await;
+
+    assert_eq!(
+        record(&pool, &cookie, wallet, "adjustment_in", "10.00").await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        record(&pool, &cookie, wallet, "adjustment_in", "20.00").await,
+        StatusCode::CREATED
+    );
+
+    let zero_limit = organox::payments::service::list_movements(&pool, wallet, 0, -5)
+        .await
+        .expect("service clamps zero limit and negative offset");
+    assert_eq!(zero_limit.len(), 1);
+    assert_eq!(zero_limit[0].amount, dec!(20.00));
+
+    let neg_limit = organox::payments::service::list_movements(&pool, wallet, -10, 0)
+        .await
+        .expect("service clamps negative limit");
+    assert_eq!(neg_limit.len(), 1);
+}
+
 /// Recording what happened is not the same as allowing it: an expense is
 /// accepted even if the wallet does not hold that much, and the negative
 /// balance is the honest answer.

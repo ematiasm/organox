@@ -44,9 +44,16 @@
 	</p>
 </div>
 
-{#if data.items.length === 0}
+{#if data.total === 0}
 	<div class="rounded-lg border border-border p-10 text-center text-sm text-muted-foreground">
 		No charged sales yet. A sale appears here once it is charged at the point of sale.
+	</div>
+{:else if data.items.length === 0}
+	<div class="rounded-lg border border-border p-10 text-center text-sm text-muted-foreground">
+		<p>No sales on page {data.page}. There are {data.total} {data.total === 1 ? 'sale' : 'sales'} across {data.lastPage} {data.lastPage === 1 ? 'page' : 'pages'}.</p>
+		<Button variant="outline" size="sm" class="mt-4" onclick={() => goTo(data.lastPage)}>
+			Go to page {data.lastPage}
+		</Button>
 	</div>
 {:else}
 	<div class="overflow-hidden rounded-lg border border-border">
