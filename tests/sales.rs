@@ -23,7 +23,6 @@ use organox::sales::service::{self as sales, SalesError};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::PgPool;
-use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
 /// A password generated per test run, so no credential is written down.
@@ -32,7 +31,7 @@ fn test_password() -> String {
 }
 
 fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
+    router(AppState::new(pool, false))
 }
 
 /// Creates the cashier and returns both its ID and the generated password, so

@@ -9,9 +9,13 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::map_response;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use tower_cookies::CookieManagerLayer;
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::timeout::TimeoutLayer;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::AppState;
 use crate::db;
@@ -83,6 +87,18 @@ pub fn router_with_limits(state: AppState, limits: HttpLimits) -> Router {
         .layer(map_response(move |response| {
             add_security_headers(response, cookie_secure)
         }))
+        // CookieManagerLayer must wrap the router: the `Cookies` and `AuthUser`
+        // extractors depend on it.
+        .layer(CookieManagerLayer::new())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
+        // Generate the request id BEFORE the trace span so the span sees it,
+        // and propagate it in the response.
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
 }
 
 /// Attach baseline HTTP security headers to every response, including errors

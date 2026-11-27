@@ -18,7 +18,6 @@ use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use std::time::{Duration, Instant};
 use tower::ServiceExt;
-use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
 /// A password generated per test run, so no credential is written down.
@@ -32,7 +31,7 @@ fn short_password() -> String {
 }
 
 fn app(pool: sqlx::PgPool) -> axum::Router {
-    router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
+    router(AppState::new(pool, false))
 }
 
 /// Inserts a user directly into the database, without HTTP. Returns the

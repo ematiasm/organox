@@ -19,7 +19,6 @@ use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
-use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
 fn test_password() -> String {
@@ -27,7 +26,7 @@ fn test_password() -> String {
 }
 
 fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
+    router(AppState::new(pool, false))
 }
 
 async fn seed_user(pool: &PgPool, email: &str, role: Role) -> (Uuid, String) {
