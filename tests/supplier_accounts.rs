@@ -961,6 +961,19 @@ async fn payment_log_returns_newest_first_with_allocations_and_clamps_limit(pool
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(clamped_offset.as_array().unwrap()[0]["payment_id"], ids[2]);
+
+    // Past the end the log ends the way a paging client expects: 200 and an
+    // empty array, never an error or the last page again.
+    let (st, _, beyond) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/payments?limit=1&offset=50"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(beyond.as_array().unwrap().is_empty());
 }
 
 // =========================================================================
@@ -1254,6 +1267,34 @@ async fn adjustments_enforce_note_and_non_negative_balance_without_wallet_moveme
     let page1_items = page1.as_array().unwrap();
     assert_eq!(page1_items.len(), 1);
     assert_eq!(page1_items[0]["adjustment_id"], adj1["adjustment_id"]);
+
+    // A negative offset is the first page, not a database error.
+    let (st, _, clamped_offset) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/adjustments?limit=1&offset=-5"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        clamped_offset.as_array().unwrap()[0]["adjustment_id"],
+        adj2["adjustment_id"]
+    );
+
+    // Past the end the log ends the way a paging client expects: 200 and an
+    // empty array, never an error or the last page again.
+    let (st, _, beyond) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/adjustments?limit=1&offset=50"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(beyond.as_array().unwrap().is_empty());
 
     // Unknown supplier -> 404.
     let (st, _, _) = send(

@@ -653,6 +653,19 @@ async fn receipts_log_returns_newest_first_with_allocations_wallet_and_note(pool
         clamped_offset.as_array().unwrap()[0]["receipt_id"],
         r2["receipt_id"]
     );
+
+    // Past the end: 200 and an empty array, which is what a paging client
+    // loops until.
+    let (status, beyond) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/receipts?limit=1&offset=50"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(beyond.as_array().unwrap().is_empty());
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -746,6 +759,32 @@ async fn adjustments_log_returns_newest_first_with_signed_amount_and_note(pool: 
     let page1_items = page1.as_array().unwrap();
     assert_eq!(page1_items.len(), 1);
     assert_eq!(page1_items[0]["adjustment_id"], a1["adjustment_id"]);
+
+    // A negative offset is the first page, not a database error.
+    let (status, clamped) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/adjustments?limit=1&offset=-5"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(clamped.as_array().unwrap().len(), 1);
+    assert_eq!(clamped[0]["adjustment_id"], a2["adjustment_id"]);
+
+    // Past the end the log ends the way a paging client expects: 200 and an
+    // empty array, never an error or the last page again.
+    let (status, beyond) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/customers/{customer_id}/adjustments?limit=1&offset=50"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(beyond.as_array().unwrap().is_empty());
 }
 
 // =========================================================================

@@ -422,6 +422,19 @@ async fn wallet_movements_page_with_offset_and_reject_unknown_wallet(pool: PgPoo
     assert_eq!(s_neg, StatusCode::OK);
     assert_eq!(neg.as_array().unwrap()[0]["id"], page0[0]["id"]);
 
+    // Past the end the log ends the way a paging client expects: 200 and an
+    // empty array, never an error or the last row again.
+    let (s_beyond, beyond) = call(
+        &pool,
+        &cookie,
+        "GET",
+        &format!("/api/v1/wallets/{wallet}/movements?limit=1&offset=50"),
+        None,
+    )
+    .await;
+    assert_eq!(s_beyond, StatusCode::OK);
+    assert!(beyond.as_array().unwrap().is_empty());
+
     // Lightweight existence probe must still return 404 for an unknown wallet.
     let missing = Uuid::now_v7();
     let (s_missing, _) = call(
