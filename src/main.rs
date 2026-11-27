@@ -30,7 +30,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .ok();
 
-    let pool = db::connect(&config.database_url).await?;
+    let pool = db::connect(&config.database_url, config.db_max_connections).await?;
     tracing::info!(
         bind = %config.bind_addr,
         db_max_connections = pool.options().get_max_connections(),

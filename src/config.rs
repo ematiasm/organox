@@ -5,8 +5,13 @@
 //! database URL.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use crate::error::AppError;
+
+/// Default directory containing the built SPA assets. Overridable via
+/// `APP_FRONTEND_DIR`.
+pub const DEFAULT_FRONTEND_DIR: &str = "frontend/build";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
@@ -17,9 +22,13 @@ pub enum LogFormat {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
+    /// Maximum number of connections in the Postgres pool (`APP_DB_MAX_CONNECTIONS`).
+    pub db_max_connections: u32,
     pub bind_addr: SocketAddr,
     pub log_format: LogFormat,
     pub rust_log: String,
+    /// Directory containing the built SPA assets (`APP_FRONTEND_DIR`).
+    pub frontend_dir: PathBuf,
     /// `Secure` on the session cookie. Defaults to `true`; for local HTTP in
     /// development, disable with `APP_COOKIE_SECURE=false`.
     pub cookie_secure: bool,
@@ -37,18 +46,19 @@ pub struct Config {
 
 impl Config {
     pub fn account_policy(&self) -> crate::ratelimit::AccountPolicy {
+        let block_secs = u64::try_from(self.login_block_minutes)
+            .unwrap_or(0)
+            .saturating_mul(60);
         crate::ratelimit::AccountPolicy {
             max_failures: self.login_max_failures,
             window: std::time::Duration::from_secs(15 * 60),
-            block_duration: std::time::Duration::from_secs(
-                (self.login_block_minutes.max(1) * 60) as u64,
-            ),
+            block_duration: std::time::Duration::from_secs(block_secs),
         }
     }
 
     pub fn ip_policy(&self) -> crate::ratelimit::IpPolicy {
         crate::ratelimit::IpPolicy {
-            max_requests: self.login_ip_max_per_minute.max(1),
+            max_requests: self.login_ip_max_per_minute,
             window: std::time::Duration::from_secs(60),
             burst: 10,
         }
@@ -59,6 +69,10 @@ impl Config {
     /// Read configuration from the environment. Intended to run once at startup.
     pub fn from_env() -> Result<Self, AppError> {
         let database_url = required("DATABASE_URL")?;
+        let db_max_connections: u32 = parse(
+            "APP_DB_MAX_CONNECTIONS",
+            &crate::db::DEFAULT_MAX_CONNECTIONS.to_string(),
+        )?;
         let bind_addr = parse("APP_BIND_ADDR", "0.0.0.0:3000")?;
         let log_format = match optional("APP_LOG_FORMAT").as_deref() {
             None | Some("pretty") => LogFormat::Pretty,
@@ -71,23 +85,48 @@ impl Config {
         };
         let rust_log = optional("APP_RUST_LOG")
             .unwrap_or_else(|| "organox=debug,tower_http=debug,sqlx=warn".to_string());
+        let frontend_dir = optional("APP_FRONTEND_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_FRONTEND_DIR));
         let cookie_secure = parse_bool("APP_COOKIE_SECURE", true)?;
         let enable_docs = parse_bool("APP_ENABLE_DOCS", false)?;
-        let login_max_failures = parse("APP_LOGIN_MAX_FAILURES", "5")?;
-        let login_block_minutes = parse("APP_LOGIN_BLOCK_MINUTES", "5")?;
-        let login_ip_max_per_minute = parse("APP_LOGIN_IP_MAX_PER_MINUTE", "30")?;
+        let login_max_failures: i32 = parse("APP_LOGIN_MAX_FAILURES", "5")?;
+        let login_block_minutes: i64 = parse("APP_LOGIN_BLOCK_MINUTES", "5")?;
+        let login_ip_max_per_minute: u32 = parse("APP_LOGIN_IP_MAX_PER_MINUTE", "30")?;
 
+        if db_max_connections < 1 {
+            return Err(AppError::Config(
+                "APP_DB_MAX_CONNECTIONS must be at least 1".to_string(),
+            ));
+        }
         if login_max_failures < 1 {
             return Err(AppError::Config(
                 "APP_LOGIN_MAX_FAILURES must be at least 1".to_string(),
             ));
         }
+        if login_block_minutes < 1 {
+            return Err(AppError::Config(
+                "APP_LOGIN_BLOCK_MINUTES must be at least 1".to_string(),
+            ));
+        }
+        if login_block_minutes.checked_mul(60).is_none() {
+            return Err(AppError::Config(
+                "APP_LOGIN_BLOCK_MINUTES is too large".to_string(),
+            ));
+        }
+        if login_ip_max_per_minute < 1 {
+            return Err(AppError::Config(
+                "APP_LOGIN_IP_MAX_PER_MINUTE must be at least 1".to_string(),
+            ));
+        }
 
         Ok(Self {
             database_url,
+            db_max_connections,
             bind_addr,
             log_format,
             rust_log,
+            frontend_dir,
             cookie_secure,
             enable_docs,
             login_max_failures,

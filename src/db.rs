@@ -4,19 +4,20 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, postgres::PgConnectOptions};
 use std::time::Duration;
 
-/// Pool size. Deliberately starts small: sqlx's defaults (10) run out quickly
-/// and the error appears only under load. Adjust based on measurement.
-const POOL_MAX_CONNECTIONS: u32 = 5;
+/// Default pool size. Deliberately starts small: sqlx's defaults (10) run out
+/// quickly and the error appears only under load. Override via
+/// `APP_DB_MAX_CONNECTIONS` based on measurement.
+pub const DEFAULT_MAX_CONNECTIONS: u32 = 5;
 
 /// Maximum time to obtain a connection from the pool. Without this, an
 /// exhausted pool hangs the request forever instead of failing.
 const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
+pub async fn connect(database_url: &str, max_connections: u32) -> Result<PgPool, sqlx::Error> {
     let options: PgConnectOptions = database_url.parse()?;
 
     PgPoolOptions::new()
-        .max_connections(POOL_MAX_CONNECTIONS)
+        .max_connections(max_connections)
         .acquire_timeout(ACQUIRE_TIMEOUT)
         .connect_with(options)
         .await
