@@ -188,31 +188,9 @@ async fn closed_purchases_and_items_are_immutable_and_restrict_delete(pool: PgPo
     let sugar = seed_product(&pool, "Sugar").await;
     let supplier = seed_supplier(&pool, "Mill Co").await;
 
-    // Seed a draft purchase, a completed purchase, and a cancelled purchase.
-    let draft_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO purchases (id, status, supplier_id, created_by)
-         VALUES ($1, 'draft', $2, $3)",
-    )
-    .bind(draft_id)
-    .bind(supplier)
-    .bind(actor)
-    .execute(&pool)
-    .await
-    .expect("seed draft purchase");
-
-    let draft_item_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO purchase_items (id, purchase_id, product_id, quantity, unit_cost)
-         VALUES ($1, $2, $3, 2, 40.00)",
-    )
-    .bind(draft_item_id)
-    .bind(draft_id)
-    .bind(flour)
-    .execute(&pool)
-    .await
-    .expect("seed draft purchase item");
-
+    // Seed a completed purchase first (completing it closes the draft so a
+    // second open draft for the same operator can coexist afterwards), then
+    // seed an open draft and a cancelled purchase.
     let completed_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO purchases (id, status, supplier_id, supplier_name, total, created_by, completed_by, completed_at)
@@ -249,6 +227,30 @@ async fn closed_purchases_and_items_are_immutable_and_restrict_delete(pool: PgPo
     .execute(&pool)
     .await
     .expect("completing draft purchase must succeed");
+
+    let draft_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchases (id, status, supplier_id, created_by)
+         VALUES ($1, 'draft', $2, $3)",
+    )
+    .bind(draft_id)
+    .bind(supplier)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .expect("seed draft purchase");
+
+    let draft_item_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchase_items (id, purchase_id, product_id, quantity, unit_cost)
+         VALUES ($1, $2, $3, 2, 40.00)",
+    )
+    .bind(draft_item_id)
+    .bind(draft_id)
+    .bind(flour)
+    .execute(&pool)
+    .await
+    .expect("seed draft purchase item");
 
     let cancelled_id = Uuid::now_v7();
     sqlx::query(
