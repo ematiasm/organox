@@ -47,6 +47,10 @@ pub struct AppState {
     /// `false` on purpose (see `compose.prod.yaml` and S17 in
     /// `odd/tasks/ui-admin.md`).
     pub cookie_secure: bool,
+    /// Whether to mount Swagger UI (`/api/v1/docs`) and `/api/v1/openapi.json`.
+    /// Defaults to `false` so production deployments do not expose API docs
+    /// unless explicitly enabled (`APP_ENABLE_DOCS=true`).
+    pub enable_docs: bool,
 }
 
 impl AppState {
@@ -70,6 +74,13 @@ impl AppState {
             ip_limiter: Arc::new(crate::ratelimit::IpLimiter::new(ip_policy)),
             pool,
             cookie_secure,
+            enable_docs: false,
         }
+    }
+
+    /// Enable or disable mounting `/api/v1/docs` and `/api/v1/openapi.json`.
+    pub fn with_docs(mut self, enable_docs: bool) -> Self {
+        self.enable_docs = enable_docs;
+        self
     }
 }

@@ -23,6 +23,10 @@ pub struct Config {
     /// `Secure` on the session cookie. Defaults to `true`; for local HTTP in
     /// development, disable with `APP_COOKIE_SECURE=false`.
     pub cookie_secure: bool,
+    /// Expose `/api/v1/docs` (Swagger UI) and `/api/v1/openapi.json`. Defaults
+    /// to `false` so production deployments do not publish the API surface
+    /// unless explicitly enabled with `APP_ENABLE_DOCS=true`.
+    pub enable_docs: bool,
     /// Failed attempts per account before locking it.
     pub login_max_failures: i32,
     /// Duration of the account lock in minutes.
@@ -68,6 +72,7 @@ impl Config {
         let rust_log = optional("APP_RUST_LOG")
             .unwrap_or_else(|| "organox=debug,tower_http=debug,sqlx=warn".to_string());
         let cookie_secure = parse_bool("APP_COOKIE_SECURE", true)?;
+        let enable_docs = parse_bool("APP_ENABLE_DOCS", false)?;
         let login_max_failures = parse("APP_LOGIN_MAX_FAILURES", "5")?;
         let login_block_minutes = parse("APP_LOGIN_BLOCK_MINUTES", "5")?;
         let login_ip_max_per_minute = parse("APP_LOGIN_IP_MAX_PER_MINUTE", "30")?;
@@ -84,6 +89,7 @@ impl Config {
             log_format,
             rust_log,
             cookie_secure,
+            enable_docs,
             login_max_failures,
             login_block_minutes,
             login_ip_max_per_minute,

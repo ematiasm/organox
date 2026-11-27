@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::map_response;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -57,6 +57,8 @@ pub fn router(state: AppState) -> Router {
 }
 
 pub fn router_with_limits(state: AppState, limits: HttpLimits) -> Router {
+    let cookie_secure = state.cookie_secure;
+
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
@@ -78,6 +80,39 @@ pub fn router_with_limits(state: AppState, limits: HttpLimits) -> Router {
         ))
         .layer(RequestBodyLimitLayer::new(limits.body_limit_bytes))
         .layer(map_response(map_middleware_errors))
+        .layer(map_response(move |response| {
+            add_security_headers(response, cookie_secure)
+        }))
+}
+
+/// Attach baseline HTTP security headers to every response, including errors
+/// and middleware rejections.
+///
+/// `Strict-Transport-Security` is emitted only when `cookie_secure` is `true`
+/// (the deployment is served over HTTPS). `includeSubDomains` is omitted so
+/// sibling internal services on other subdomains are not forced onto HTTPS.
+async fn add_security_headers(mut response: Response, cookie_secure: bool) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'none'"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if cookie_secure {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000"),
+        );
+    }
+    response
 }
 
 /// Convert plain-text/empty 413 and 504 rejections produced by `tower-http` or
@@ -139,12 +174,17 @@ async fn spa_fallback(request: axum::extract::Request) -> axum::response::Respon
 
 /// Domain modules are plugged in here as they become available.
 fn api_v1(state: AppState, limits: HttpLimits) -> Router<AppState> {
-    Router::new()
+    let mut router = Router::new();
+
+    if state.enable_docs {
         // Swagger UI exposes the spec at `/openapi.json`; declaring it separately
         // caused "Overlapping method route". The UI lives at `/api/v1/docs`.
-        .merge(
+        router = router.merge(
             utoipa_swagger_ui::SwaggerUi::new("/docs").url("/openapi.json", crate::openapi::spec()),
-        )
+        );
+    }
+
+    router
         .merge(crate::auth::handlers::router_with_body_limit(
             state.clone(),
             limits.auth_body_limit_bytes,

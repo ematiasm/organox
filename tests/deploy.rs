@@ -294,6 +294,19 @@ fn rendered_deployment_contract() {
         "false"
     );
 
+    // #111: OpenAPI/Swagger UI must be disabled by default in production, and
+    // explicit opt-in must reach the container.
+    assert_eq!(
+        cfg["services"]["app"]["environment"]["APP_ENABLE_DOCS"],
+        "false"
+    );
+    let docs_enabled = render("POSTGRES_PASSWORD=Sup3r_Secret\nAPP_ENABLE_DOCS=true\n")
+        .expect("compose must render with APP_ENABLE_DOCS=true");
+    assert_eq!(
+        docs_enabled["services"]["app"]["environment"]["APP_ENABLE_DOCS"],
+        "true"
+    );
+
     // S2: production cannot collide with the development stack.
     assert_eq!(cfg["name"], "organox-prod");
     assert_eq!(cfg["volumes"]["db_data"]["name"], "organox-prod_db_data");
