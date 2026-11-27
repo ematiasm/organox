@@ -113,6 +113,18 @@ pub enum RepoError {
     #[error("a supplier account entry cannot be backed by a {kind} movement")]
     MovementNotFromSupplierAccount { kind: String },
 
+    #[error("purchase return not found")]
+    PurchaseReturnNotFound,
+
+    #[error("that purchase return belongs to another purchase")]
+    PurchaseReturnMismatch,
+
+    #[error("the return of {requested} exceeds the {available} this purchase return carries")]
+    PurchaseReturnExceeded {
+        requested: Decimal,
+        available: Decimal,
+    },
+
     #[error("the wallet movement belongs to another supplier")]
     MovementOfAnotherSupplier,
 
@@ -1606,6 +1618,30 @@ pub async fn record_purchase_return(
     lock_supplier(conn, supplier_id).await?;
     ensure_chargeable_purchase(conn, supplier_id, purchase_id).await?;
 
+    // Mirror customer_accounts::record_credit_note: the return document itself
+    // decides which purchase it belongs to and the maximum amount it carries.
+    let ret = sqlx::query!(
+        r#"
+        SELECT purchase_id, total::numeric(14, 2) AS "total!: Decimal"
+        FROM purchase_returns
+        WHERE id = $1
+        "#,
+        purchase_return_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(RepoError::PurchaseReturnNotFound)?;
+
+    if ret.purchase_id != purchase_id {
+        return Err(RepoError::PurchaseReturnMismatch);
+    }
+    if amount > ret.total {
+        return Err(RepoError::PurchaseReturnExceeded {
+            requested: amount,
+            available: ret.total,
+        });
+    }
+
     let outstanding = outstanding_for_purchase_in(conn, purchase_id).await?;
     if amount > outstanding {
         return Err(RepoError::OutstandingExceeded {
@@ -1661,6 +1697,29 @@ pub async fn record_purchase_return_credit(
 ) -> Result<Uuid, RepoError> {
     ensure_cents(amount)?;
     lock_supplier(conn, supplier_id).await?;
+
+    let ret = sqlx::query!(
+        r#"
+        SELECT p.supplier_id, r.total::numeric(14, 2) AS "total!: Decimal"
+        FROM purchase_returns r
+        JOIN purchases p ON p.id = r.purchase_id
+        WHERE r.id = $1
+        "#,
+        purchase_return_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(RepoError::PurchaseReturnNotFound)?;
+
+    if ret.supplier_id != Some(supplier_id) {
+        return Err(RepoError::PurchaseOfAnotherSupplier);
+    }
+    if amount > ret.total {
+        return Err(RepoError::PurchaseReturnExceeded {
+            requested: amount,
+            available: ret.total,
+        });
+    }
 
     let id = Uuid::now_v7();
     sqlx::query!(
