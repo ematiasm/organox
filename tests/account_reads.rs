@@ -1124,6 +1124,45 @@ async fn receivables_windows_items_and_keeps_the_portfolio_totals(pool: PgPool) 
     assert_eq!(beyond["total_balance"], full["total_balance"]);
 }
 
+/// Two equal balances: the name decides, and it must decide the way the
+/// counter reads it. Byte order would file `Banana` before `apple`.
+#[sqlx::test(migrations = "./migrations")]
+async fn receivables_orders_equal_balances_case_insensitively_by_name(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool);
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    for name in ["Banana", "apple"] {
+        let customer_id = create_customer(&app, &cookie, name, None, None).await;
+        let (status, body) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/customers/{customer_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": "in", "amount": "100.00", "note": "opening" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "adjustment: {body}");
+    }
+
+    let (status, page) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/receivables",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "receivables: {page}");
+    let names: Vec<&str> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["customer_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["apple", "Banana"]);
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn receivables_handles_empty_window_and_portfolio_totals_above_single_column_cap(
     pool: PgPool,

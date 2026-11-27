@@ -687,7 +687,7 @@ async fn receivables_page(
         LEFT JOIN aging_by_customer ag ON ag.customer_id = et.customer_id
         WHERE et.balance <> 0
            OR (et.received - et.refunded - COALESCE(ca.total, 0)) <> 0
-        ORDER BY et.balance DESC, c.name ASC, c.id ASC
+        ORDER BY et.balance DESC, lower(c.name) ASC, c.id ASC
         LIMIT $1 OFFSET $2
         "#,
         limit,
