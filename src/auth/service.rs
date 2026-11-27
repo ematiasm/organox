@@ -78,6 +78,7 @@ impl From<PasswordError> for AuthError {
 
 /// Issued session. The plaintext token is delivered **only once**, for the
 /// cookie; afterward only its hash exists.
+#[derive(Debug)]
 pub struct IssuedSession {
     pub token: SessionToken,
     pub expires_at: DateTime<Utc>,
@@ -208,16 +209,19 @@ pub async fn create_or_reset_user(
 /// Change the calling user's password after checking the current one.
 ///
 /// The new password is validated first: the rule is public, so there is no
-/// reason to spend an argon2 round on a request that cannot succeed. The
-/// session making the change is spared; the others are revoked in the same
-/// transaction as the hash update.
+/// reason to burn a rate-limit slot or spend an argon2 round on a request that
+/// cannot succeed. Every existing session of the user — including the caller's
+/// previous token — is revoked and replaced with a newly issued session in the
+/// same transaction as the hash update.
 pub async fn change_password(
     pool: &PgPool,
+    limiter: &AccountLimiter,
     user_id: Uuid,
+    email: &str,
     current_password: &str,
     new_password: &str,
-    token_hash: &TokenHash,
-) -> Result<(), AuthError> {
+    user_agent: Option<&str>,
+) -> Result<IssuedSession, AuthError> {
     validation::validate_password(new_password)?;
 
     if current_password.len() > validation::MAX_PASSWORD_BYTES {
@@ -226,40 +230,71 @@ pub async fn change_password(
         return Err(AuthError::InvalidCredentials);
     }
 
+    let email = ValidatedEmail::parse(email).map_err(|_| AuthError::InvalidCredentials)?;
+
+    // Atomically reserve an attempt BEFORE querying the user or running
+    // Argon2, matching `login` so a stolen session cannot brute-force
+    // `current_password` or amplify Argon2 CPU.
+    let locked_until = match limiter.begin_attempt(&email).await? {
+        AttemptReservation::Blocked { until } => {
+            tracing::warn!(
+                email = %email,
+                blocked_until = %until,
+                "password change locked due to failed attempts"
+            );
+            return Err(AuthError::AccountLocked { until });
+        }
+        AttemptReservation::Allowed { locked_until, .. } => locked_until,
+    };
+
     let found = repository::find_user_by_id(pool, user_id)
         .await?
         .ok_or(AuthError::NotFound)?;
 
     let matches = verify_off_thread(current_password.to_string(), found.password_hash).await?;
     if !matches {
+        if let Some(until) = locked_until {
+            tracing::warn!(
+                email = %email,
+                blocked_until = %until,
+                "account locked by failed password-change attempts; applies from the next attempt"
+            );
+        }
         return Err(AuthError::InvalidCredentials);
     }
 
+    limiter.record_success(&email).await?;
+
     let new_hash = hash_off_thread(new_password.to_string()).await?;
+    let token = SessionToken::generate();
 
     let mut tx = pool.begin().await?;
     if !repository::update_password_hash(&mut *tx, user_id, &new_hash).await? {
         return Err(AuthError::NotFound);
     }
-    repository::delete_sessions_for_user(&mut *tx, user_id, Some(token_hash)).await?;
+    repository::delete_sessions_for_user(&mut *tx, user_id, None).await?;
+    let expires_at =
+        repository::create_session(&mut *tx, &token.hash(), user_id, user_agent).await?;
     tx.commit().await?;
 
-    Ok(())
+    Ok(IssuedSession { token, expires_at })
 }
 
 /// Reset any user's password on behalf of an owner.
 ///
 /// No current password is requested: an owner cannot know another user's.
-/// Every session of the target is revoked except the caller's when the target
-/// is the caller, so both this route and `change_password` share one rule.
+/// Every existing session of the target is revoked atomically; when the owner
+/// resets their own password (`caller_id == target_id`), a fresh session token
+/// is issued in the same transaction so the caller's token is rotated rather
+/// than preserved.
 pub async fn reset_password(
     pool: &PgPool,
     actor_role: Role,
     target_id: Uuid,
     new_password: &str,
     caller_id: Uuid,
-    caller_token_hash: &TokenHash,
-) -> Result<(), AuthError> {
+    user_agent: Option<&str>,
+) -> Result<Option<IssuedSession>, AuthError> {
     if !actor_role.can_manage_users() {
         return Err(AuthError::Forbidden);
     }
@@ -271,16 +306,23 @@ pub async fn reset_password(
         .ok_or(AuthError::NotFound)?;
 
     let new_hash = hash_off_thread(new_password.to_string()).await?;
-    let keep = (caller_id == target_id).then_some(caller_token_hash);
 
     let mut tx = pool.begin().await?;
     if !repository::update_password_hash(&mut *tx, target_id, &new_hash).await? {
         return Err(AuthError::NotFound);
     }
-    repository::delete_sessions_for_user(&mut *tx, target_id, keep).await?;
+    repository::delete_sessions_for_user(&mut *tx, target_id, None).await?;
+    let rotated = if caller_id == target_id {
+        let token = SessionToken::generate();
+        let expires_at =
+            repository::create_session(&mut *tx, &token.hash(), target_id, user_agent).await?;
+        Some(IssuedSession { token, expires_at })
+    } else {
+        None
+    };
     tx.commit().await?;
 
-    Ok(())
+    Ok(rotated)
 }
 
 /// Verify credentials and, if valid, issue a new session.
@@ -374,7 +416,15 @@ pub async fn login(
     })
 }
 
-/// Resolve a cookie token to an authenticated user.
+/// Result of authenticating an HTTP session: the resolved user plus the new
+/// server-side expiry when sliding expiration advanced the session.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedSession {
+    pub user: AuthenticatedUser,
+    pub refreshed_expires_at: Option<DateTime<Utc>>,
+}
+
+/// Resolve a cookie token to an authenticated user without extending it.
 pub async fn authenticate(
     pool: &PgPool,
     token: &SessionToken,
@@ -389,9 +439,37 @@ pub async fn authenticate(
     }))
 }
 
+/// Resolve a cookie token and, when due, slide its expiry forward synchronously
+/// so the caller can keep the browser cookie's `Expires` in sync with Postgres.
+pub async fn authenticate_session(
+    pool: &PgPool,
+    token: &SessionToken,
+) -> Result<Option<AuthenticatedSession>, AuthError> {
+    let token_hash = token.hash();
+    let Some(found) = repository::find_session_user(pool, &token_hash).await? else {
+        return Ok(None);
+    };
+
+    let refreshed_expires_at = if found.needs_refresh {
+        repository::touch_session(pool, &token_hash).await
+    } else {
+        None
+    };
+
+    Ok(Some(AuthenticatedSession {
+        user: AuthenticatedUser {
+            id: found.id,
+            email: found.email,
+            role: found.role,
+            token_hash,
+        },
+        refreshed_expires_at,
+    }))
+}
+
 /// Extend the session used. Best-effort: never fails the request.
-pub async fn touch(pool: &PgPool, token: &SessionToken) {
-    repository::touch_session(pool, &token.hash()).await;
+pub async fn touch(pool: &PgPool, token: &SessionToken) -> Option<DateTime<Utc>> {
+    repository::touch_session(pool, &token.hash()).await
 }
 
 /// End the session. Idempotent: deleting a nonexistent session is not an error.
@@ -667,7 +745,6 @@ mod tests {
         let pool =
             PgPool::connect_lazy("postgres://127.0.0.1:1/never_connected").expect("lazy pool");
         let limiter = AccountLimiter::new(pool.clone(), crate::ratelimit::AccountPolicy::default());
-        let token_hash = SessionToken::generate().hash();
         let valid_new = format!("pw-{}", Uuid::now_v7());
 
         // Test both an ASCII byte-boundary overflow and a multi-byte UTF-8
@@ -689,7 +766,15 @@ mod tests {
 
             let change_err = tokio::time::timeout(
                 Duration::from_millis(200),
-                change_password(&pool, Uuid::now_v7(), oversized, &valid_new, &token_hash),
+                change_password(
+                    &pool,
+                    &limiter,
+                    Uuid::now_v7(),
+                    "owner@pyme.com",
+                    oversized,
+                    &valid_new,
+                    None,
+                ),
             )
             .await
             .expect("change_password must reject without waiting for an Argon2 permit")

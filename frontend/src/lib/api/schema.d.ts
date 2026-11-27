@@ -123,8 +123,11 @@ export interface paths {
         /**
          * Change the current user's password.
          * @description Requires the current password. The new one must satisfy the password rule.
-         *     Every other session of the user is revoked; the session making the change
-         *     remains valid.
+         *     Every previous session of the user — including the caller's — is revoked
+         *     atomically and replaced with a rotated `session` cookie.
+         *
+         *     `429` means the account or IP is temporarily throttled after failed
+         *     attempts; includes `Retry-After` with the remaining seconds.
          */
         post: operations["change_password_doc"];
         delete?: never;
@@ -991,8 +994,9 @@ export interface paths {
         get?: never;
         /**
          * Reset another user's password. Only `owner`.
-         * @description No current password is requested: the owner cannot know it. Every session
-         *     of the target is revoked, except the caller's when resetting their own.
+         * @description No current password is requested: the owner cannot know it. Every previous
+         *     session of the target is revoked atomically; when the owner resets their
+         *     own password, a rotated `session` cookie is emitted.
          */
         put: operations["reset_password_doc"];
         post?: never;
@@ -2766,9 +2770,11 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Password changed, other sessions revoked */
+            /** @description Password changed, previous sessions revoked and caller session rotated */
             204: {
                 headers: {
+                    /** @description session=<new-token>; HttpOnly; SameSite=Strict */
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
@@ -2785,6 +2791,17 @@ export interface operations {
             /** @description Invalid new password */
             422: {
                 headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Account locked or IP rate limit exceeded */
+            429: {
+                headers: {
+                    /** @description Seconds until retry */
+                    "Retry-After"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -5680,7 +5697,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Password reset, target sessions revoked */
+            /** @description Password reset, target sessions revoked (and rotated Set-Cookie emitted on self-reset) */
             204: {
                 headers: {
                     [name: string]: unknown;

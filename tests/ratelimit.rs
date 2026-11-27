@@ -339,6 +339,39 @@ async fn limiter_purges_stale_rows(pool: PgPool) {
     assert_eq!(rows, 0);
 }
 
+#[sqlx::test]
+async fn limiter_purge_stale_preserves_active_lock(pool: PgPool) {
+    let state = strict_state(pool.clone());
+
+    sqlx::query(
+        "INSERT INTO login_attempts (email, failed_count, window_start, blocked_until, updated_at)
+         VALUES
+           ('active-lock@pyme.com', 5, now() - interval '2 days', now() + interval '1 hour', now() - interval '2 days'),
+           ('expired-lock@pyme.com', 5, now() - interval '2 days', now() - interval '1 minute', now() - interval '2 days'),
+           ('stale-unlocked@pyme.com', 2, now() - interval '2 days', NULL, now() - interval '2 days')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let purged = state
+        .account_limiter
+        .purge_stale(Duration::from_secs(24 * 60 * 60))
+        .await
+        .unwrap();
+    assert_eq!(
+        purged, 2,
+        "purge_stale must delete stale unlocked and expired-lock rows only"
+    );
+
+    let remaining: Vec<String> =
+        sqlx::query_scalar("SELECT email::text FROM login_attempts ORDER BY email")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, vec!["active-lock@pyme.com"]);
+}
+
 // --- Account isolation -------------------------------------------------
 
 #[sqlx::test]
@@ -840,4 +873,284 @@ async fn ip_rate_limit_returns_rfc7807_problem_json_with_retry_after(pool: PgPoo
     assert_eq!(body["title"], "Too Many Requests");
     assert_eq!(body["status"], 429);
     assert!(body["detail"].as_str().is_some_and(|s| !s.is_empty()));
+}
+
+// --- Password-change rate limiting (issue #110) ------------------------
+
+fn extract_session_cookie(response: &axum::response::Response) -> String {
+    let header = response
+        .headers()
+        .get("set-cookie")
+        .expect("must emit set-cookie")
+        .to_str()
+        .unwrap();
+    header
+        .split(';')
+        .next()
+        .and_then(|pair| pair.split_once('='))
+        .map(|(_, v)| v.to_string())
+        .expect("cookie in name=value format")
+}
+
+fn change_password_request(
+    cookie: Option<&str>,
+    current: &str,
+    new: &str,
+    ip: Option<IpAddr>,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/password")
+        .header("content-type", "application/json");
+    if let Some(cookie) = cookie {
+        builder = builder.header("cookie", format!("session={cookie}"));
+    }
+    let mut req = builder
+        .body(Body::from(
+            json!({ "current_password": current, "new_password": new }).to_string(),
+        ))
+        .unwrap();
+    if let Some(ip) = ip {
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(ip, 40_000)));
+    }
+    req
+}
+
+#[sqlx::test]
+async fn password_change_locks_account_after_max_failures(pool: PgPool) {
+    let password = seed_user(&pool, "pwlock@pyme.com").await;
+    let login = app(pool.clone())
+        .oneshot(login_request("pwlock@pyme.com", &password))
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = extract_session_cookie(&login);
+    let wrong = test_password();
+    let new_pw = test_password();
+
+    // max_failures = 3: first three wrong attempts return 401.
+    for _ in 0..3 {
+        let resp = app(pool.clone())
+            .oneshot(change_password_request(
+                Some(&cookie),
+                &wrong,
+                &new_pw,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // Fourth attempt is blocked with 429 + RFC 7807 + Retry-After, even with
+    // the correct current password.
+    let blocked = app(pool.clone())
+        .oneshot(change_password_request(
+            Some(&cookie),
+            &password,
+            &new_pw,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        blocked
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/problem+json")
+    );
+    let retry_after: u64 = blocked
+        .headers()
+        .get(axum::http::header::RETRY_AFTER)
+        .expect("429 on password change must include Retry-After")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(retry_after >= 1);
+
+    let bytes = axum::body::to_bytes(blocked.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["status"], 429);
+}
+
+#[sqlx::test]
+async fn password_change_success_clears_failed_attempts(pool: PgPool) {
+    let password = seed_user(&pool, "pwclear@pyme.com").await;
+    let login = app(pool.clone())
+        .oneshot(login_request("pwclear@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = extract_session_cookie(&login);
+    let wrong = test_password();
+    let new_pw = test_password();
+
+    for _ in 0..2 {
+        let resp = app(pool.clone())
+            .oneshot(change_password_request(
+                Some(&cookie),
+                &wrong,
+                &new_pw,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let failed_before: i32 = sqlx::query_scalar(
+        "SELECT failed_count FROM login_attempts WHERE email = 'pwclear@pyme.com'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(failed_before, 2);
+
+    let ok = app(pool.clone())
+        .oneshot(change_password_request(
+            Some(&cookie),
+            &password,
+            &new_pw,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::NO_CONTENT);
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM login_attempts WHERE email = 'pwclear@pyme.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows, 0,
+        "successful password change must clear failure count"
+    );
+}
+
+#[sqlx::test]
+async fn password_change_invalid_new_password_does_not_consume_attempt(pool: PgPool) {
+    let password = seed_user(&pool, "pwshort@pyme.com").await;
+    let login = app(pool.clone())
+        .oneshot(login_request("pwshort@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = extract_session_cookie(&login);
+    let wrong = test_password();
+
+    for _ in 0..4 {
+        let resp = app(pool.clone())
+            .oneshot(change_password_request(
+                Some(&cookie),
+                &wrong,
+                "short",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM login_attempts WHERE email = 'pwshort@pyme.com'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows, 0,
+        "422 validation failures must not consume per-account attempts"
+    );
+
+    let ok = app(pool)
+        .oneshot(change_password_request(
+            Some(&cookie),
+            &password,
+            &test_password(),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::NO_CONTENT);
+}
+
+#[sqlx::test]
+async fn password_change_is_rate_limited_by_ip(pool: PgPool) {
+    let password = seed_user(&pool, "pwip@pyme.com").await;
+    let limiter = IpLimiter::new(IpPolicy {
+        max_requests: 2,
+        window: Duration::from_secs(60),
+        burst: 0,
+    });
+    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+
+    // Log in from a separate IP so login does not consume the target IP's quota.
+    let other_ip: IpAddr = "198.51.100.10".parse().unwrap();
+    let target_ip: IpAddr = "198.51.100.20".parse().unwrap();
+    let login = app
+        .clone()
+        .oneshot(login_request_from(other_ip, "pwip@pyme.com", &password))
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = extract_session_cookie(&login);
+    let new_pw = test_password();
+
+    // Two unauthenticated hits from target_ip consume its 2-request quota.
+    for _ in 0..2 {
+        let resp = app
+            .clone()
+            .oneshot(change_password_request(
+                None,
+                &password,
+                &new_pw,
+                Some(target_ip),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // Third hit from target_ip is rejected with 429 + RFC 7807 + Retry-After
+    // even with a valid session.
+    let blocked = app
+        .clone()
+        .oneshot(change_password_request(
+            Some(&cookie),
+            &password,
+            &new_pw,
+            Some(target_ip),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        blocked
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/problem+json")
+    );
+    assert!(
+        blocked
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .is_some()
+    );
+
+    // A different IP is unaffected and can still change the password.
+    let ok = app
+        .oneshot(change_password_request(
+            Some(&cookie),
+            &password,
+            &new_pw,
+            Some(other_ip),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::NO_CONTENT);
 }

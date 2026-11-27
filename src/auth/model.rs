@@ -111,6 +111,11 @@ pub const SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 7); // 7 da
 /// uses it frequently.
 pub const SESSION_MAX_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 30); // 30 days
 
+/// Minimum extension required before sliding a session forward in Postgres and
+/// re-emitting the `session` cookie. Avoids a DB UPDATE and `Set-Cookie` churn
+/// on every request while keeping the browser cookie aligned with the server.
+pub const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60); // 1 hour
+
 /// Active session as seen from an already authenticated request.
 #[derive(Debug, Clone)]
 pub struct Session {

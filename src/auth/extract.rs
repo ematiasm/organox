@@ -6,7 +6,9 @@
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use tower_cookies::Cookies;
+use chrono::{DateTime, Utc};
+use tower_cookies::cookie::{Cookie, SameSite};
+use tower_cookies::{Cookies, cookie};
 
 use crate::AppState;
 use crate::auth::model::Role;
@@ -16,6 +18,40 @@ use crate::error::AppError;
 
 /// Session cookie name.
 pub const SESSION_COOKIE: &str = "session";
+
+/// Build the `session` cookie with uniform security attributes (`HttpOnly`,
+/// `SameSite=Strict`, `Path=/`, `Secure` from config, and the exact DB expiry).
+pub(crate) fn session_cookie(
+    value: String,
+    expires_at: DateTime<Utc>,
+    secure: bool,
+) -> Cookie<'static> {
+    let mut cookie = Cookie::new(SESSION_COOKIE, value);
+    cookie.set_http_only(true);
+    cookie.set_secure(secure);
+    // Strict: the cookie does not travel on requests originating from another
+    // site, stopping CSRF at the root for this API. Lax would also support a
+    // frontend on another origin, but would require an explicit CSRF token.
+    cookie.set_same_site(SameSite::Strict);
+    cookie.set_path("/");
+    cookie.set_expires(
+        cookie::time::OffsetDateTime::from_unix_timestamp(expires_at.timestamp())
+            .unwrap_or_else(|_| cookie::time::OffsetDateTime::now_utc()),
+    );
+    cookie
+}
+
+/// Build the removal cookie used on logout.
+pub(crate) fn removal_cookie(secure: bool) -> Cookie<'static> {
+    let mut cookie = Cookie::new(SESSION_COOKIE, "");
+    cookie.set_http_only(true);
+    cookie.set_secure(secure);
+    cookie.set_same_site(SameSite::Strict);
+    cookie.set_path("/");
+    // Expiring in the past is the canonical way to delete a cookie.
+    cookie.make_removal();
+    cookie
+}
 
 /// Authenticated user. Fails with 401 if there is no valid session.
 ///
@@ -64,17 +100,18 @@ impl FromRequestParts<AppState> for AuthUser {
         let cookie = cookies.get(SESSION_COOKIE).ok_or(AppError::Unauthorized)?;
         let token = SessionToken::from_raw(cookie.value());
 
-        let user = service::authenticate(&state.pool, &token)
+        let session = service::authenticate_session(&state.pool, &token)
             .await?
             .ok_or(AppError::Unauthorized)?;
 
-        // Extend the session in the background: this request should not wait
-        // for an UPDATE that does not affect its result.
-        let pool = state.pool.clone();
-        tokio::spawn(async move {
-            service::touch(&pool, &token).await;
-        });
+        if let Some(expires_at) = session.refreshed_expires_at {
+            cookies.add(session_cookie(
+                token.as_str().to_string(),
+                expires_at,
+                state.cookie_secure,
+            ));
+        }
 
-        Ok(AuthUser(user))
+        Ok(AuthUser(session.user))
     }
 }

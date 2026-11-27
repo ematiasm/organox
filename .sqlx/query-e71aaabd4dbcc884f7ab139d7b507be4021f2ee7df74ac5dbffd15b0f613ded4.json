@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sessions\n        SET last_used_at = now(),\n            expires_at = LEAST(\n                now() + make_interval(secs => $2),\n                created_at + make_interval(secs => $3)\n            )\n        WHERE token_hash = $1\n          AND expires_at > now()\n        RETURNING expires_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Float8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e71aaabd4dbcc884f7ab139d7b507be4021f2ee7df74ac5dbffd15b0f613ded4"
+}

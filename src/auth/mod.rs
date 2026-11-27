@@ -7,9 +7,11 @@
 //!   token      session tokens and their hashes
 //!   repository SQL. The only place with queries
 //!   service    use cases and policy
+//!   cleanup    periodic purge of expired sessions and stale login attempts
 //!   extract    `AuthUser`: the only way to identify the actor
 //!   handlers   HTTP: DTOs and error translation
 
+pub mod cleanup;
 pub mod extract;
 pub mod handlers;
 pub mod model;

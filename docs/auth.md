@@ -181,12 +181,12 @@ local user the way a command line is.
 Never point it at a deployment database: the target reads `DATABASE_URL` from the
 same file, so the two travel together and the mistake would be a conscious one.
 
-## Login rate limiting
+## Login and password-change rate limiting
 
 Implemented, with its own document: `docs/ratelimit.md`. Two layers, applied to
-`POST /auth/login` only: a per-account lockout in Postgres, which survives a
-restart, and a per-IP fixed window in memory, which rejects before argon2 is
-paid. Both answer `429` with `Retry-After`.
+`POST /auth/login` and `POST /auth/password`: a per-account lockout in Postgres,
+which survives a restart, and a per-IP fixed window in memory, which rejects
+before argon2 is paid. Both answer `429` with `Retry-After`.
 
 ## Password rotation
 
@@ -195,7 +195,8 @@ Two routes, both answering `204` on success:
 - `POST /api/v1/auth/password` — the caller changes their own password. Body
   `{current_password, new_password}`. A wrong current password answers `401`
   with the same `invalid credentials` detail as login, so the route cannot be
-  used to tell a wrong password from anything else.
+  used to tell a wrong password from anything else. Rate-limited by IP and by
+  account (`429` + `Retry-After`).
 - `PUT /api/v1/users/{id}/password` — an `owner` resets anyone's password. Body
   `{new_password}` only: an owner cannot know another user's password, so asking
   for it would be theatre. A `manager` gets `403`, an unknown id `404`.
@@ -203,37 +204,37 @@ Two routes, both answering `204` on success:
 Both apply `validation::validate_password` to the new password and answer `422`
 with that detail when it fails. The new password is validated **before** the
 current one is verified: the rule is public, so checking it first reveals nothing
-and saves an argon2 round on a request that cannot succeed.
+and saves a rate-limit slot and an argon2 round on a request that cannot succeed.
 
 ## Sessions die with the password they belonged to
 
-A password change that leaves the other sessions alive is theatre: a stolen
-cookie keeps working. Both routes revoke inside the same transaction that writes
-the new hash, with one rule — every session of the target ends except the
-caller's, when the caller is that user.
+A password change that leaves existing sessions alive is theatre: a stolen
+cookie keeps working. Both routes revoke **every** session of the target inside
+the same transaction that writes the new hash. When the caller changes or resets
+their own password, a fresh session token is created in that same transaction
+and delivered via `Set-Cookie`, so the caller's old token is revoked atomically
+instead of preserved.
 
-So changing your own password signs the other devices out and keeps this one, and
-an owner resetting their own password is not logged out by it. An owner resetting
-someone else ends every session of that account, including the one the target is
-holding at that moment.
+An owner resetting someone else ends every session of that account, including
+the one the target is holding at that moment, without rotating the owner's own
+cookie.
 
-The statement that does it, `DELETE FROM sessions WHERE user_id = $1 AND
-($2::bytea IS NULL OR token_hash <> $2)`, is the query `sessions_user_id_idx`
-(`migrations/0002_auth.sql:51`) exists for. Until these routes, no statement
-filtered sessions by user.
+## Sliding session expiry and cleanup
+
+Authenticated requests extend `sessions.expires_at` up to the 30-day absolute
+cap (`SESSION_MAX_LIFETIME`) whenever sliding forward advances the deadline by
+at least `SESSION_REFRESH_INTERVAL` (1 hour) or reaches the cap, and re-emit
+the `session` cookie with the matching `Expires` timestamp so the browser stays
+in sync with Postgres without churning `Set-Cookie` on every request.
+
+A background cleanup task started in `src/main.rs` (`auth::cleanup`) runs at
+startup and every hour to purge expired `sessions` and stale `login_attempts`
+(preserving active locks), shutting down cleanly on `SIGINT`/`SIGTERM`.
 
 ## What is missing
 
-- **Rate limiting on `POST /auth/password`.** `POST /auth/login` is limited by
-  account and by IP (`docs/ratelimit.md`); the password change is not. Someone
-  holding a stolen session could use it to guess the current password. The
-  per-account machinery does not transfer as it stands: it keys on the email in a
-  login body, and this route already knows who the caller is.
 - **Manual unlock.** None, and none is wanted: the per-account lockout is soft on
   purpose and expires on its own (`APP_LOGIN_BLOCK_MINUTES`, 5 by default). A
   hard lockout would let anyone who knows the owner's email lock them out of
   their own system by typing the wrong password. `docs/ratelimit.md` has the
   reasoning and the accepted trade-off.
-- **Cleanup of `login_attempts` and `sessions`.** The functions exist
-  (`purge_stale`, `purge_expired_sessions`) but nothing schedules them; see
-  `docs/ratelimit.md`.

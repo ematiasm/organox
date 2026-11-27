@@ -9,13 +9,12 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tower_cookies::cookie::{Cookie, SameSite};
-use tower_cookies::{Cookies, cookie};
+use tower_cookies::Cookies;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::auth::extract::{AuthUser, SESSION_COOKIE};
+use crate::auth::extract::{AuthUser, removal_cookie, session_cookie};
 use crate::auth::model::Role;
 use crate::auth::service::{self, AuthError, LoginOutcome};
 use crate::error::AppError;
@@ -30,20 +29,20 @@ pub fn router_with_body_limit(state: AppState, body_limit_bytes: usize) -> Route
     use axum::routing::{get, post, put};
     use tower_http::limit::RequestBodyLimitLayer;
 
-    // Apply the IP limit ONLY to login. Applying it to the entire API would
-    // penalize a legitimate polling frontend and add nothing against brute force.
-    let guarded_login =
-        Router::new()
-            .route("/auth/login", post(login))
-            .route_layer(from_fn_with_state(
-                state.clone(),
-                crate::ratelimit::middleware::limit_by_ip,
-            ));
+    // Apply the IP limit ONLY to credential-checking routes (`login` and
+    // `password`). Applying it to the entire API would penalize a legitimate
+    // polling frontend and add nothing against brute force.
+    let guarded_auth = Router::new()
+        .route("/auth/login", post(login))
+        .route("/auth/password", post(change_password))
+        .route_layer(from_fn_with_state(
+            state.clone(),
+            crate::ratelimit::middleware::limit_by_ip,
+        ));
 
     Router::new()
-        .merge(guarded_login)
+        .merge(guarded_auth)
         .route("/auth/logout", post(logout))
-        .route("/auth/password", post(change_password))
         .route("/auth/me", axum::routing::get(me))
         .route("/users", get(list_users).post(create_user))
         .route("/users/{id}/password", put(reset_password))
@@ -100,15 +99,19 @@ pub struct ResetPasswordRequest {
 
 // --- Handlers -----------------------------------------------------------
 
+fn request_user_agent(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+}
+
 async fn login(
     State(state): State<AppState>,
     cookies: Cookies,
     headers: HeaderMap,
     AppJson(body): AppJson<LoginRequest>,
 ) -> Result<Response, AppError> {
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok());
+    let user_agent = request_user_agent(&headers);
 
     match service::login(
         &state.pool,
@@ -218,16 +221,26 @@ async fn create_user(
 async fn change_password(
     State(state): State<AppState>,
     user: AuthUser,
+    cookies: Cookies,
+    headers: HeaderMap,
     AppJson(body): AppJson<ChangePasswordRequest>,
 ) -> Result<StatusCode, AppError> {
-    service::change_password(
+    let session = service::change_password(
         &state.pool,
+        &state.account_limiter,
         user.id(),
+        user.email(),
         &body.current_password,
         &body.new_password,
-        user.token_hash(),
+        request_user_agent(&headers),
     )
     .await?;
+
+    cookies.add(session_cookie(
+        session.token.as_str().to_string(),
+        session.expires_at,
+        state.cookie_secure,
+    ));
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -235,52 +248,32 @@ async fn change_password(
 async fn reset_password(
     State(state): State<AppState>,
     user: AuthUser,
+    cookies: Cookies,
+    headers: HeaderMap,
     AppPath(id): AppPath<Uuid>,
     AppJson(body): AppJson<ResetPasswordRequest>,
 ) -> Result<StatusCode, AppError> {
     // Same owner-only gate as user creation, before any DB work or hashing.
     user.require_user_management()?;
 
-    service::reset_password(
+    if let Some(session) = service::reset_password(
         &state.pool,
         user.role(),
         id,
         &body.new_password,
         user.id(),
-        user.token_hash(),
+        request_user_agent(&headers),
     )
-    .await?;
+    .await?
+    {
+        cookies.add(session_cookie(
+            session.token.as_str().to_string(),
+            session.expires_at,
+            state.cookie_secure,
+        ));
+    }
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-// --- Cookies ------------------------------------------------------------
-
-fn session_cookie(value: String, expires_at: DateTime<Utc>, secure: bool) -> Cookie<'static> {
-    let mut cookie = Cookie::new(SESSION_COOKIE, value);
-    cookie.set_http_only(true);
-    cookie.set_secure(secure);
-    // Strict: the cookie does not travel on requests originating from another
-    // site, stopping CSRF at the root for this API. Lax would also support a
-    // frontend on another origin, but would require an explicit CSRF token.
-    cookie.set_same_site(SameSite::Strict);
-    cookie.set_path("/");
-    cookie.set_expires(
-        cookie::time::OffsetDateTime::from_unix_timestamp(expires_at.timestamp())
-            .unwrap_or_else(|_| cookie::time::OffsetDateTime::now_utc()),
-    );
-    cookie
-}
-
-fn removal_cookie(secure: bool) -> Cookie<'static> {
-    let mut cookie = Cookie::new(SESSION_COOKIE, "");
-    cookie.set_http_only(true);
-    cookie.set_secure(secure);
-    cookie.set_same_site(SameSite::Strict);
-    cookie.set_path("/");
-    // Expiring in the past is the canonical way to delete a cookie.
-    cookie.make_removal();
-    cookie
 }
 
 // --- Errors -------------------------------------------------------------
@@ -400,19 +393,26 @@ fn create_user_doc() {}
 /// Change the current user's password.
 ///
 /// Requires the current password. The new one must satisfy the password rule.
-/// Every other session of the user is revoked; the session making the change
-/// remains valid.
+/// Every previous session of the user — including the caller's — is revoked
+/// atomically and replaced with a rotated `session` cookie.
+///
+/// `429` means the account or IP is temporarily throttled after failed
+/// attempts; includes `Retry-After` with the remaining seconds.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/password",
     tag = "auth",
     request_body = ChangePasswordRequest,
     responses(
-        (status = 204, description = "Password changed, other sessions revoked"),
+        (status = 204, description = "Password changed, previous sessions revoked and caller session rotated",
+         headers(("Set-Cookie", description = "session=<new-token>; HttpOnly; SameSite=Strict"))),
         (status = 401, description = "Wrong current password or no session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 422, description = "Invalid new password", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
+        (status = 429, description = "Account locked or IP rate limit exceeded", body = crate::openapi::Problem,
+         content_type = "application/problem+json",
+         headers(("Retry-After", description = "Seconds until retry"))),
     )
 )]
 #[allow(dead_code)]
@@ -420,8 +420,9 @@ fn change_password_doc() {}
 
 /// Reset another user's password. Only `owner`.
 ///
-/// No current password is requested: the owner cannot know it. Every session
-/// of the target is revoked, except the caller's when resetting their own.
+/// No current password is requested: the owner cannot know it. Every previous
+/// session of the target is revoked atomically; when the owner resets their
+/// own password, a rotated `session` cookie is emitted.
 #[utoipa::path(
     put,
     path = "/api/v1/users/{id}/password",
@@ -429,7 +430,7 @@ fn change_password_doc() {}
     request_body = ResetPasswordRequest,
     params(("id" = Uuid, Path, description = "Target user id")),
     responses(
-        (status = 204, description = "Password reset, target sessions revoked"),
+        (status = 204, description = "Password reset, target sessions revoked (and rotated Set-Cookie emitted on self-reset)"),
         (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,

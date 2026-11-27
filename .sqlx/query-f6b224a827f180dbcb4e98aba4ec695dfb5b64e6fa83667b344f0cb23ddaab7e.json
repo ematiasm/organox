@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM login_attempts\n            WHERE updated_at < now() - make_interval(secs => $1)\n              AND (blocked_until IS NULL OR blocked_until <= now())\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f6b224a827f180dbcb4e98aba4ec695dfb5b64e6fa83667b344f0cb23ddaab7e"
+}

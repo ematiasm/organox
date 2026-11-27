@@ -10,7 +10,9 @@ use chrono::{DateTime, Utc};
 use sqlx::{Executor, PgPool};
 use uuid::Uuid;
 
-use super::model::{PasswordHash, Role, SESSION_MAX_LIFETIME, SESSION_TTL};
+use super::model::{
+    PasswordHash, Role, SESSION_MAX_LIFETIME, SESSION_REFRESH_INTERVAL, SESSION_TTL,
+};
 use super::token::TokenHash;
 use super::validation::ValidatedEmail;
 
@@ -48,6 +50,7 @@ pub struct FoundSession {
     pub id: Uuid,
     pub email: String,
     pub role: Role,
+    pub needs_refresh: bool,
 }
 
 /// Public fields of a user, ready for the HTTP DTO.
@@ -204,12 +207,18 @@ where
 
 /// Issue a session. `expires_at` is calculated in the DB to avoid depending on
 /// the app clock (which may be out of sync with Postgres).
-pub async fn create_session(
-    pool: &PgPool,
+///
+/// Accepts any Postgres executor so session rotation can commit in the same
+/// transaction as a password change and revocation of previous sessions.
+pub async fn create_session<'e, E>(
+    executor: E,
     token_hash: &TokenHash,
     user_id: Uuid,
     user_agent: Option<&str>,
-) -> Result<DateTime<Utc>, RepoError> {
+) -> Result<DateTime<Utc>, RepoError>
+where
+    E: Executor<'e, Database = sqlx::Postgres>,
+{
     let row = sqlx::query!(
         r#"
         INSERT INTO sessions (token_hash, user_id, user_agent, expires_at)
@@ -221,7 +230,7 @@ pub async fn create_session(
         user_agent,
         SESSION_TTL.as_secs_f64(),
     )
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?;
 
     Ok(row.expires_at)
@@ -229,19 +238,46 @@ pub async fn create_session(
 
 /// Resolve token → user in one query. `None` covers the three cases where the
 /// client must reauthenticate: nonexistent token, expired session, deleted user.
+///
+/// Also reports `needs_refresh` when sliding the session forward would advance
+/// `expires_at` by at least `SESSION_REFRESH_INTERVAL` (or finish advancing it
+/// to the 30-day `SESSION_MAX_LIFETIME` cap), so callers only issue an UPDATE
+/// and `Set-Cookie` when the browser cookie meaningfully lags the server.
 pub async fn find_session_user(
     pool: &PgPool,
     token_hash: &TokenHash,
 ) -> Result<Option<FoundSession>, RepoError> {
     let row = sqlx::query!(
         r#"
-        SELECT u.id, u.email::text AS "email!", u.role AS "role: Role"
+        SELECT
+            u.id,
+            u.email::text AS "email!",
+            u.role AS "role: Role",
+            (
+                LEAST(
+                    now() + make_interval(secs => $2),
+                    s.created_at + make_interval(secs => $3)
+                ) > s.expires_at
+                AND (
+                    LEAST(
+                        now() + make_interval(secs => $2),
+                        s.created_at + make_interval(secs => $3)
+                    ) >= s.expires_at + make_interval(secs => $4)
+                    OR LEAST(
+                        now() + make_interval(secs => $2),
+                        s.created_at + make_interval(secs => $3)
+                    ) = s.created_at + make_interval(secs => $3)
+                )
+            ) AS "needs_refresh!"
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = $1
           AND s.expires_at > now()
         "#,
-        token_hash.as_bytes()
+        token_hash.as_bytes(),
+        SESSION_TTL.as_secs_f64(),
+        SESSION_MAX_LIFETIME.as_secs_f64(),
+        SESSION_REFRESH_INTERVAL.as_secs_f64(),
     )
     .fetch_optional(pool)
     .await?;
@@ -250,14 +286,17 @@ pub async fn find_session_user(
         id: r.id,
         email: r.email,
         role: r.role,
+        needs_refresh: r.needs_refresh,
     }))
 }
 
 /// Extend the session used, respecting the absolute cap from `created_at`:
 /// a stolen cookie does not live forever through frequent use.
 ///
-/// Best-effort: a failure is logged and does not affect the request.
-pub async fn touch_session(pool: &PgPool, token_hash: &TokenHash) {
+/// Returns the updated `expires_at` so the HTTP layer can re-emit the session
+/// cookie with the same deadline. Best-effort: a DB failure is logged and
+/// returns `None` without failing the request.
+pub async fn touch_session(pool: &PgPool, token_hash: &TokenHash) -> Option<DateTime<Utc>> {
     let result = sqlx::query!(
         r#"
         UPDATE sessions
@@ -268,16 +307,21 @@ pub async fn touch_session(pool: &PgPool, token_hash: &TokenHash) {
             )
         WHERE token_hash = $1
           AND expires_at > now()
+        RETURNING expires_at
         "#,
         token_hash.as_bytes(),
         SESSION_TTL.as_secs_f64(),
         SESSION_MAX_LIFETIME.as_secs_f64(),
     )
-    .execute(pool)
+    .fetch_optional(pool)
     .await;
 
-    if let Err(err) = result {
-        tracing::warn!(error = %err, "could not extend the session");
+    match result {
+        Ok(row) => row.map(|r| r.expires_at),
+        Err(err) => {
+            tracing::warn!(error = %err, "could not extend the session");
+            None
+        }
     }
 }
 

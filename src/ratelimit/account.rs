@@ -327,7 +327,8 @@ impl AccountLimiter {
         Ok(())
     }
 
-    /// Delete counters for accounts without recent activity.
+    /// Delete counters for accounts without recent activity, while preserving
+    /// any lock that is still active.
     ///
     /// Without this, the table grows with every email someone mistyped once.
     /// Returns the number of rows deleted.
@@ -336,6 +337,7 @@ impl AccountLimiter {
             r#"
             DELETE FROM login_attempts
             WHERE updated_at < now() - make_interval(secs => $1)
+              AND (blocked_until IS NULL OR blocked_until <= now())
             "#,
             older_than.as_secs_f64()
         )
