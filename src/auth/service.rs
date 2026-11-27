@@ -208,12 +208,14 @@ pub async fn create_or_reset_user(
 /// Change the calling user's password after checking the current one.
 ///
 /// The new password is validated first: the rule is public, so there is no
-/// reason to spend an argon2 round on a request that cannot succeed. The
-/// session making the change is spared; the others are revoked in the same
-/// transaction as the hash update.
+/// reason to burn a rate-limit slot or spend an argon2 round on a request that
+/// cannot succeed. The session making the change is spared; the others are
+/// revoked in the same transaction as the hash update.
 pub async fn change_password(
     pool: &PgPool,
+    limiter: &AccountLimiter,
     user_id: Uuid,
+    email: &str,
     current_password: &str,
     new_password: &str,
     token_hash: &TokenHash,
@@ -226,14 +228,40 @@ pub async fn change_password(
         return Err(AuthError::InvalidCredentials);
     }
 
+    let email = ValidatedEmail::parse(email).map_err(|_| AuthError::InvalidCredentials)?;
+
+    // Atomically reserve an attempt BEFORE querying the user or running
+    // Argon2, matching `login` so a stolen session cannot brute-force
+    // `current_password` or amplify Argon2 CPU.
+    let locked_until = match limiter.begin_attempt(&email).await? {
+        AttemptReservation::Blocked { until } => {
+            tracing::warn!(
+                email = %email,
+                blocked_until = %until,
+                "password change locked due to failed attempts"
+            );
+            return Err(AuthError::AccountLocked { until });
+        }
+        AttemptReservation::Allowed { locked_until, .. } => locked_until,
+    };
+
     let found = repository::find_user_by_id(pool, user_id)
         .await?
         .ok_or(AuthError::NotFound)?;
 
     let matches = verify_off_thread(current_password.to_string(), found.password_hash).await?;
     if !matches {
+        if let Some(until) = locked_until {
+            tracing::warn!(
+                email = %email,
+                blocked_until = %until,
+                "account locked by failed password-change attempts; applies from the next attempt"
+            );
+        }
         return Err(AuthError::InvalidCredentials);
     }
+
+    limiter.record_success(&email).await?;
 
     let new_hash = hash_off_thread(new_password.to_string()).await?;
 
@@ -689,7 +717,15 @@ mod tests {
 
             let change_err = tokio::time::timeout(
                 Duration::from_millis(200),
-                change_password(&pool, Uuid::now_v7(), oversized, &valid_new, &token_hash),
+                change_password(
+                    &pool,
+                    &limiter,
+                    Uuid::now_v7(),
+                    "owner@pyme.com",
+                    oversized,
+                    &valid_new,
+                    &token_hash,
+                ),
             )
             .await
             .expect("change_password must reject without waiting for an Argon2 permit")

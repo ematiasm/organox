@@ -1456,13 +1456,29 @@ async fn login_and_change_password_cut_exactly_at_max_bytes() {
     };
     assert!(matches!(err, AuthError::Internal(RepoError::Database(_))));
 
-    let err = service::change_password(&pool, Uuid::now_v7(), &over, &new_valid, &token_hash)
-        .await
-        .expect_err("oversized current_password must be rejected");
+    let err = service::change_password(
+        &pool,
+        &limiter,
+        Uuid::now_v7(),
+        "owner@pyme.com",
+        &over,
+        &new_valid,
+        &token_hash,
+    )
+    .await
+    .expect_err("oversized current_password must be rejected");
     assert!(matches!(err, AuthError::InvalidCredentials));
 
-    let err = service::change_password(&pool, Uuid::now_v7(), &exact, &new_valid, &token_hash)
-        .await
-        .expect_err("exact-length current_password must reach the database");
+    let err = service::change_password(
+        &pool,
+        &limiter,
+        Uuid::now_v7(),
+        "owner@pyme.com",
+        &exact,
+        &new_valid,
+        &token_hash,
+    )
+    .await
+    .expect_err("exact-length current_password must reach the database");
     assert!(matches!(err, AuthError::Internal(RepoError::Database(_))));
 }

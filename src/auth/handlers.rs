@@ -30,20 +30,20 @@ pub fn router_with_body_limit(state: AppState, body_limit_bytes: usize) -> Route
     use axum::routing::{get, post, put};
     use tower_http::limit::RequestBodyLimitLayer;
 
-    // Apply the IP limit ONLY to login. Applying it to the entire API would
-    // penalize a legitimate polling frontend and add nothing against brute force.
-    let guarded_login =
-        Router::new()
-            .route("/auth/login", post(login))
-            .route_layer(from_fn_with_state(
-                state.clone(),
-                crate::ratelimit::middleware::limit_by_ip,
-            ));
+    // Apply the IP limit ONLY to credential-checking routes (`login` and
+    // `password`). Applying it to the entire API would penalize a legitimate
+    // polling frontend and add nothing against brute force.
+    let guarded_auth = Router::new()
+        .route("/auth/login", post(login))
+        .route("/auth/password", post(change_password))
+        .route_layer(from_fn_with_state(
+            state.clone(),
+            crate::ratelimit::middleware::limit_by_ip,
+        ));
 
     Router::new()
-        .merge(guarded_login)
+        .merge(guarded_auth)
         .route("/auth/logout", post(logout))
-        .route("/auth/password", post(change_password))
         .route("/auth/me", axum::routing::get(me))
         .route("/users", get(list_users).post(create_user))
         .route("/users/{id}/password", put(reset_password))
@@ -222,7 +222,9 @@ async fn change_password(
 ) -> Result<StatusCode, AppError> {
     service::change_password(
         &state.pool,
+        &state.account_limiter,
         user.id(),
+        user.email(),
         &body.current_password,
         &body.new_password,
         user.token_hash(),
@@ -402,6 +404,9 @@ fn create_user_doc() {}
 /// Requires the current password. The new one must satisfy the password rule.
 /// Every other session of the user is revoked; the session making the change
 /// remains valid.
+///
+/// `429` means the account or IP is temporarily throttled after failed
+/// attempts; includes `Retry-After` with the remaining seconds.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/password",
@@ -413,6 +418,9 @@ fn create_user_doc() {}
          content_type = "application/problem+json"),
         (status = 422, description = "Invalid new password", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
+        (status = 429, description = "Account locked or IP rate limit exceeded", body = crate::openapi::Problem,
+         content_type = "application/problem+json",
+         headers(("Retry-After", description = "Seconds until retry"))),
     )
 )]
 #[allow(dead_code)]
