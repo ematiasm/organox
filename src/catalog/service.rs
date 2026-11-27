@@ -284,7 +284,15 @@ pub async fn list_movements(
     product_id: Uuid,
     limit: i64,
 ) -> Result<Vec<MovementRow>, CatalogError> {
+    // Proving the product exists first turns a typo in the id into a 404
+    // instead of an empty list that looks like "this product never moved".
     let limit = limit.clamp(1, 200);
+    if !repository::product_exists(pool, product_id)
+        .await
+        .map_err(map_repo_error)?
+    {
+        return Err(CatalogError::NotFound);
+    }
     repository::list_movements(pool, product_id, limit)
         .await
         .map_err(map_repo_error)

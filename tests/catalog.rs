@@ -643,11 +643,31 @@ async fn http_unknown_product_returns_404(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn http_insufficient_stock_returns_409(pool: PgPool) {
+async fn http_unknown_product_movements_returns_404(pool: PgPool) {
+    let (_, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
+
+    let response = app(pool)
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/products/{}/movements", Uuid::now_v7()))
+                .header("cookie", format!("session={cookie}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // An unknown id is a missing product, not a product with no movements.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+async fn http_insufficient_stock_returns_409_with_normalized_quantities(pool: PgPool) {
     let (actor, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
     let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
     let product = seed_product(&pool, ProductKind::Product, "Flour", None).await;
-    move_stock(&pool, actor, product, MovementReason::Purchase, dec!(1))
+    move_stock(&pool, actor, product, MovementReason::Purchase, dec!(12.5))
         .await
         .unwrap();
 
@@ -659,7 +679,7 @@ async fn http_insufficient_stock_returns_409(pool: PgPool) {
                 .header("content-type", "application/json")
                 .header("cookie", format!("session={cookie}"))
                 .body(Body::from(
-                    json!({ "reason": "sale", "quantity": "5" }).to_string(),
+                    json!({ "reason": "sale", "quantity": "20" }).to_string(),
                 ))
                 .unwrap(),
         )
@@ -667,6 +687,13 @@ async fn http_insufficient_stock_returns_409(pool: PgPool) {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
+    // `numeric(12,3)` must not leak into the message: the operator reads the
+    // same quantities the API returns, `12.5` and `20`, not `12.500`/`20.000`.
+    let body = body_json(response).await;
+    assert_eq!(
+        body["detail"],
+        "insufficient stock: available 12.5, requested 20"
+    );
 }
 
 #[sqlx::test]
