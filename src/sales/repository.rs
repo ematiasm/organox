@@ -38,6 +38,12 @@ pub enum RepoError {
     #[error("the sale is empty")]
     EmptySale,
 
+    #[error("the quantity must be greater than zero")]
+    QuantityNotPositive,
+
+    #[error("the quantity cannot be negative")]
+    QuantityNegative,
+
     #[error("the quantity has more than 3 decimal places")]
     QuantityPrecision,
 
@@ -190,6 +196,9 @@ pub async fn upsert_item(
     // assuming 0, which is what the customer would otherwise be charged.
     let unit_price = product.price.ok_or(RepoError::ProductDoesNotTrackStock)?;
 
+    if quantity <= Decimal::ZERO {
+        return Err(RepoError::QuantityNotPositive);
+    }
     if quantity.round_dp(3) != quantity {
         return Err(RepoError::QuantityPrecision);
     }
@@ -260,6 +269,9 @@ pub async fn set_item_quantity(
     product_id: Uuid,
     quantity: Decimal,
 ) -> Result<(), RepoError> {
+    if quantity < Decimal::ZERO {
+        return Err(RepoError::QuantityNegative);
+    }
     if quantity > Decimal::ZERO {
         if quantity.round_dp(3) != quantity {
             return Err(RepoError::QuantityPrecision);
@@ -283,7 +295,7 @@ pub async fn set_item_quantity(
         return Err(RepoError::NotEditable);
     }
 
-    if quantity <= Decimal::ZERO {
+    if quantity == Decimal::ZERO {
         sqlx::query!(
             "DELETE FROM sale_items WHERE sale_id = $1 AND product_id = $2",
             sale_id,

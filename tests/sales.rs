@@ -3283,6 +3283,87 @@ async fn http_sale_items_enforce_quantity_and_total_ceilings(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn http_set_item_quantity_rejects_negative_and_excess_precision(pool: PgPool) {
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    let (actor, password) = seed_user_with_password(&pool).await;
+    let product = seed_product(&pool, "Flour", dec!(100.00)).await;
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
+    sales::add_item(&pool, draft, product, dec!(2))
+        .await
+        .unwrap();
+    let cookie = login_cookie(&pool, &password).await;
+
+    // Negative quantity on PUT must return 422 and keep the line intact.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session(
+                "PUT",
+                &format!("/api/v1/sales/{draft}/items/{product}"),
+                &cookie,
+            )
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "quantity": "-1" }).to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.item_count(), 1);
+    assert_eq!(sale.items[0].quantity, dec!(2));
+
+    // >3 decimal places on PUT and POST must return 422 and keep the line intact.
+    for (method, uri, body) in [
+        (
+            "PUT",
+            format!("/api/v1/sales/{draft}/items/{product}"),
+            json!({ "quantity": "1.2345" }),
+        ),
+        (
+            "POST",
+            format!("/api/v1/sales/{draft}/items"),
+            json!({ "product_id": product, "quantity": "1.2345" }),
+        ),
+    ] {
+        let res = app(pool.clone())
+            .oneshot(
+                with_session(method, &uri, &cookie)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.item_count(), 1);
+    assert_eq!(sale.items[0].quantity, dec!(2));
+
+    // Quantity 0 on PUT still removes the line.
+    let res = app(pool.clone())
+        .oneshot(
+            with_session(
+                "PUT",
+                &format!("/api/v1/sales/{draft}/items/{product}"),
+                &cookie,
+            )
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "quantity": "0" }).to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let sale = sales::get(&pool, draft).await.unwrap();
+    assert_eq!(sale.item_count(), 0);
+}
+
+#[sqlx::test]
 async fn midpoint_rounding_line_subtotals_and_frozen_total_stay_consistent(pool: PgPool) {
     use axum::body::Body;
     use axum::http::StatusCode;
