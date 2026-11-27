@@ -156,12 +156,13 @@ movements: no wallet ever collected money for it. See `docs/credit-notes.md`.
   `account_payment` wallet movement (`+1`, carrying `customer_id`,
   `payment_method_id`, and the method's default `wallet_id` at write time) plus
   one `receipt` ledger entry (`-amount`) and its allocations in one
-  transaction. Optional `idempotency_key` (max 100 characters; blank keys are
-  discarded, non-blank keys keep their exact bytes including padding) makes
-  retries safe: fresh writes answer `201`, replays answer `200` with the
-  original receipt paired with the account's **current** balance, unapplied
-  credit, and allocated sale outstandings at replay time, and reusing a key
-  from another entry kind answers `409`.
+  transaction. Optional `idempotency_key` (trimmed; blank keys or keys over 100
+  trimmed characters return `422`, backed by a database `CHECK` constraint)
+  makes retries safe: fresh writes answer `201`, replays match by key alone and
+  answer `200` with the original receipt paired with the account's **current**
+  balance, unapplied credit, and allocated sale outstandings at replay time
+  (regardless of request payload differences), and reusing a key from another
+  entry kind answers `409`.
 - **Credit refunds (`POST /api/v1/customers/{id}/credit-refunds`)**: hands
   collected credit back to the customer by writing one `account_payment_refund`
   wallet movement (`-1`, copying the method's default `wallet_id` at write time

@@ -19,6 +19,10 @@ use crate::customer_accounts::repository::{self, RepoError};
 use crate::payments::model::WalletMovementKind;
 use crate::payments::repository as wallets;
 
+/// Maximum accepted length of an optional idempotency key in characters
+/// (measured after trimming surrounding whitespace).
+pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 100;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ReceiptsError {
     #[error("the payment method is unknown or inactive")]
@@ -41,6 +45,12 @@ pub enum ReceiptsError {
 
     #[error("a credit refund needs a reason")]
     RefundNoteRequired,
+
+    #[error("an idempotency key cannot be blank")]
+    IdempotencyKeyMissing,
+
+    #[error("the idempotency key exceeds {MAX_IDEMPOTENCY_KEY_LEN} characters")]
+    IdempotencyKeyTooLong,
 
     /// The ledger's own typed rejections, each with a sentence the operator
     /// can act on: a bad amount, a sale that is not payable, allocations
@@ -185,11 +195,30 @@ async fn position_with_outstanding(
 /// harmless (an xact-scoped advisory lock is free the second time) and
 /// deliberate — the ledger owns its own rules, and this endpoint never
 /// trusts its own read of them.
+/// Validate and trim an optional idempotency key, matching `credit_notes` and
+/// `purchase_returns`: whitespace is not an identity, blank strings are
+/// rejected with `422`, and the 100-character cap counts trimmed characters.
+pub fn normalize_idempotency_key(raw: Option<&str>) -> Result<Option<&str>, ReceiptsError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ReceiptsError::IdempotencyKeyMissing);
+    }
+    if trimmed.chars().count() > MAX_IDEMPOTENCY_KEY_LEN {
+        return Err(ReceiptsError::IdempotencyKeyTooLong);
+    }
+    Ok(Some(trimmed))
+}
+
 pub async fn collect(
     pool: &PgPool,
     customer_id: Uuid,
     input: CollectInput<'_>,
 ) -> Result<CollectedReceipt, ReceiptsError> {
+    let idempotency_key = normalize_idempotency_key(input.idempotency_key)?;
+
     // The ledger rejects these too, but only after the movement exists: a
     // boundary that publishes a 422 owns the sentence, and the transaction is
     // better off never opening.
@@ -206,7 +235,7 @@ pub async fn collect(
     // A replay is answered before anything is written, and the lookup runs
     // under the lock taken above: two copies of one request serialize here,
     // and the second one sees the first one's receipt instead of racing it.
-    if let Some(key) = input.idempotency_key
+    if let Some(key) = idempotency_key
         && let Some(existing) = repository::receipt_by_key_in(&mut tx, customer_id, key).await?
     {
         // The sales the first receipt paid are read back from its own
@@ -272,7 +301,7 @@ pub async fn collect(
             wallet_movement_id: movement_id,
             amount: input.amount,
             allocations: input.allocations,
-            idempotency_key: input.idempotency_key,
+            idempotency_key,
             note: input.note,
             created_by: input.actor,
         },
@@ -327,6 +356,7 @@ pub async fn refund_credit(
     customer_id: Uuid,
     input: RefundCreditInput<'_>,
 ) -> Result<RefundedCredit, ReceiptsError> {
+    let idempotency_key = normalize_idempotency_key(input.idempotency_key)?;
     validate_amount(input.amount)?;
     let note = input.note.trim();
     if note.is_empty() {
@@ -336,7 +366,7 @@ pub async fn refund_credit(
     let mut tx = pool.begin().await?;
     repository::lock_customer(&mut tx, customer_id).await?;
 
-    if let Some(key) = input.idempotency_key
+    if let Some(key) = idempotency_key
         && let Some(existing) =
             repository::credit_refund_by_key_in(&mut tx, customer_id, key).await?
     {
@@ -383,7 +413,7 @@ pub async fn refund_credit(
             customer_id,
             wallet_movement_id: movement_id,
             amount: input.amount,
-            idempotency_key: input.idempotency_key,
+            idempotency_key,
             note: Some(note),
             created_by: input.actor,
         },
