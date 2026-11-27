@@ -35,9 +35,11 @@ fn config() -> organox::config::Config {
     // Minimal config for test state, without reading the environment.
     organox::config::Config {
         database_url: String::new(),
+        db_max_connections: organox::db::DEFAULT_MAX_CONNECTIONS,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         log_format: organox::config::LogFormat::Pretty,
         rust_log: String::new(),
+        frontend_dir: std::path::PathBuf::from(organox::config::DEFAULT_FRONTEND_DIR),
         cookie_secure: false,
         enable_docs: false,
         login_max_failures: 3,
