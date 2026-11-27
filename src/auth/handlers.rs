@@ -100,15 +100,19 @@ pub struct ResetPasswordRequest {
 
 // --- Handlers -----------------------------------------------------------
 
+fn request_user_agent(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+}
+
 async fn login(
     State(state): State<AppState>,
     cookies: Cookies,
     headers: HeaderMap,
     AppJson(body): AppJson<LoginRequest>,
 ) -> Result<Response, AppError> {
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok());
+    let user_agent = request_user_agent(&headers);
 
     match service::login(
         &state.pool,
@@ -218,18 +222,26 @@ async fn create_user(
 async fn change_password(
     State(state): State<AppState>,
     user: AuthUser,
+    cookies: Cookies,
+    headers: HeaderMap,
     AppJson(body): AppJson<ChangePasswordRequest>,
 ) -> Result<StatusCode, AppError> {
-    service::change_password(
+    let session = service::change_password(
         &state.pool,
         &state.account_limiter,
         user.id(),
         user.email(),
         &body.current_password,
         &body.new_password,
-        user.token_hash(),
+        request_user_agent(&headers),
     )
     .await?;
+
+    cookies.add(session_cookie(
+        session.token.as_str().to_string(),
+        session.expires_at,
+        state.cookie_secure,
+    ));
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -237,21 +249,30 @@ async fn change_password(
 async fn reset_password(
     State(state): State<AppState>,
     user: AuthUser,
+    cookies: Cookies,
+    headers: HeaderMap,
     AppPath(id): AppPath<Uuid>,
     AppJson(body): AppJson<ResetPasswordRequest>,
 ) -> Result<StatusCode, AppError> {
     // Same owner-only gate as user creation, before any DB work or hashing.
     user.require_user_management()?;
 
-    service::reset_password(
+    if let Some(session) = service::reset_password(
         &state.pool,
         user.role(),
         id,
         &body.new_password,
         user.id(),
-        user.token_hash(),
+        request_user_agent(&headers),
     )
-    .await?;
+    .await?
+    {
+        cookies.add(session_cookie(
+            session.token.as_str().to_string(),
+            session.expires_at,
+            state.cookie_secure,
+        ));
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -402,8 +423,8 @@ fn create_user_doc() {}
 /// Change the current user's password.
 ///
 /// Requires the current password. The new one must satisfy the password rule.
-/// Every other session of the user is revoked; the session making the change
-/// remains valid.
+/// Every previous session of the user — including the caller's — is revoked
+/// atomically and replaced with a rotated `session` cookie.
 ///
 /// `429` means the account or IP is temporarily throttled after failed
 /// attempts; includes `Retry-After` with the remaining seconds.
@@ -413,7 +434,8 @@ fn create_user_doc() {}
     tag = "auth",
     request_body = ChangePasswordRequest,
     responses(
-        (status = 204, description = "Password changed, other sessions revoked"),
+        (status = 204, description = "Password changed, previous sessions revoked and caller session rotated",
+         headers(("Set-Cookie", description = "session=<new-token>; HttpOnly; SameSite=Strict"))),
         (status = 401, description = "Wrong current password or no session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 422, description = "Invalid new password", body = crate::openapi::Problem,
@@ -428,8 +450,9 @@ fn change_password_doc() {}
 
 /// Reset another user's password. Only `owner`.
 ///
-/// No current password is requested: the owner cannot know it. Every session
-/// of the target is revoked, except the caller's when resetting their own.
+/// No current password is requested: the owner cannot know it. Every previous
+/// session of the target is revoked atomically; when the owner resets their
+/// own password, a rotated `session` cookie is emitted.
 #[utoipa::path(
     put,
     path = "/api/v1/users/{id}/password",
@@ -437,7 +460,7 @@ fn change_password_doc() {}
     request_body = ResetPasswordRequest,
     params(("id" = Uuid, Path, description = "Target user id")),
     responses(
-        (status = 204, description = "Password reset, target sessions revoked"),
+        (status = 204, description = "Password reset, target sessions revoked (and rotated Set-Cookie emitted on self-reset)"),
         (status = 401, description = "No session", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,

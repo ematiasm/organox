@@ -78,6 +78,7 @@ impl From<PasswordError> for AuthError {
 
 /// Issued session. The plaintext token is delivered **only once**, for the
 /// cookie; afterward only its hash exists.
+#[derive(Debug)]
 pub struct IssuedSession {
     pub token: SessionToken,
     pub expires_at: DateTime<Utc>,
@@ -209,8 +210,9 @@ pub async fn create_or_reset_user(
 ///
 /// The new password is validated first: the rule is public, so there is no
 /// reason to burn a rate-limit slot or spend an argon2 round on a request that
-/// cannot succeed. The session making the change is spared; the others are
-/// revoked in the same transaction as the hash update.
+/// cannot succeed. Every existing session of the user — including the caller's
+/// previous token — is revoked and replaced with a newly issued session in the
+/// same transaction as the hash update.
 pub async fn change_password(
     pool: &PgPool,
     limiter: &AccountLimiter,
@@ -218,8 +220,8 @@ pub async fn change_password(
     email: &str,
     current_password: &str,
     new_password: &str,
-    token_hash: &TokenHash,
-) -> Result<(), AuthError> {
+    user_agent: Option<&str>,
+) -> Result<IssuedSession, AuthError> {
     validation::validate_password(new_password)?;
 
     if current_password.len() > validation::MAX_PASSWORD_BYTES {
@@ -264,30 +266,35 @@ pub async fn change_password(
     limiter.record_success(&email).await?;
 
     let new_hash = hash_off_thread(new_password.to_string()).await?;
+    let token = SessionToken::generate();
 
     let mut tx = pool.begin().await?;
     if !repository::update_password_hash(&mut *tx, user_id, &new_hash).await? {
         return Err(AuthError::NotFound);
     }
-    repository::delete_sessions_for_user(&mut *tx, user_id, Some(token_hash)).await?;
+    repository::delete_sessions_for_user(&mut *tx, user_id, None).await?;
+    let expires_at =
+        repository::create_session(&mut *tx, &token.hash(), user_id, user_agent).await?;
     tx.commit().await?;
 
-    Ok(())
+    Ok(IssuedSession { token, expires_at })
 }
 
 /// Reset any user's password on behalf of an owner.
 ///
 /// No current password is requested: an owner cannot know another user's.
-/// Every session of the target is revoked except the caller's when the target
-/// is the caller, so both this route and `change_password` share one rule.
+/// Every existing session of the target is revoked atomically; when the owner
+/// resets their own password (`caller_id == target_id`), a fresh session token
+/// is issued in the same transaction so the caller's token is rotated rather
+/// than preserved.
 pub async fn reset_password(
     pool: &PgPool,
     actor_role: Role,
     target_id: Uuid,
     new_password: &str,
     caller_id: Uuid,
-    caller_token_hash: &TokenHash,
-) -> Result<(), AuthError> {
+    user_agent: Option<&str>,
+) -> Result<Option<IssuedSession>, AuthError> {
     if !actor_role.can_manage_users() {
         return Err(AuthError::Forbidden);
     }
@@ -299,16 +306,23 @@ pub async fn reset_password(
         .ok_or(AuthError::NotFound)?;
 
     let new_hash = hash_off_thread(new_password.to_string()).await?;
-    let keep = (caller_id == target_id).then_some(caller_token_hash);
 
     let mut tx = pool.begin().await?;
     if !repository::update_password_hash(&mut *tx, target_id, &new_hash).await? {
         return Err(AuthError::NotFound);
     }
-    repository::delete_sessions_for_user(&mut *tx, target_id, keep).await?;
+    repository::delete_sessions_for_user(&mut *tx, target_id, None).await?;
+    let rotated = if caller_id == target_id {
+        let token = SessionToken::generate();
+        let expires_at =
+            repository::create_session(&mut *tx, &token.hash(), target_id, user_agent).await?;
+        Some(IssuedSession { token, expires_at })
+    } else {
+        None
+    };
     tx.commit().await?;
 
-    Ok(())
+    Ok(rotated)
 }
 
 /// Verify credentials and, if valid, issue a new session.
@@ -695,7 +709,6 @@ mod tests {
         let pool =
             PgPool::connect_lazy("postgres://127.0.0.1:1/never_connected").expect("lazy pool");
         let limiter = AccountLimiter::new(pool.clone(), crate::ratelimit::AccountPolicy::default());
-        let token_hash = SessionToken::generate().hash();
         let valid_new = format!("pw-{}", Uuid::now_v7());
 
         // Test both an ASCII byte-boundary overflow and a multi-byte UTF-8
@@ -724,7 +737,7 @@ mod tests {
                     "owner@pyme.com",
                     oversized,
                     &valid_new,
-                    &token_hash,
+                    None,
                 ),
             )
             .await

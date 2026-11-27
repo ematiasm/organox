@@ -204,12 +204,18 @@ where
 
 /// Issue a session. `expires_at` is calculated in the DB to avoid depending on
 /// the app clock (which may be out of sync with Postgres).
-pub async fn create_session(
-    pool: &PgPool,
+///
+/// Accepts any Postgres executor so session rotation can commit in the same
+/// transaction as a password change and revocation of previous sessions.
+pub async fn create_session<'e, E>(
+    executor: E,
     token_hash: &TokenHash,
     user_id: Uuid,
     user_agent: Option<&str>,
-) -> Result<DateTime<Utc>, RepoError> {
+) -> Result<DateTime<Utc>, RepoError>
+where
+    E: Executor<'e, Database = sqlx::Postgres>,
+{
     let row = sqlx::query!(
         r#"
         INSERT INTO sessions (token_hash, user_id, user_agent, expires_at)
@@ -221,7 +227,7 @@ pub async fn create_session(
         user_agent,
         SESSION_TTL.as_secs_f64(),
     )
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await?;
 
     Ok(row.expires_at)

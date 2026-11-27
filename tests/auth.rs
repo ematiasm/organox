@@ -10,7 +10,6 @@ use organox::auth::model::Role;
 use organox::auth::password::{self, PasswordError};
 use organox::auth::repository::{self, NewUser, RepoError};
 use organox::auth::service::{self, AuthError, LoginOutcome, UpsertOutcome};
-use organox::auth::token::SessionToken;
 use organox::auth::validation::{self, MAX_PASSWORD_BYTES, ValidationError};
 use organox::ratelimit::{AccountLimiter, AccountPolicy};
 use organox::routes::router;
@@ -912,7 +911,7 @@ async fn self_password_change_validates_new_password_before_current_password(poo
 }
 
 #[sqlx::test]
-async fn self_password_change_revokes_other_sessions_and_keeps_the_current_one(pool: sqlx::PgPool) {
+async fn self_password_change_rotates_session_and_revokes_all_previous_ones(pool: sqlx::PgPool) {
     let old = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
     let first = app(pool.clone())
         .oneshot(login_request("owner@pyme.com", &old))
@@ -934,12 +933,32 @@ async fn self_password_change_revokes_other_sessions_and_keeps_the_current_one(p
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response.headers().get_all("set-cookie").iter().count(),
+        1,
+        "password change must emit exactly one rotated Set-Cookie header"
+    );
+    let rotated = session_cookie(&response);
+    assert_ne!(
+        rotated, current,
+        "password change must issue a fresh session token instead of reusing the caller's token"
+    );
+    assert_ne!(rotated, other);
     assert_ne!(password_hash(&pool, "owner@pyme.com").await, hash_before);
     assert_eq!(count_rows(&pool, "sessions").await, 1);
-    assert_eq!(me_status(app(pool.clone()), &current).await, StatusCode::OK);
+    assert_eq!(
+        me_status(app(pool.clone()), &current).await,
+        StatusCode::UNAUTHORIZED,
+        "previous caller session token must be revoked after rotation"
+    );
     assert_eq!(
         me_status(app(pool.clone()), &other).await,
         StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        me_status(app(pool.clone()), &rotated).await,
+        StatusCode::OK,
+        "rotated session token must authenticate"
     );
     assert_eq!(
         app(pool.clone())
@@ -1162,6 +1181,10 @@ async fn owner_reset_revokes_target_sessions_and_allows_new_password(pool: sqlx:
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        response.headers().get("set-cookie").is_none(),
+        "resetting another user's password must not rotate the caller's session cookie"
+    );
     assert_ne!(password_hash(&pool, "target@pyme.com").await, hash_before);
     // Only the caller's session survives; the caller is not the target.
     assert_eq!(count_rows(&pool, "sessions").await, 1);
@@ -1189,7 +1212,9 @@ async fn owner_reset_revokes_target_sessions_and_allows_new_password(pool: sqlx:
 }
 
 #[sqlx::test]
-async fn owner_reset_of_own_password_keeps_current_session(pool: sqlx::PgPool) {
+async fn owner_reset_of_own_password_rotates_session_and_revokes_all_previous_ones(
+    pool: sqlx::PgPool,
+) {
     let password = seed_user(&pool, "owner@pyme.com", Role::Owner).await;
     let first = app(pool.clone())
         .oneshot(login_request("owner@pyme.com", &password))
@@ -1211,12 +1236,32 @@ async fn owner_reset_of_own_password_keeps_current_session(pool: sqlx::PgPool) {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response.headers().get_all("set-cookie").iter().count(),
+        1,
+        "owner self-reset must emit exactly one rotated Set-Cookie header"
+    );
+    let rotated = session_cookie(&response);
+    assert_ne!(
+        rotated, current,
+        "owner self-reset must rotate the caller's session token"
+    );
+    assert_ne!(rotated, other);
     assert_ne!(password_hash(&pool, "owner@pyme.com").await, hash_before);
     assert_eq!(count_rows(&pool, "sessions").await, 1);
-    assert_eq!(me_status(app(pool.clone()), &current).await, StatusCode::OK);
+    assert_eq!(
+        me_status(app(pool.clone()), &current).await,
+        StatusCode::UNAUTHORIZED,
+        "previous caller session token must be revoked after self-reset rotation"
+    );
     assert_eq!(
         me_status(app(pool.clone()), &other).await,
         StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        me_status(app(pool.clone()), &rotated).await,
+        StatusCode::OK,
+        "rotated session token must authenticate"
     );
     assert_eq!(
         app(pool.clone())
@@ -1442,7 +1487,6 @@ async fn login_and_change_password_cut_exactly_at_max_bytes() {
     let limiter = AccountLimiter::new(pool.clone(), AccountPolicy::default());
     let exact = "a".repeat(MAX_PASSWORD_BYTES);
     let over = format!("{exact}b");
-    let token_hash = SessionToken::generate().hash();
     let new_valid = format!("pw-{}", Uuid::new_v4());
 
     let outcome = service::login(&pool, &limiter, "owner@pyme.com", &over, None)
@@ -1463,7 +1507,7 @@ async fn login_and_change_password_cut_exactly_at_max_bytes() {
         "owner@pyme.com",
         &over,
         &new_valid,
-        &token_hash,
+        None,
     )
     .await
     .expect_err("oversized current_password must be rejected");
@@ -1476,7 +1520,7 @@ async fn login_and_change_password_cut_exactly_at_max_bytes() {
         "owner@pyme.com",
         &exact,
         &new_valid,
-        &token_hash,
+        None,
     )
     .await
     .expect_err("exact-length current_password must reach the database");
