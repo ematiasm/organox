@@ -99,6 +99,7 @@ pub struct IdResponse {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
     /// Include deactivated rows. The settings screen needs them so a wallet can
     /// be brought back; the POS does not.
@@ -107,6 +108,7 @@ pub struct ListQuery {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListMovementsQuery {
     /// Maximum number of movements to return (default 50, clamped to 1..=200).
     pub limit: Option<i64>,

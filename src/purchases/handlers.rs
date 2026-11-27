@@ -153,6 +153,7 @@ pub struct CompletePurchaseRequest {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListPurchasesQuery {
     pub status: Option<PurchaseStatus>,
     pub supplier_id: Option<Uuid>,

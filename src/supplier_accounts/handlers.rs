@@ -172,6 +172,7 @@ pub struct SupplierAdjustmentResponse {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListSupplierAccountLogQuery {
     /// Maximum number of entries to return (default 50, clamped to 1..=200).
     pub limit: Option<i64>,
@@ -185,6 +186,7 @@ pub struct ListSupplierAccountLogQuery {
 /// loads. The totals and aging describe the whole report either way; only the
 /// `items` array is windowed.
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListReportQuery {
     /// Maximum number of suppliers to return (default: all of them).
     pub limit: Option<i64>,
@@ -198,6 +200,7 @@ pub struct ListReportQuery {
 /// to pair each charge with its purchase return. Passing it returns a bounded
 /// window and `entries_total` still reports the whole ledger.
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListStatementQuery {
     /// Maximum number of entries to return (default: all of them).
     pub limit: Option<i64>,

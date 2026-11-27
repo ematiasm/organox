@@ -20,27 +20,21 @@
         "parameters": [
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of suppliers to return (default: all of them).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Suppliers to skip from the first (default 0).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -80,27 +74,21 @@
         "parameters": [
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of customers to return (default: all of them).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Customers to skip from the first (default 0).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -307,46 +295,37 @@
         "parameters": [
           {
             "name": "include_inactive",
-            "in": "path",
+            "in": "query",
             "description": "Include deactivated customers. Absent, the list shows only active ones.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
             "name": "search",
-            "in": "path",
+            "in": "query",
             "description": "Matches the name or the document, case-insensitively.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -584,27 +563,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default: all of them).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Entries to skip from the oldest (default 0).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -664,27 +637,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Entries to skip from the newest (default 0).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -979,27 +946,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Entries to skip from the newest (default 0).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -1143,9 +1104,9 @@
         "parameters": [
           {
             "name": "include_inactive",
-            "in": "path",
+            "in": "query",
             "description": "Include deactivated rows. The settings screen needs them so a wallet can\nbe brought back; the POS does not.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "boolean"
             }
@@ -1335,59 +1296,43 @@
         "parameters": [
           {
             "name": "kind",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "oneOf": [
-                {
-                  "$ref": "#/components/schemas/ProductKind"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/components/schemas/ProductKind"
             }
           },
           {
             "name": "include_inactive",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
             "name": "search",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -1660,13 +1605,10 @@
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -1790,52 +1732,36 @@
         "parameters": [
           {
             "name": "status",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "oneOf": [
-                {
-                  "$ref": "#/components/schemas/PurchaseStatus"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/components/schemas/PurchaseStatus"
             }
           },
           {
             "name": "supplier_id",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
+              "type": "string",
               "format": "uuid"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -2575,25 +2501,19 @@
         "parameters": [
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -3317,46 +3237,37 @@
         "parameters": [
           {
             "name": "include_inactive",
-            "in": "path",
+            "in": "query",
             "description": "Include deactivated suppliers. Absent, only active suppliers are returned.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
             "name": "search",
-            "in": "path",
+            "in": "query",
             "description": "Matches name or document, case-insensitively.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -3594,27 +3505,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default: all of them).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Entries to skip from the oldest (default 0).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -3674,27 +3579,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Entries to skip from the newest (default 0).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -3989,27 +3888,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Entries to skip from the newest (default 0).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -4343,9 +4236,9 @@
         "parameters": [
           {
             "name": "include_inactive",
-            "in": "path",
+            "in": "query",
             "description": "Include deactivated rows. The settings screen needs them so a wallet can\nbe brought back; the POS does not.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "boolean"
             }
@@ -4585,27 +4478,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of movements to return (default 50, clamped to 1..=200).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "Movements to skip from the newest (default 0).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }

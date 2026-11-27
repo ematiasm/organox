@@ -90,6 +90,7 @@ pub struct MovementResponse {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListProductsQuery {
     pub kind: Option<ProductKind>,
     #[serde(default)]
@@ -137,6 +138,7 @@ pub struct RecordMovementRequest {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListMovementsQuery {
     pub limit: Option<i64>,
 }

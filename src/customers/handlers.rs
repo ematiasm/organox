@@ -115,6 +115,7 @@ where
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListCustomersQuery {
     /// Include deactivated customers. Absent, the list shows only active ones.
     #[serde(default)]

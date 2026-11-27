@@ -2581,14 +2581,14 @@ export type $defs = Record<string, never>;
 export interface operations {
     list_payables_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Maximum number of suppliers to return (default: all of them). */
-                limit: number | null;
+                limit?: number;
                 /** @description Suppliers to skip from the first (default 0). */
-                offset: number | null;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -2615,14 +2615,14 @@ export interface operations {
     };
     list_receivables_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Maximum number of customers to return (default: all of them). */
-                limit: number | null;
+                limit?: number;
                 /** @description Customers to skip from the first (default 0). */
-                offset: number | null;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -2791,16 +2791,16 @@ export interface operations {
     };
     list_customers_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Include deactivated customers. Absent, the list shows only active ones. */
-                include_inactive: boolean;
+                include_inactive?: boolean;
                 /** @description Matches the name or the document, case-insensitively. */
-                search: string | null;
-                limit: number | null;
-                offset: number | null;
+                search?: string;
+                limit?: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -2980,15 +2980,16 @@ export interface operations {
     };
     get_account_statement_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default: all of them). */
+                limit?: number;
+                /** @description Entries to skip from the oldest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Customer ID */
                 id: string;
-                /** @description Maximum number of entries to return (default: all of them). */
-                limit: number | null;
-                /** @description Entries to skip from the oldest (default 0). */
-                offset: number | null;
             };
             cookie?: never;
         };
@@ -3025,15 +3026,16 @@ export interface operations {
     };
     list_adjustments_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Entries to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Customer ID */
                 id: string;
-                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
-                limit: number | null;
-                /** @description Entries to skip from the newest (default 0). */
-                offset: number | null;
             };
             cookie?: never;
         };
@@ -3253,15 +3255,16 @@ export interface operations {
     };
     list_receipts_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Entries to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Customer ID */
                 id: string;
-                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
-                limit: number | null;
-                /** @description Entries to skip from the newest (default 0). */
-                offset: number | null;
             };
             cookie?: never;
         };
@@ -3370,15 +3373,15 @@ export interface operations {
     };
     list_payment_methods_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /**
                  * @description Include deactivated rows. The settings screen needs them so a wallet can
                  *     be brought back; the POS does not.
                  */
-                include_inactive: boolean;
+                include_inactive?: boolean;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -3526,15 +3529,15 @@ export interface operations {
     };
     list_products_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                kind: components["schemas"]["ProductKind"] | null;
-                include_inactive: boolean;
-                search: string | null;
-                limit: number | null;
-                offset: number | null;
+            query?: {
+                kind?: components["schemas"]["ProductKind"];
+                include_inactive?: boolean;
+                search?: string;
+                limit?: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -3744,12 +3747,13 @@ export interface operations {
     };
     list_movements_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+            };
             header?: never;
             path: {
                 /** @description Product ID */
                 id: string;
-                limit: number | null;
             };
             cookie?: never;
         };
@@ -3840,14 +3844,14 @@ export interface operations {
     };
     list_purchases_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                status: components["schemas"]["PurchaseStatus"] | null;
-                supplier_id: string | null;
-                limit: number | null;
-                offset: number | null;
+            query?: {
+                status?: components["schemas"]["PurchaseStatus"];
+                supplier_id?: string;
+                limit?: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -4418,12 +4422,12 @@ export interface operations {
     };
     list_sales_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                limit: number | null;
-                offset: number | null;
+            query?: {
+                limit?: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -4976,16 +4980,16 @@ export interface operations {
     };
     list_suppliers_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Include deactivated suppliers. Absent, only active suppliers are returned. */
-                include_inactive: boolean;
+                include_inactive?: boolean;
                 /** @description Matches name or document, case-insensitively. */
-                search: string | null;
-                limit: number | null;
-                offset: number | null;
+                search?: string;
+                limit?: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -5165,15 +5169,16 @@ export interface operations {
     };
     get_account_statement_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default: all of them). */
+                limit?: number;
+                /** @description Entries to skip from the oldest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Supplier ID */
                 id: string;
-                /** @description Maximum number of entries to return (default: all of them). */
-                limit: number | null;
-                /** @description Entries to skip from the oldest (default 0). */
-                offset: number | null;
             };
             cookie?: never;
         };
@@ -5210,15 +5215,16 @@ export interface operations {
     };
     list_adjustments_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Entries to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Supplier ID */
                 id: string;
-                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
-                limit: number | null;
-                /** @description Entries to skip from the newest (default 0). */
-                offset: number | null;
             };
             cookie?: never;
         };
@@ -5438,15 +5444,16 @@ export interface operations {
     };
     list_payments_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Entries to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Supplier ID */
                 id: string;
-                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
-                limit: number | null;
-                /** @description Entries to skip from the newest (default 0). */
-                offset: number | null;
             };
             cookie?: never;
         };
@@ -5714,15 +5721,15 @@ export interface operations {
     };
     list_wallets_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /**
                  * @description Include deactivated rows. The settings screen needs them so a wallet can
                  *     be brought back; the POS does not.
                  */
-                include_inactive: boolean;
+                include_inactive?: boolean;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -5902,15 +5909,16 @@ export interface operations {
     };
     list_wallet_movements_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of movements to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Movements to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Wallet id */
                 id: string;
-                /** @description Maximum number of movements to return (default 50, clamped to 1..=200). */
-                limit: number | null;
-                /** @description Movements to skip from the newest (default 0). */
-                offset: number | null;
             };
             cookie?: never;
         };
