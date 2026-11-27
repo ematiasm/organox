@@ -107,7 +107,13 @@ is documented in `docs/customers.md`.
 | POST | `/api/v1/sales/{id}/complete` | Charges; takes the list of payments and the optional `on_account` part |
 | POST | `/api/v1/sales/{id}/cancel` | Cancels the draft |
 | PUT | `/api/v1/sales/{id}/customer` | Attaches or clears the draft's customer; body `{"customer_id": "<uuid>"}` or `{"customer_id": null}` |
-| GET | `/api/v1/sales` | Most recent charged sales |
+| GET | `/api/v1/sales` | Charged sales, newest first, paginated with `limit` (1–200, default 50) and `offset`; returns `{items, limit, offset, total}` |
+
+`GET /api/v1/sales` answers one page of charged sales plus the total number of
+charged sales, so a client can walk the history without asking for an unbounded
+result. Items for every sale on the page are read in one batched query: listing
+50 sales is a fixed number of statements, not one per sale. The same screen in
+the app pages through that envelope (`/operations/sales?page=N`).
 
 ## How the sale is paid
 

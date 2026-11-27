@@ -163,3 +163,41 @@ fn supplier_accounts_suppliers_purchases_and_wallet_schemas_are_complete() {
         }
     }
 }
+
+/// Every documented parameter must sit where the route actually reads it: a
+/// `limit`/`offset`/`search` filter is a query parameter, and a parameter
+/// declared `in: path` must be one of the `{placeholders}` in the route.
+///
+/// The spec is what clients generate their call signatures from, so a filter
+/// published as a path parameter is a broken client, not a cosmetic slip.
+#[test]
+fn parameters_are_declared_in_the_location_the_route_uses() {
+    let doc = spec_json();
+    let paths = doc["paths"].as_object().expect("paths object");
+
+    for (path, operations) in paths {
+        for (method, operation) in operations.as_object().expect("operations object") {
+            for parameter in operation
+                .get("parameters")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let name = parameter["name"].as_str().expect("parameter name");
+                let location = parameter["in"].as_str().expect("parameter location");
+
+                if location == "path" {
+                    assert!(
+                        path.contains(&format!("{{{name}}}")),
+                        "{method} {path} declares {name} in the path, but the route has no such placeholder"
+                    );
+                } else {
+                    assert_eq!(
+                        location, "query",
+                        "{method} {path} declares {name} in an unexpected location"
+                    );
+                }
+            }
+        }
+    }
+}

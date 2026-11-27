@@ -191,18 +191,27 @@ movements: no wallet ever collected money for it. See `docs/credit-notes.md`.
   `unapplied_credit`, `outstanding_total`), ledger `entries` (oldest first with
   `running_balance`), and `outstanding_sales` (oldest first with `charged`,
   `cancelled`, `allocated`, `outstanding`) all come from one consistent
-  snapshot with zero write locks.
+  snapshot with zero write locks. Entries are paginated by default (`?limit=`
+  default 100, clamped to `1..=500`, `?offset=` default 0). `running_balance`
+  is a window over the whole ledger, so a later page still reports the balance
+  the account really had at that entry, and `entries_total` always counts every
+  entry. The account panel opens on the latest page so recent activity is
+  visible immediately.
 - **`GET /api/v1/customers/{id}/receipts`**: write log of collections, newest
-  first (`?limit=`, default 50, clamped to `1..=200`), joining wallet, payment
-  method, and note from `wallet_movements` and batch-loading allocations.
+  first (`?limit=`, default 50, clamped to `1..=200`, `?offset=`, default 0),
+  joining wallet, payment method, and note from `wallet_movements` and
+  batch-loading allocations.
 - **`GET /api/v1/customers/{id}/adjustments`**: write log of manual
-  adjustments, newest first (`?limit=`, default 50, clamped to `1..=200`), with
-  signed `amount`.
+  adjustments, newest first (`?limit=`, default 50, clamped to `1..=200`,
+  `?offset=`, default 0), with signed `amount`.
 - **`GET /api/v1/accounts/receivables`**: every customer with `balance != 0` or
   `unapplied_credit != 0`, plus portfolio totals and aging buckets (`0-30`,
   `31-60`, `61-90`, `90+`) computed from each open sale's `completed_at`
   timestamp in whole elapsed days (`FLOOR(EXTRACT(EPOCH FROM (NOW() -
-  completed_at)) / 86400)`). There is no due date in this delivery.
+  completed_at)) / 86400)`). There is no due date in this delivery. `items` is
+  paginated by default (`?limit=` default 50, clamped to `1..=200`, `?offset=`
+  default 0). Totals, aging and `items_total` always describe the whole report,
+  never the page.
 - **`GET /api/v1/customers` and `GET /api/v1/customers/{id}`**: include derived
   `balance` and `available_credit` alongside `credit_limit`.
 
@@ -216,13 +225,13 @@ catalog, sales, payments, and customers. Errors are `application/problem+json`
 
 | Method | Route | Result |
 |---|---|---|
-| GET | `/api/v1/customers/{id}/account` | `200` `CustomerAccountResponse` (position, oldest-first entries with running balance, open sales); `404` unknown customer |
-| GET | `/api/v1/customers/{id}/receipts?limit=` | `200` `ReceiptLogResponse[]` (newest first, `limit` 1..=200); `404` unknown customer |
+| GET | `/api/v1/customers/{id}/account` | `200` `CustomerAccountResponse` (position, oldest-first entries with running balance and `entries_total`, open sales; `?limit=` default 100, 1..=500, `?offset=` default 0); `404` unknown customer |
+| GET | `/api/v1/customers/{id}/receipts?limit=&offset=` | `200` `ReceiptLogResponse[]` (newest first, `limit` 1..=200, `offset` default 0); `404` unknown customer |
 | POST | `/api/v1/customers/{id}/receipts` | `201` fresh / `200` replay `ReceiptResponse`; `404` unknown customer or sale; `409` busy account or cross-kind key collision; `422` invalid method, amount, key or allocation |
 | POST | `/api/v1/customers/{id}/credit-refunds` | `201` fresh / `200` replay `CreditRefundResponse`; `404` unknown customer; `409` busy account or cross-kind key collision; `422` invalid method, blank note, bad amount or insufficient credit |
-| GET | `/api/v1/customers/{id}/adjustments?limit=` | `200` `AdjustmentLogResponse[]` (newest first, `limit` 1..=200); `404` unknown customer |
+| GET | `/api/v1/customers/{id}/adjustments?limit=&offset=` | `200` `AdjustmentLogResponse[]` (newest first, `limit` 1..=200, `offset` default 0); `404` unknown customer |
 | POST | `/api/v1/customers/{id}/adjustments` | `201` `AdjustmentResponse`; `404` unknown customer; `409` busy account; `422` blank note, bad amount or balance crossing below zero |
-| GET | `/api/v1/accounts/receivables` | `200` `ReceivablesResponse` (portfolio totals, aging buckets, open-position customers) |
+| GET | `/api/v1/accounts/receivables` | `200` `ReceivablesResponse` (portfolio totals, aging buckets, open-position customers, `items_total`; `?limit=` default 50, 1..=200, `?offset=` default 0) |
 
 Checkout (`POST /api/v1/sales/{id}/complete`), credit notes
 (`POST /api/v1/sales/{id}/credit-notes`), and customer management

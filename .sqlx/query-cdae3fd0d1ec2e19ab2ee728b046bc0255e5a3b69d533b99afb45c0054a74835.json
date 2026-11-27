@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id,\n               customer_id,\n               kind AS \"kind: CustomerAccountEntryKind\",\n               amount,\n               sale_id,\n               credit_note_id,\n               wallet_movement_id,\n               note,\n               created_by,\n               created_at\n        FROM customer_account_entries\n        WHERE customer_id = $1\n        ORDER BY created_at ASC, id ASC\n        ",
+  "query": "\n        SELECT id,\n               customer_id,\n               kind AS \"kind: CustomerAccountEntryKind\",\n               amount,\n               sale_id,\n               credit_note_id,\n               wallet_movement_id,\n               note,\n               created_by,\n               created_at,\n               (SUM(amount) OVER (\n                   ORDER BY created_at ASC, id ASC\n                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n               ))::numeric AS \"running_balance!: Decimal\",\n               COUNT(*) OVER () AS \"entries_total!\"\n        FROM customer_account_entries\n        WHERE customer_id = $1\n        ORDER BY created_at ASC, id ASC\n        LIMIT $2 OFFSET $3\n        ",
   "describe": {
     "columns": [
       {
@@ -126,11 +126,25 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 10,
+        "name": "running_balance!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "entries_total!",
+        "type_info": "Int8",
+        "origin": "Expression"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Int8",
+        "Int8"
       ]
     },
     "nullable": [
@@ -143,8 +157,10 @@
       true,
       true,
       false,
-      false
+      false,
+      null,
+      null
     ]
   },
-  "hash": "d475b2abf6af3f183fdce318e1e8d60b4893e9efd028cdab674ea84de080e25b"
+  "hash": "cdae3fd0d1ec2e19ab2ee728b046bc0255e5a3b69d533b99afb45c0054a74835"
 }

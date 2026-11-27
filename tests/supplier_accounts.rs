@@ -446,6 +446,156 @@ async fn account_statement_lists_entries_chronologically_with_running_balance_an
     assert_eq!(open[0]["outstanding"], "100.00");
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn supplier_statement_windows_entries_and_keeps_the_running_balance(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool);
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+    let supplier_id = create_supplier(&app, &cookie, "Window Mill", None, None).await;
+
+    for (amount, note) in [("10.00", "one"), ("20.00", "two"), ("30.00", "three")] {
+        let (status, _, body) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/suppliers/{supplier_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": "in", "amount": amount, "note": note })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "adjustment: {body}");
+    }
+
+    let (status, _, full) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/account"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "full statement: {full}");
+    assert_eq!(full["entries"].as_array().unwrap().len(), 3);
+    assert_eq!(full["entries_total"], 3);
+
+    // The window keeps the running balance of the whole ledger: the entry at
+    // offset 1 still reports 30.00, not 20.00 counted from the page start.
+    let (status, _, page) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/account?limit=2&offset=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "windowed statement: {page}");
+    let entries = page["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(page["entries_total"], 3);
+    assert_eq!(entries[0]["running_balance"], "30.00");
+    assert_eq!(entries[1]["running_balance"], "60.00");
+    // The position is the whole account, never the page.
+    assert_eq!(page["balance"], "60.00");
+    assert_eq!(page["balance"], full["balance"]);
+
+    // Past the end: no entries, the real total, and the same position.
+    let (status, _, beyond) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/account?limit=2&offset=9"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "past the end: {beyond}");
+    assert_eq!(beyond["entries"].as_array().unwrap().len(), 0);
+    assert_eq!(beyond["entries_total"], 3);
+    assert_eq!(beyond["balance"], "60.00");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn supplier_statement_service_clamps_limit_and_offset(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool.clone());
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+    let supplier_id = create_supplier(&app, &cookie, "Clamp Mill", None, None).await;
+
+    let empty = organox::supplier_accounts::service::account_statement(&pool, supplier_id, 10, 0)
+        .await
+        .expect("empty statement");
+    assert!(empty.entries.is_empty());
+    assert_eq!(empty.entries_total, 0);
+
+    for (amount, note) in [("10.00", "one"), ("20.00", "two"), ("30.00", "three")] {
+        let (status, _, body) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/suppliers/{supplier_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": "in", "amount": amount, "note": note })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "adjustment: {body}");
+    }
+
+    let clamped = organox::supplier_accounts::service::account_statement(&pool, supplier_id, 0, -5)
+        .await
+        .expect("service clamps limit and negative offset");
+    assert_eq!(clamped.entries.len(), 1);
+    assert_eq!(clamped.entries_total, 3);
+    assert_eq!(clamped.entries[0].running_balance, dec!(10.00));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn supplier_statement_defaults_to_100_entries_per_page(pool: PgPool) {
+    let (owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool.clone());
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+    let supplier_id = create_supplier(&app, &cookie, "High Volume Mill", None, None).await;
+
+    for i in 0..101 {
+        sqlx::query(
+            "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, note, created_by) \
+             VALUES ($1, $2, 'adjustment_in', 1.00, $3, $4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(supplier_id)
+        .bind(format!("entry-{i}"))
+        .bind(owner_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    // Omitting limit returns the default 100 entries, never an unbounded ledger.
+    let (status, _, page1) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/account"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "default page: {page1}");
+    let entries1 = page1["entries"].as_array().unwrap();
+    assert_eq!(entries1.len(), 100);
+    assert_eq!(page1["entries_total"], 101);
+    assert_eq!(entries1[99]["running_balance"], "100.00");
+
+    let (status, _, page2) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/account?offset=100"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second page: {page2}");
+    let entries2 = page2["entries"].as_array().unwrap();
+    assert_eq!(entries2.len(), 1);
+    assert_eq!(page2["entries_total"], 101);
+    assert_eq!(entries2[0]["running_balance"], "101.00");
+}
+
 // =========================================================================
 // 3. POST /suppliers/{id}/payments — allocations, advance, idempotency, guards
 // =========================================================================
@@ -870,6 +1020,44 @@ async fn payment_log_returns_newest_first_with_allocations_and_clamps_limit(pool
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(clamped_max.as_array().unwrap().len(), 3);
+
+    // offset pages through newest-first rows; negative offset clamps to 0.
+    let (st, _, page1) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/payments?limit=1&offset=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let page1_items = page1.as_array().unwrap();
+    assert_eq!(page1_items.len(), 1);
+    assert_eq!(page1_items[0]["payment_id"], ids[1]);
+
+    let (st, _, clamped_offset) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/payments?limit=1&offset=-2"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(clamped_offset.as_array().unwrap()[0]["payment_id"], ids[2]);
+
+    // Past the end the log ends the way a paging client expects: 200 and an
+    // empty array, never an error or the last page again.
+    let (st, _, beyond) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/payments?limit=1&offset=50"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(beyond.as_array().unwrap().is_empty());
 }
 
 // =========================================================================
@@ -1151,6 +1339,47 @@ async fn adjustments_enforce_note_and_non_negative_balance_without_wallet_moveme
     assert_eq!(clamped.as_array().unwrap().len(), 1);
     assert_eq!(clamped[0]["adjustment_id"], adj2["adjustment_id"]);
 
+    let (st, _, page1) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/adjustments?limit=1&offset=1"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let page1_items = page1.as_array().unwrap();
+    assert_eq!(page1_items.len(), 1);
+    assert_eq!(page1_items[0]["adjustment_id"], adj1["adjustment_id"]);
+
+    // A negative offset is the first page, not a database error.
+    let (st, _, clamped_offset) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/adjustments?limit=1&offset=-5"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        clamped_offset.as_array().unwrap()[0]["adjustment_id"],
+        adj2["adjustment_id"]
+    );
+
+    // Past the end the log ends the way a paging client expects: 200 and an
+    // empty array, never an error or the last page again.
+    let (st, _, beyond) = send(
+        &app,
+        "GET",
+        &format!("/api/v1/suppliers/{supplier_id}/adjustments?limit=1&offset=50"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(beyond.as_array().unwrap().is_empty());
+
     // Unknown supplier -> 404.
     let (st, _, _) = send(
         &app,
@@ -1161,6 +1390,186 @@ async fn adjustments_enforce_note_and_non_negative_balance_without_wallet_moveme
     )
     .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn payables_windows_items_and_keeps_the_portfolio_totals(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool);
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    for (name, amount) in [("First Mill", "10.00"), ("Second Mill", "20.00")] {
+        let supplier_id = create_supplier(&app, &cookie, name, None, None).await;
+        let (status, _, body) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/suppliers/{supplier_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": "in", "amount": amount, "note": "opening" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "adjustment: {body}");
+    }
+
+    let (status, _, full) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/payables",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "full report: {full}");
+    assert_eq!(full["items"].as_array().unwrap().len(), 2);
+    assert_eq!(full["items_total"], 2);
+
+    // One page of items, totals over the whole report.
+    let (status, _, page) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/payables?limit=1",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "windowed report: {page}");
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["items_total"], 2);
+    assert_eq!(page["total_balance"], full["total_balance"]);
+    assert_eq!(
+        page["total_unapplied_credit"],
+        full["total_unapplied_credit"]
+    );
+    assert_eq!(page["total_outstanding"], full["total_outstanding"]);
+    assert_eq!(page["aging"], full["aging"]);
+
+    // Past the end: no items, and the totals still describe the report.
+    let (status, _, beyond) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/payables?limit=1&offset=5",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "past the end: {beyond}");
+    assert_eq!(beyond["items"].as_array().unwrap().len(), 0);
+    assert_eq!(beyond["items_total"], 2);
+    assert_eq!(beyond["total_balance"], full["total_balance"]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn payables_handles_empty_window_and_portfolio_totals_above_single_column_cap(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool);
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    let (status, _, empty) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/payables?limit=10",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "empty report: {empty}");
+    assert_eq!(empty["items"].as_array().unwrap().len(), 0);
+    assert_eq!(empty["items_total"], 0);
+    assert_eq!(empty["total_balance"], "0.00");
+
+    for name in ["Whale Mill One", "Whale Mill Two"] {
+        let supplier_id = create_supplier(&app, &cookie, name, None, None).await;
+        let (status, _, body) = send(
+            &app,
+            "POST",
+            &format!("/api/v1/suppliers/{supplier_id}/adjustments"),
+            Some(&cookie),
+            Some(json!({ "direction": "in", "amount": "600000000000.00", "note": "opening" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "adjustment: {body}");
+    }
+
+    let (status, _, page) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/payables?limit=1",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "large portfolio page: {page}");
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["items_total"], 2);
+    assert_eq!(page["total_balance"], "1200000000000.00");
+    assert_eq!(page["total_adjustments"], "1200000000000.00");
+
+    let (status, _, beyond) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/payables?limit=1&offset=5",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "large portfolio past end: {beyond}");
+    assert_eq!(beyond["items"].as_array().unwrap().len(), 0);
+    assert_eq!(beyond["items_total"], 2);
+    assert_eq!(beyond["total_balance"], "1200000000000.00");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn payables_defaults_to_50_items_per_page(pool: PgPool) {
+    let (owner_id, pw) = seed_owner(&pool).await;
+    let app = app(pool.clone());
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    for i in 0..51 {
+        let supplier_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO suppliers (id, name) VALUES ($1, $2)")
+            .bind(supplier_id)
+            .bind(format!("Creditor {i:02}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, note, created_by) \
+             VALUES ($1, $2, 'adjustment_in', 10.00, 'opening', $3)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(supplier_id)
+        .bind(owner_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    // Omitting limit returns the default 50 items while totals span all 51.
+    let (status, _, page1) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/payables",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "default payables: {page1}");
+    assert_eq!(page1["items"].as_array().unwrap().len(), 50);
+    assert_eq!(page1["items_total"], 51);
+    assert_eq!(page1["total_balance"], "510.00");
+
+    let (status, _, page2) = send(
+        &app,
+        "GET",
+        "/api/v1/accounts/payables?offset=50",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "second payables page: {page2}");
+    assert_eq!(page2["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page2["items_total"], 51);
+    assert_eq!(page2["total_balance"], "510.00");
 }
 
 // =========================================================================

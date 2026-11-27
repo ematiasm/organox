@@ -104,6 +104,7 @@ where
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListSuppliersQuery {
     /// Include deactivated suppliers. Absent, only active suppliers are returned.
     #[serde(default)]

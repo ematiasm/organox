@@ -175,6 +175,7 @@ pub struct Problem {
         crate::customer_accounts::handlers::ReceivablesResponse,
         crate::customer_accounts::model::CustomerAccountEntryKind,
         crate::sales::handlers::SaleResponse,
+        crate::sales::handlers::SaleListResponse,
         crate::sales::handlers::SaleItemResponse,
         crate::sales::handlers::DraftResponse,
         crate::sales::handlers::CompletedSaleResponse,

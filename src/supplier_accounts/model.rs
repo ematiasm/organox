@@ -182,6 +182,8 @@ pub struct SupplierAccountStatement {
     pub supplier_id: Uuid,
     pub position: SupplierAccountPosition,
     pub entries: Vec<SupplierAccountStatementEntry>,
+    /// Ledger entries in the whole statement, not just the ones on this page.
+    pub entries_total: i64,
     pub outstanding_purchases: Vec<PurchaseOutstanding>,
 }
 
@@ -269,6 +271,23 @@ pub struct PayablesSummary {
     pub total_adjustments: Decimal,
     pub aging: AgingBuckets,
     pub items: Vec<PayableSupplier>,
+    /// Suppliers in the whole report, not just the ones on this page.
+    pub items_total: i64,
+}
+
+/// Portfolio totals of the payables report.
+///
+/// They always describe the whole report, never the page: `items_total` is how
+/// many suppliers have an open position, and every amount is the sum over all
+/// of them. Paging only chooses which suppliers come back with it.
+#[derive(Debug, Clone, Default)]
+pub struct PayablesTotals {
+    pub items_total: i64,
+    pub total_balance: Decimal,
+    pub total_unapplied_credit: Decimal,
+    pub total_outstanding: Decimal,
+    pub total_adjustments: Decimal,
+    pub aging: AgingBuckets,
 }
 
 #[cfg(test)]

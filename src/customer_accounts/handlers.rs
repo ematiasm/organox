@@ -178,9 +178,38 @@ pub struct AdjustmentResponse {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListAccountLogQuery {
     /// Maximum number of entries to return (default 50, clamped to 1..=200).
     pub limit: Option<i64>,
+    /// Entries to skip from the newest (default 0).
+    pub offset: Option<i64>,
+}
+
+/// Window over a portfolio report (`/accounts/receivables`).
+///
+/// The totals and aging describe the whole report either way; only the `items`
+/// array is windowed (default 50, clamped to 1..=200).
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ListReportQuery {
+    /// Maximum number of customers to return (default 50, clamped to 1..=200).
+    pub limit: Option<i64>,
+    /// Customers to skip from the first (default 0).
+    pub offset: Option<i64>,
+}
+
+/// Window over the ledger entries of an account statement.
+///
+/// Entries are paginated by default (default 100, clamped to 1..=500);
+/// `entries_total` still reports the whole ledger.
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ListStatementQuery {
+    /// Maximum number of entries to return (default 100, clamped to 1..=500).
+    pub limit: Option<i64>,
+    /// Entries to skip from the oldest (default 0).
+    pub offset: Option<i64>,
 }
 
 /// One ledger line in a customer's account statement, with the balance right
@@ -232,8 +261,12 @@ pub struct CustomerAccountResponse {
     /// Sum of what every open sale still owes.
     #[schema(value_type = String, example = "100.00")]
     pub outstanding_total: String,
-    /// Ledger entries oldest first, each carrying the running balance after it.
+    /// Ledger entries oldest first, each carrying the running balance after it
+    /// (default 100 per page, clamped to 1..=500). `entries_total` is the whole
+    /// ledger either way.
     pub entries: Vec<AccountStatementEntryResponse>,
+    /// Ledger entries in the whole statement, not just this page.
+    pub entries_total: i64,
     /// Sales with `outstanding > 0`, oldest first.
     pub outstanding_sales: Vec<OutstandingSaleResponse>,
 }
@@ -326,7 +359,10 @@ pub struct ReceivablesResponse {
     #[schema(value_type = String, example = "0.00")]
     pub total_adjustments: String,
     pub aging: AgingBucketsResponse,
+    /// Customers on this page.
     pub items: Vec<ReceivableCustomerResponse>,
+    /// Customers in the whole report, not just this page.
+    pub items_total: i64,
 }
 
 // --- Handlers -----------------------------------------------------------
@@ -449,8 +485,12 @@ async fn get_account_statement(
     State(state): State<AppState>,
     _user: AuthUser,
     AppPath(id): AppPath<Uuid>,
+    AppQuery(query): AppQuery<ListStatementQuery>,
 ) -> Result<Json<CustomerAccountResponse>, AppError> {
-    let statement = service::account_statement(&state.pool, id).await?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let statement = service::account_statement(&state.pool, id, limit, offset).await?;
     Ok(Json(to_account_response(statement)))
 }
 
@@ -461,7 +501,8 @@ async fn list_receipts(
     AppQuery(query): AppQuery<ListAccountLogQuery>,
 ) -> Result<Json<Vec<ReceiptLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let receipts = service::list_receipts(&state.pool, id, limit).await?;
+    let offset = query.offset.unwrap_or(0).max(0);
+    let receipts = service::list_receipts(&state.pool, id, limit, offset).await?;
     Ok(Json(receipts.into_iter().map(to_receipt_log).collect()))
 }
 
@@ -472,7 +513,8 @@ async fn list_adjustments(
     AppQuery(query): AppQuery<ListAccountLogQuery>,
 ) -> Result<Json<Vec<AdjustmentLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let adjustments = service::list_adjustments(&state.pool, id, limit).await?;
+    let offset = query.offset.unwrap_or(0).max(0);
+    let adjustments = service::list_adjustments(&state.pool, id, limit, offset).await?;
     Ok(Json(
         adjustments.into_iter().map(to_adjustment_log).collect(),
     ))
@@ -481,8 +523,12 @@ async fn list_adjustments(
 async fn list_receivables(
     State(state): State<AppState>,
     _user: AuthUser,
+    AppQuery(query): AppQuery<ListReportQuery>,
 ) -> Result<Json<ReceivablesResponse>, AppError> {
-    let summary = service::receivables(&state.pool).await?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let summary = service::receivables(&state.pool, limit, offset).await?;
     Ok(Json(to_receivables_response(summary)))
 }
 
@@ -562,6 +608,7 @@ fn to_account_response(statement: AccountStatement) -> CustomerAccountResponse {
             .into_iter()
             .map(to_statement_entry)
             .collect(),
+        entries_total: statement.entries_total,
         outstanding_sales: statement
             .outstanding_sales
             .into_iter()
@@ -639,6 +686,7 @@ fn to_receivables_response(summary: ReceivablesSummary) -> ReceivablesResponse {
             .into_iter()
             .map(to_receivable_customer)
             .collect(),
+        items_total: summary.items_total,
     }
 }
 
@@ -756,14 +804,19 @@ fn record_adjustment_doc() {}
 
 /// Customer account statement.
 ///
-/// Returns every ledger entry oldest first with its running balance, the
+/// Returns ledger entries oldest first with their running balance, the
 /// customer's current balance and unapplied credit (`U`), and every sale that
-/// still owes money — all read from one consistent snapshot.
+/// still owes money — all read from one consistent snapshot. Entries are
+/// bounded with `limit` (default 100, clamped to 1..=500) and `offset`
+/// (default 0), while `entries_total` always reports the whole ledger.
 #[utoipa::path(
     get,
     path = "/api/v1/customers/{id}/account",
     tag = "customer_accounts",
-    params(("id" = Uuid, Path, description = "Customer ID")),
+    params(
+        ("id" = Uuid, Path, description = "Customer ID"),
+        ListStatementQuery,
+    ),
     responses(
         (status = 200, description = "Account statement", body = CustomerAccountResponse),
         (status = 401, description = "No session", body = crate::openapi::Problem,
@@ -776,6 +829,9 @@ fn record_adjustment_doc() {}
 fn get_account_statement_doc() {}
 
 /// Collection write log for one customer, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
 #[utoipa::path(
     get,
     path = "/api/v1/customers/{id}/receipts",
@@ -796,6 +852,9 @@ fn get_account_statement_doc() {}
 fn list_receipts_doc() {}
 
 /// Manual debt adjustment write log for one customer, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
 #[utoipa::path(
     get,
     path = "/api/v1/customers/{id}/adjustments",
@@ -815,15 +874,19 @@ fn list_receipts_doc() {}
 #[allow(dead_code)]
 fn list_adjustments_doc() {}
 
-/// Accounts receivable report across every customer with an open position.
+/// Accounts receivable report across customers with an open position.
 ///
-/// Lists every customer whose `balance != 0` or `unapplied_credit != 0`,
-/// ordered by highest balance first, with open-sale aging buckets computed
-/// from each sale's completion date (`0-30`, `31-60`, `61-90`, `90+`).
+/// Lists customers whose `balance != 0` or `unapplied_credit != 0`, ordered by
+/// highest balance first, with open-sale aging buckets computed from each
+/// sale's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
+/// bounded with `limit` (default 50, clamped to 1..=200) and `offset`
+/// (default 0), while totals, aging, and `items_total` always describe the
+/// whole report.
 #[utoipa::path(
     get,
     path = "/api/v1/accounts/receivables",
     tag = "customer_accounts",
+    params(ListReportQuery),
     responses(
         (status = 200, description = "Open customer positions and aging buckets", body = ReceivablesResponse),
         (status = 401, description = "No session", body = crate::openapi::Problem,

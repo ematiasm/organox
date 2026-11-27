@@ -7,6 +7,7 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::model::{Sale, SaleItem, SalePaymentInput, SaleStatus};
@@ -918,25 +919,102 @@ pub async fn complete(
     })
 }
 
-/// Completed sales, most recent first.
-pub async fn list_completed(pool: &PgPool, limit: i64) -> Result<Vec<Sale>, RepoError> {
-    let ids = sqlx::query_scalar!(
+/// Completed sales, most recent first, plus the total number of completed
+/// sales.
+///
+/// Items are fetched for every sale on the page in one `ANY($1)` query and
+/// re-assembled in memory: a per-row `find_sale` would cost `1 + 2N` queries.
+/// Completed sales and their lines are immutable, so the two statements stay
+/// consistent without holding a snapshot transaction.
+pub async fn list_completed(
+    pool: &PgPool,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<Sale>, i64), RepoError> {
+    let rows = sqlx::query!(
         r#"
-        SELECT id FROM sales
-        WHERE status = 'completed'
-        ORDER BY completed_at DESC
-        LIMIT $1
+        SELECT s.id, s.status AS "status: SaleStatus", s.total, s.created_by,
+               s.created_at, s.completed_at,
+               COALESCE(s.customer_name, c.name) AS "customer_name?",
+               s.customer_id,
+               COUNT(*) OVER () AS "row_total!"
+        FROM sales s
+        LEFT JOIN customers c ON c.id = s.customer_id
+        WHERE s.status = 'completed'
+        ORDER BY s.completed_at DESC, s.id DESC
+        LIMIT $1 OFFSET $2
         "#,
-        limit
+        limit,
+        offset,
     )
     .fetch_all(pool)
     .await?;
 
-    let mut sales = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(sale) = find_sale(pool, id).await? {
-            sales.push(sale);
-        }
+    let total = rows.first().map(|r| r.row_total).unwrap_or(-1);
+    if rows.is_empty() {
+        return Ok((Vec::new(), total));
     }
-    Ok(sales)
+
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let item_rows = sqlx::query!(
+        r#"
+        SELECT si.id, si.sale_id, si.product_id, p.name AS "product_name!",
+               si.quantity, si.unit_price
+        FROM sale_items si
+        JOIN products p ON p.id = si.product_id
+        WHERE si.sale_id = ANY($1)
+        ORDER BY si.created_at, si.id
+        "#,
+        &ids
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut items_by_sale: HashMap<Uuid, Vec<SaleItem>> = HashMap::new();
+    for item in item_rows {
+        items_by_sale
+            .entry(item.sale_id)
+            .or_default()
+            .push(SaleItem {
+                id: item.id,
+                product_id: item.product_id,
+                product_name: item.product_name,
+                quantity: item.quantity,
+                unit_price: item.unit_price,
+            });
+    }
+
+    let sales = rows
+        .into_iter()
+        .map(|row| Sale {
+            id: row.id,
+            status: row.status,
+            items: items_by_sale.remove(&row.id).unwrap_or_default(),
+            frozen_total: if row.status == SaleStatus::Completed {
+                row.total
+            } else {
+                None
+            },
+            created_by: row.created_by,
+            created_at: row.created_at,
+            completed_at: row.completed_at,
+            customer_id: row.customer_id,
+            customer_name: row.customer_name,
+        })
+        .collect();
+
+    Ok((sales, total))
+}
+
+/// Total number of completed sales.
+///
+/// `list_completed` reports the count in each row, so this only runs when the
+/// requested page is past the end and the window query returns nothing.
+pub async fn count_completed(pool: &PgPool) -> Result<i64, RepoError> {
+    let count =
+        sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!" FROM sales WHERE status = 'completed'"#)
+            .fetch_one(pool)
+            .await?;
+
+    Ok(count)
 }

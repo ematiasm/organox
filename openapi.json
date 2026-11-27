@@ -15,8 +15,30 @@
           "supplier_accounts"
         ],
         "summary": "Accounts payable report across every supplier with an open position.",
-        "description": "Lists every supplier whose `balance != 0` or `unapplied_credit != 0`,\nordered by highest balance first, with open-purchase aging buckets computed\nfrom each purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`).",
+        "description": "Lists suppliers whose `balance != 0` or `unapplied_credit != 0`, ordered by\nhighest balance first, with open-purchase aging buckets computed from each\npurchase's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is\nbounded with `limit` (default 50, clamped to 1..=200) and `offset`\n(default 0), while totals, aging, and `items_total` always describe the\nwhole report.",
         "operationId": "list_payables_doc",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of suppliers to return (default 50, clamped to 1..=200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Suppliers to skip from the first (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Open supplier positions and aging buckets",
@@ -46,9 +68,31 @@
         "tags": [
           "customer_accounts"
         ],
-        "summary": "Accounts receivable report across every customer with an open position.",
-        "description": "Lists every customer whose `balance != 0` or `unapplied_credit != 0`,\nordered by highest balance first, with open-sale aging buckets computed\nfrom each sale's completion date (`0-30`, `31-60`, `61-90`, `90+`).",
+        "summary": "Accounts receivable report across customers with an open position.",
+        "description": "Lists customers whose `balance != 0` or `unapplied_credit != 0`, ordered by\nhighest balance first, with open-sale aging buckets computed from each\nsale's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is\nbounded with `limit` (default 50, clamped to 1..=200) and `offset`\n(default 0), while totals, aging, and `items_total` always describe the\nwhole report.",
         "operationId": "list_receivables_doc",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of customers to return (default 50, clamped to 1..=200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Customers to skip from the first (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Open customer positions and aging buckets",
@@ -251,46 +295,37 @@
         "parameters": [
           {
             "name": "include_inactive",
-            "in": "path",
+            "in": "query",
             "description": "Include deactivated customers. Absent, the list shows only active ones.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
             "name": "search",
-            "in": "path",
+            "in": "query",
             "description": "Matches the name or the document, case-insensitively.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -513,7 +548,7 @@
           "customer_accounts"
         ],
         "summary": "Customer account statement.",
-        "description": "Returns every ledger entry oldest first with its running balance, the\ncustomer's current balance and unapplied credit (`U`), and every sale that\nstill owes money — all read from one consistent snapshot.",
+        "description": "Returns ledger entries oldest first with their running balance, the\ncustomer's current balance and unapplied credit (`U`), and every sale that\nstill owes money — all read from one consistent snapshot. Entries are\nbounded with `limit` (default 100, clamped to 1..=500) and `offset`\n(default 0), while `entries_total` always reports the whole ledger.",
         "operationId": "get_account_statement_doc",
         "parameters": [
           {
@@ -524,6 +559,26 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of entries to return (default 100, clamped to 1..=500).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Entries to skip from the oldest (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
             }
           }
         ],
@@ -567,6 +622,7 @@
           "customer_accounts"
         ],
         "summary": "Manual debt adjustment write log for one customer, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the log.",
         "operationId": "list_adjustments_doc",
         "parameters": [
           {
@@ -581,14 +637,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Entries to skip from the newest (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -868,6 +931,7 @@
           "customer_accounts"
         ],
         "summary": "Collection write log for one customer, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the log.",
         "operationId": "list_receipts_doc",
         "parameters": [
           {
@@ -882,14 +946,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Entries to skip from the newest (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -1033,9 +1104,9 @@
         "parameters": [
           {
             "name": "include_inactive",
-            "in": "path",
+            "in": "query",
             "description": "Include deactivated rows. The settings screen needs them so a wallet can\nbe brought back; the POS does not.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "boolean"
             }
@@ -1225,59 +1296,43 @@
         "parameters": [
           {
             "name": "kind",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "oneOf": [
-                {
-                  "$ref": "#/components/schemas/ProductKind"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/components/schemas/ProductKind"
             }
           },
           {
             "name": "include_inactive",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
             "name": "search",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -1550,13 +1605,10 @@
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -1680,52 +1732,36 @@
         "parameters": [
           {
             "name": "status",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "oneOf": [
-                {
-                  "$ref": "#/components/schemas/PurchaseStatus"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/components/schemas/PurchaseStatus"
             }
           },
           {
             "name": "supplier_id",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
+              "type": "string",
               "format": "uuid"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -2460,18 +2496,37 @@
         "tags": [
           "sales"
         ],
-        "summary": "Latest completed sales.",
+        "summary": "One page of completed sales, most recent first.",
         "operationId": "list_sales_doc",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of sales to return (default 50, clamped to 1..=200).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Sales to skip from the newest (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Completed sales",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/SaleResponse"
-                  }
+                  "$ref": "#/components/schemas/SaleListResponse"
                 }
               }
             }
@@ -3184,46 +3239,37 @@
         "parameters": [
           {
             "name": "include_inactive",
-            "in": "path",
+            "in": "query",
             "description": "Include deactivated suppliers. Absent, only active suppliers are returned.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
             "name": "search",
-            "in": "path",
+            "in": "query",
             "description": "Matches name or document, case-insensitively.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
           {
             "name": "offset",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -3446,7 +3492,7 @@
           "supplier_accounts"
         ],
         "summary": "Supplier account statement.",
-        "description": "Returns every ledger entry oldest first with its running balance, the\nsupplier's current balance and unapplied credit, and every completed\npurchase with an open payable — all read from one consistent snapshot.",
+        "description": "Returns ledger entries oldest first with their running balance, the\nsupplier's current balance and unapplied credit, and every completed\npurchase with an open payable — all read from one consistent snapshot.\nEntries are bounded with `limit` (default 100, clamped to 1..=500) and\n`offset` (default 0), while `entries_total` always reports the whole ledger.",
         "operationId": "get_account_statement_doc",
         "parameters": [
           {
@@ -3457,6 +3503,26 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of entries to return (default 100, clamped to 1..=500).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Entries to skip from the oldest (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
             }
           }
         ],
@@ -3500,6 +3566,7 @@
           "supplier_accounts"
         ],
         "summary": "Manual payable adjustment write log for one supplier, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the log.",
         "operationId": "list_adjustments_doc",
         "parameters": [
           {
@@ -3514,14 +3581,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Entries to skip from the newest (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -3801,6 +3875,7 @@
           "supplier_accounts"
         ],
         "summary": "Payment write log for one supplier, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the log.",
         "operationId": "list_payments_doc",
         "parameters": [
           {
@@ -3815,14 +3890,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "Maximum number of entries to return (default 50, clamped to 1..=200).",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Entries to skip from the newest (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -4156,9 +4238,9 @@
         "parameters": [
           {
             "name": "include_inactive",
-            "in": "path",
+            "in": "query",
             "description": "Include deactivated rows. The settings screen needs them so a wallet can\nbe brought back; the POS does not.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "boolean"
             }
@@ -4383,6 +4465,7 @@
           "payments"
         ],
         "summary": "Movements of one wallet, newest first.",
+        "description": "Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)\nto page through the wallet ledger.",
         "operationId": "list_wallet_movements_doc",
         "parameters": [
           {
@@ -4397,13 +4480,21 @@
           },
           {
             "name": "limit",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "description": "Maximum number of movements to return (default 50, clamped to 1..=200).",
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Movements to skip from the newest (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -5352,6 +5443,7 @@
           "unapplied_credit",
           "outstanding_total",
           "entries",
+          "entries_total",
           "outstanding_sales"
         ],
         "properties": {
@@ -5369,7 +5461,12 @@
             "items": {
               "$ref": "#/components/schemas/AccountStatementEntryResponse"
             },
-            "description": "Ledger entries oldest first, each carrying the running balance after it."
+            "description": "Ledger entries oldest first, each carrying the running balance after it\n(default 100 per page, clamped to 1..=500). `entries_total` is the whole\nledger either way."
+          },
+          "entries_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Ledger entries in the whole statement, not just this page."
           },
           "outstanding_sales": {
             "type": "array",
@@ -5810,7 +5907,8 @@
           "total_outstanding",
           "total_adjustments",
           "aging",
-          "items"
+          "items",
+          "items_total"
         ],
         "properties": {
           "aging": {
@@ -5820,7 +5918,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PayableSupplierResponse"
-            }
+            },
+            "description": "Suppliers on this page."
+          },
+          "items_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Suppliers in the whole report, not just this page."
           },
           "total_adjustments": {
             "type": "string",
@@ -6618,7 +6722,8 @@
           "total_outstanding",
           "total_adjustments",
           "aging",
-          "items"
+          "items",
+          "items_total"
         ],
         "properties": {
           "aging": {
@@ -6628,7 +6733,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ReceivableCustomerResponse"
-            }
+            },
+            "description": "Customers on this page."
+          },
+          "items_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Customers in the whole report, not just this page."
           },
           "total_adjustments": {
             "type": "string",
@@ -6942,6 +7053,36 @@
           }
         }
       },
+      "SaleListResponse": {
+        "type": "object",
+        "required": [
+          "items",
+          "limit",
+          "offset",
+          "total"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SaleResponse"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total completed sales, not just the ones on this page."
+          }
+        }
+      },
       "SalePaymentRequest": {
         "type": "object",
         "description": "One payment of the charge. A sale can be paid with several.",
@@ -7108,6 +7249,7 @@
           "unapplied_credit",
           "outstanding_total",
           "entries",
+          "entries_total",
           "outstanding_purchases"
         ],
         "properties": {
@@ -7121,7 +7263,12 @@
             "items": {
               "$ref": "#/components/schemas/SupplierAccountStatementEntryResponse"
             },
-            "description": "Ledger entries oldest first, each carrying the running balance after it."
+            "description": "Ledger entries oldest first, each carrying the running balance after it\n(default 100 per page, clamped to 1..=500). `entries_total` is the whole\nledger either way."
+          },
+          "entries_total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Ledger entries in the whole statement, not just this page."
           },
           "outstanding_purchases": {
             "type": "array",

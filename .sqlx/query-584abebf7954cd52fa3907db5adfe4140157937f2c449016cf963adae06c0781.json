@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id,\n               supplier_id,\n               kind AS \"kind: SupplierAccountEntryKind\",\n               amount,\n               purchase_id,\n               purchase_return_id,\n               wallet_movement_id,\n               note,\n               created_by,\n               created_at\n        FROM supplier_account_entries\n        WHERE supplier_id = $1\n        ORDER BY created_at ASC, id ASC\n        ",
+  "query": "\n        SELECT id,\n               supplier_id,\n               kind AS \"kind: SupplierAccountEntryKind\",\n               amount,\n               purchase_id,\n               purchase_return_id,\n               wallet_movement_id,\n               note,\n               created_by,\n               created_at,\n               (SUM(amount) OVER (\n                   ORDER BY created_at ASC, id ASC\n                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n               ))::numeric AS \"running_balance!: Decimal\",\n               COUNT(*) OVER () AS \"entries_total!\"\n        FROM supplier_account_entries\n        WHERE supplier_id = $1\n        ORDER BY created_at ASC, id ASC\n        LIMIT $2 OFFSET $3\n        ",
   "describe": {
     "columns": [
       {
@@ -127,11 +127,25 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 10,
+        "name": "running_balance!: Decimal",
+        "type_info": "Numeric",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "entries_total!",
+        "type_info": "Int8",
+        "origin": "Expression"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Int8",
+        "Int8"
       ]
     },
     "nullable": [
@@ -144,8 +158,10 @@
       true,
       true,
       false,
-      false
+      false,
+      null,
+      null
     ]
   },
-  "hash": "4a8b1bdb140f8a5c0e87778c1e975e80a39c7b4ea06b041ead19448a511805b0"
+  "hash": "584abebf7954cd52fa3907db5adfe4140157937f2c449016cf963adae06c0781"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id AS entry_id,\n               kind AS \"kind: SupplierAccountEntryKind\",\n               amount,\n               note AS \"note!: String\",\n               created_by,\n               created_at\n        FROM supplier_account_entries\n        WHERE supplier_id = $1\n          AND kind IN ('adjustment_in', 'adjustment_out')\n        ORDER BY created_at DESC, id DESC\n        LIMIT $2\n        ",
+  "query": "\n        SELECT id AS entry_id,\n               kind AS \"kind: CustomerAccountEntryKind\",\n               amount,\n               note AS \"note!: String\",\n               created_by,\n               created_at\n        FROM customer_account_entries\n        WHERE customer_id = $1\n          AND kind IN ('adjustment_in', 'adjustment_out')\n        ORDER BY created_at DESC, id DESC\n        LIMIT $2\n        OFFSET $3\n        ",
   "describe": {
     "columns": [
       {
@@ -9,33 +9,32 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "supplier_account_entries",
+            "table": "customer_account_entries",
             "name": "id"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "kind: SupplierAccountEntryKind",
+        "name": "kind: CustomerAccountEntryKind",
         "type_info": {
           "Custom": {
-            "name": "supplier_account_entry_kind",
+            "name": "customer_account_entry_kind",
             "kind": {
               "Enum": [
-                "purchase_charge",
-                "payment",
+                "sale_charge",
+                "receipt",
+                "credit_note",
                 "credit_refund",
                 "adjustment_in",
-                "adjustment_out",
-                "purchase_return",
-                "purchase_return_credit"
+                "adjustment_out"
               ]
             }
           }
         },
         "origin": {
           "Table": {
-            "table": "supplier_account_entries",
+            "table": "customer_account_entries",
             "name": "kind"
           }
         }
@@ -46,7 +45,7 @@
         "type_info": "Numeric",
         "origin": {
           "Table": {
-            "table": "supplier_account_entries",
+            "table": "customer_account_entries",
             "name": "amount"
           }
         }
@@ -57,7 +56,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "supplier_account_entries",
+            "table": "customer_account_entries",
             "name": "note"
           }
         }
@@ -68,7 +67,7 @@
         "type_info": "Uuid",
         "origin": {
           "Table": {
-            "table": "supplier_account_entries",
+            "table": "customer_account_entries",
             "name": "created_by"
           }
         }
@@ -79,7 +78,7 @@
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "supplier_account_entries",
+            "table": "customer_account_entries",
             "name": "created_at"
           }
         }
@@ -88,6 +87,7 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Int8",
         "Int8"
       ]
     },
@@ -100,5 +100,5 @@
       false
     ]
   },
-  "hash": "b828c37941b1eadc7984a5b319fdc2310520bef73f0e131e3207f87fe7236771"
+  "hash": "05608daa04b1f5a9856b8a6ab143a20b9b31266aa08f0bd82f301f96b93f7106"
 }

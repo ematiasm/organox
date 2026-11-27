@@ -13,9 +13,12 @@ export interface paths {
         };
         /**
          * Accounts payable report across every supplier with an open position.
-         * @description Lists every supplier whose `balance != 0` or `unapplied_credit != 0`,
-         *     ordered by highest balance first, with open-purchase aging buckets computed
-         *     from each purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`).
+         * @description Lists suppliers whose `balance != 0` or `unapplied_credit != 0`, ordered by
+         *     highest balance first, with open-purchase aging buckets computed from each
+         *     purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
+         *     bounded with `limit` (default 50, clamped to 1..=200) and `offset`
+         *     (default 0), while totals, aging, and `items_total` always describe the
+         *     whole report.
          */
         get: operations["list_payables_doc"];
         put?: never;
@@ -34,10 +37,13 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Accounts receivable report across every customer with an open position.
-         * @description Lists every customer whose `balance != 0` or `unapplied_credit != 0`,
-         *     ordered by highest balance first, with open-sale aging buckets computed
-         *     from each sale's completion date (`0-30`, `31-60`, `61-90`, `90+`).
+         * Accounts receivable report across customers with an open position.
+         * @description Lists customers whose `balance != 0` or `unapplied_credit != 0`, ordered by
+         *     highest balance first, with open-sale aging buckets computed from each
+         *     sale's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
+         *     bounded with `limit` (default 50, clamped to 1..=200) and `offset`
+         *     (default 0), while totals, aging, and `items_total` always describe the
+         *     whole report.
          */
         get: operations["list_receivables_doc"];
         put?: never;
@@ -183,9 +189,11 @@ export interface paths {
         };
         /**
          * Customer account statement.
-         * @description Returns every ledger entry oldest first with its running balance, the
+         * @description Returns ledger entries oldest first with their running balance, the
          *     customer's current balance and unapplied credit (`U`), and every sale that
-         *     still owes money — all read from one consistent snapshot.
+         *     still owes money — all read from one consistent snapshot. Entries are
+         *     bounded with `limit` (default 100, clamped to 1..=500) and `offset`
+         *     (default 0), while `entries_total` always reports the whole ledger.
          */
         get: operations["get_account_statement_doc"];
         put?: never;
@@ -203,7 +211,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Manual debt adjustment write log for one customer, newest first. */
+        /**
+         * Manual debt adjustment write log for one customer, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the log.
+         */
         get: operations["list_adjustments_doc"];
         put?: never;
         /**
@@ -272,7 +284,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Collection write log for one customer, newest first. */
+        /**
+         * Collection write log for one customer, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the log.
+         */
         get: operations["list_receipts_doc"];
         put?: never;
         /**
@@ -591,7 +607,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Latest completed sales. */
+        /** One page of completed sales, most recent first. */
         get: operations["list_sales_doc"];
         put?: never;
         post?: never;
@@ -831,9 +847,11 @@ export interface paths {
         };
         /**
          * Supplier account statement.
-         * @description Returns every ledger entry oldest first with its running balance, the
+         * @description Returns ledger entries oldest first with their running balance, the
          *     supplier's current balance and unapplied credit, and every completed
          *     purchase with an open payable — all read from one consistent snapshot.
+         *     Entries are bounded with `limit` (default 100, clamped to 1..=500) and
+         *     `offset` (default 0), while `entries_total` always reports the whole ledger.
          */
         get: operations["get_account_statement_doc"];
         put?: never;
@@ -851,7 +869,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Manual payable adjustment write log for one supplier, newest first. */
+        /**
+         * Manual payable adjustment write log for one supplier, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the log.
+         */
         get: operations["list_adjustments_doc"];
         put?: never;
         /**
@@ -917,7 +939,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Payment write log for one supplier, newest first. */
+        /**
+         * Payment write log for one supplier, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the log.
+         */
         get: operations["list_payments_doc"];
         put?: never;
         /**
@@ -1019,7 +1045,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Movements of one wallet, newest first. */
+        /**
+         * Movements of one wallet, newest first.
+         * @description Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+         *     to page through the wallet ledger.
+         */
         get: operations["list_wallet_movements_doc"];
         put?: never;
         /**
@@ -1405,8 +1435,17 @@ export interface components {
             balance: string;
             /** Format: uuid */
             customer_id: string;
-            /** @description Ledger entries oldest first, each carrying the running balance after it. */
+            /**
+             * @description Ledger entries oldest first, each carrying the running balance after it
+             *     (default 100 per page, clamped to 1..=500). `entries_total` is the whole
+             *     ledger either way.
+             */
             entries: components["schemas"]["AccountStatementEntryResponse"][];
+            /**
+             * Format: int64
+             * @description Ledger entries in the whole statement, not just this page.
+             */
+            entries_total: number;
             /** @description Sales with `outstanding > 0`, oldest first. */
             outstanding_sales: components["schemas"]["OutstandingSaleResponse"][];
             /**
@@ -1604,7 +1643,13 @@ export interface components {
          */
         PayablesResponse: {
             aging: components["schemas"]["PayablesAgingBucketsResponse"];
+            /** @description Suppliers on this page. */
             items: components["schemas"]["PayableSupplierResponse"][];
+            /**
+             * Format: int64
+             * @description Suppliers in the whole report, not just this page.
+             */
+            items_total: number;
             /** @example 0.00 */
             total_adjustments: string;
             /** @example 175.00 */
@@ -1922,7 +1967,13 @@ export interface components {
          */
         ReceivablesResponse: {
             aging: components["schemas"]["AgingBucketsResponse"];
+            /** @description Customers on this page. */
             items: components["schemas"]["ReceivableCustomerResponse"][];
+            /**
+             * Format: int64
+             * @description Customers in the whole report, not just this page.
+             */
+            items_total: number;
             /** @example 0.00 */
             total_adjustments: string;
             /** @example 175.00 */
@@ -2052,6 +2103,18 @@ export interface components {
             subtotal: string;
             unit_price: string;
         };
+        SaleListResponse: {
+            items: components["schemas"]["SaleResponse"][];
+            /** Format: int64 */
+            limit: number;
+            /** Format: int64 */
+            offset: number;
+            /**
+             * Format: int64
+             * @description Total completed sales, not just the ones on this page.
+             */
+            total: number;
+        };
         /** @description One payment of the charge. A sale can be paid with several. */
         SalePaymentRequest: {
             /**
@@ -2142,8 +2205,17 @@ export interface components {
              * @example 100.00
              */
             balance: string;
-            /** @description Ledger entries oldest first, each carrying the running balance after it. */
+            /**
+             * @description Ledger entries oldest first, each carrying the running balance after it
+             *     (default 100 per page, clamped to 1..=500). `entries_total` is the whole
+             *     ledger either way.
+             */
             entries: components["schemas"]["SupplierAccountStatementEntryResponse"][];
+            /**
+             * Format: int64
+             * @description Ledger entries in the whole statement, not just this page.
+             */
+            entries_total: number;
             /** @description Purchases with `outstanding > 0`, oldest first. */
             outstanding_purchases: components["schemas"]["OutstandingPurchaseResponse"][];
             /**
@@ -2513,7 +2585,12 @@ export type $defs = Record<string, never>;
 export interface operations {
     list_payables_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of suppliers to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Suppliers to skip from the first (default 0). */
+                offset?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2542,7 +2619,12 @@ export interface operations {
     };
     list_receivables_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of customers to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Customers to skip from the first (default 0). */
+                offset?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2713,16 +2795,16 @@ export interface operations {
     };
     list_customers_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Include deactivated customers. Absent, the list shows only active ones. */
-                include_inactive: boolean;
+                include_inactive?: boolean;
                 /** @description Matches the name or the document, case-insensitively. */
-                search: string | null;
-                limit: number | null;
-                offset: number | null;
+                search?: string;
+                limit?: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -2902,7 +2984,12 @@ export interface operations {
     };
     get_account_statement_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 100, clamped to 1..=500). */
+                limit?: number;
+                /** @description Entries to skip from the oldest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Customer ID */
@@ -2943,13 +3030,16 @@ export interface operations {
     };
     list_adjustments_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Entries to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Customer ID */
                 id: string;
-                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
-                limit: number | null;
             };
             cookie?: never;
         };
@@ -3169,13 +3259,16 @@ export interface operations {
     };
     list_receipts_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Entries to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Customer ID */
                 id: string;
-                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
-                limit: number | null;
             };
             cookie?: never;
         };
@@ -3284,15 +3377,15 @@ export interface operations {
     };
     list_payment_methods_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /**
                  * @description Include deactivated rows. The settings screen needs them so a wallet can
                  *     be brought back; the POS does not.
                  */
-                include_inactive: boolean;
+                include_inactive?: boolean;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -3440,15 +3533,15 @@ export interface operations {
     };
     list_products_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                kind: components["schemas"]["ProductKind"] | null;
-                include_inactive: boolean;
-                search: string | null;
-                limit: number | null;
-                offset: number | null;
+            query?: {
+                kind?: components["schemas"]["ProductKind"];
+                include_inactive?: boolean;
+                search?: string;
+                limit?: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -3658,12 +3751,13 @@ export interface operations {
     };
     list_movements_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+            };
             header?: never;
             path: {
                 /** @description Product ID */
                 id: string;
-                limit: number | null;
             };
             cookie?: never;
         };
@@ -3754,14 +3848,14 @@ export interface operations {
     };
     list_purchases_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                status: components["schemas"]["PurchaseStatus"] | null;
-                supplier_id: string | null;
-                limit: number | null;
-                offset: number | null;
+            query?: {
+                status?: components["schemas"]["PurchaseStatus"];
+                supplier_id?: string;
+                limit?: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -4332,7 +4426,12 @@ export interface operations {
     };
     list_sales_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of sales to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Sales to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4345,7 +4444,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SaleResponse"][];
+                    "application/json": components["schemas"]["SaleListResponse"];
                 };
             };
             /** @description No session */
@@ -4887,16 +4986,16 @@ export interface operations {
     };
     list_suppliers_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Include deactivated suppliers. Absent, only active suppliers are returned. */
-                include_inactive: boolean;
+                include_inactive?: boolean;
                 /** @description Matches name or document, case-insensitively. */
-                search: string | null;
-                limit: number | null;
-                offset: number | null;
+                search?: string;
+                limit?: number;
+                offset?: number;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -5076,7 +5175,12 @@ export interface operations {
     };
     get_account_statement_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 100, clamped to 1..=500). */
+                limit?: number;
+                /** @description Entries to skip from the oldest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Supplier ID */
@@ -5117,13 +5221,16 @@ export interface operations {
     };
     list_adjustments_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Entries to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Supplier ID */
                 id: string;
-                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
-                limit: number | null;
             };
             cookie?: never;
         };
@@ -5343,13 +5450,16 @@ export interface operations {
     };
     list_payments_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Entries to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Supplier ID */
                 id: string;
-                /** @description Maximum number of entries to return (default 50, clamped to 1..=200). */
-                limit: number | null;
             };
             cookie?: never;
         };
@@ -5617,15 +5727,15 @@ export interface operations {
     };
     list_wallets_doc: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /**
                  * @description Include deactivated rows. The settings screen needs them so a wallet can
                  *     be brought back; the POS does not.
                  */
-                include_inactive: boolean;
+                include_inactive?: boolean;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -5805,12 +5915,16 @@ export interface operations {
     };
     list_wallet_movements_doc: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum number of movements to return (default 50, clamped to 1..=200). */
+                limit?: number;
+                /** @description Movements to skip from the newest (default 0). */
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Wallet id */
                 id: string;
-                limit: number | null;
             };
             cookie?: never;
         };

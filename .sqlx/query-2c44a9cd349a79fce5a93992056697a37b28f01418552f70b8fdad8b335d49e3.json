@@ -1,0 +1,126 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.id, s.status AS \"status: SaleStatus\", s.total, s.created_by,\n               s.created_at, s.completed_at,\n               COALESCE(s.customer_name, c.name) AS \"customer_name?\",\n               s.customer_id,\n               COUNT(*) OVER () AS \"row_total!\"\n        FROM sales s\n        LEFT JOIN customers c ON c.id = s.customer_id\n        WHERE s.status = 'completed'\n        ORDER BY s.completed_at DESC, s.id DESC\n        LIMIT $1 OFFSET $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "status: SaleStatus",
+        "type_info": {
+          "Custom": {
+            "name": "sale_status",
+            "kind": {
+              "Enum": [
+                "draft",
+                "completed",
+                "cancelled"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "total",
+        "type_info": "Numeric",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "total"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "completed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "completed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "customer_name?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "customer_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sales",
+            "name": "customer_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "row_total!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      null,
+      true,
+      null
+    ]
+  },
+  "hash": "2c44a9cd349a79fce5a93992056697a37b28f01418552f70b8fdad8b335d49e3"
+}

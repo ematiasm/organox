@@ -172,9 +172,38 @@ pub struct SupplierAdjustmentResponse {
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListSupplierAccountLogQuery {
     /// Maximum number of entries to return (default 50, clamped to 1..=200).
     pub limit: Option<i64>,
+    /// Entries to skip from the newest (default 0).
+    pub offset: Option<i64>,
+}
+
+/// Window over a portfolio report (`/accounts/payables`).
+///
+/// The totals and aging describe the whole report either way; only the `items`
+/// array is windowed (default 50, clamped to 1..=200).
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ListReportQuery {
+    /// Maximum number of suppliers to return (default 50, clamped to 1..=200).
+    pub limit: Option<i64>,
+    /// Suppliers to skip from the first (default 0).
+    pub offset: Option<i64>,
+}
+
+/// Window over the ledger entries of a supplier account statement.
+///
+/// Entries are paginated by default (default 100, clamped to 1..=500);
+/// `entries_total` still reports the whole ledger.
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ListStatementQuery {
+    /// Maximum number of entries to return (default 100, clamped to 1..=500).
+    pub limit: Option<i64>,
+    /// Entries to skip from the oldest (default 0).
+    pub offset: Option<i64>,
 }
 
 /// One ledger line in a supplier's account statement, with the running balance
@@ -229,8 +258,12 @@ pub struct SupplierAccountResponse {
     /// Sum of what every open purchase still owes.
     #[schema(value_type = String, example = "100.00")]
     pub outstanding_total: String,
-    /// Ledger entries oldest first, each carrying the running balance after it.
+    /// Ledger entries oldest first, each carrying the running balance after it
+    /// (default 100 per page, clamped to 1..=500). `entries_total` is the whole
+    /// ledger either way.
     pub entries: Vec<SupplierAccountStatementEntryResponse>,
+    /// Ledger entries in the whole statement, not just this page.
+    pub entries_total: i64,
     /// Purchases with `outstanding > 0`, oldest first.
     pub outstanding_purchases: Vec<OutstandingPurchaseResponse>,
 }
@@ -323,7 +356,10 @@ pub struct PayablesResponse {
     #[schema(value_type = String, example = "0.00")]
     pub total_adjustments: String,
     pub aging: PayablesAgingBucketsResponse,
+    /// Suppliers on this page.
     pub items: Vec<PayableSupplierResponse>,
+    /// Suppliers in the whole report, not just this page.
+    pub items_total: i64,
 }
 
 // --- Handlers -----------------------------------------------------------
@@ -439,8 +475,12 @@ async fn get_account_statement(
     State(state): State<AppState>,
     _user: AuthUser,
     AppPath(id): AppPath<Uuid>,
+    AppQuery(query): AppQuery<ListStatementQuery>,
 ) -> Result<Json<SupplierAccountResponse>, AppError> {
-    let statement = service::account_statement(&state.pool, id).await?;
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let statement = service::account_statement(&state.pool, id, limit, offset).await?;
     Ok(Json(to_account_response(statement)))
 }
 
@@ -451,7 +491,8 @@ async fn list_payments(
     AppQuery(query): AppQuery<ListSupplierAccountLogQuery>,
 ) -> Result<Json<Vec<SupplierPaymentLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let payments = service::list_payments(&state.pool, id, limit).await?;
+    let offset = query.offset.unwrap_or(0).max(0);
+    let payments = service::list_payments(&state.pool, id, limit, offset).await?;
     Ok(Json(payments.into_iter().map(to_payment_log).collect()))
 }
 
@@ -462,7 +503,8 @@ async fn list_adjustments(
     AppQuery(query): AppQuery<ListSupplierAccountLogQuery>,
 ) -> Result<Json<Vec<SupplierAdjustmentLogResponse>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let adjustments = service::list_adjustments(&state.pool, id, limit).await?;
+    let offset = query.offset.unwrap_or(0).max(0);
+    let adjustments = service::list_adjustments(&state.pool, id, limit, offset).await?;
     Ok(Json(
         adjustments.into_iter().map(to_adjustment_log).collect(),
     ))
@@ -471,8 +513,12 @@ async fn list_adjustments(
 async fn list_payables(
     State(state): State<AppState>,
     _user: AuthUser,
+    AppQuery(query): AppQuery<ListReportQuery>,
 ) -> Result<Json<PayablesResponse>, AppError> {
-    let summary = service::payables(&state.pool).await?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let summary = service::payables(&state.pool, limit, offset).await?;
     Ok(Json(to_payables_response(summary)))
 }
 
@@ -556,6 +602,7 @@ fn to_account_response(statement: SupplierAccountStatement) -> SupplierAccountRe
             .into_iter()
             .map(to_statement_entry)
             .collect(),
+        entries_total: statement.entries_total,
         outstanding_purchases: statement
             .outstanding_purchases
             .into_iter()
@@ -629,6 +676,7 @@ fn to_payables_response(summary: PayablesSummary) -> PayablesResponse {
         total_adjustments: format_money(summary.total_adjustments),
         aging: to_aging_response(summary.aging),
         items: summary.items.into_iter().map(to_payable_supplier).collect(),
+        items_total: summary.items_total,
     }
 }
 
@@ -748,14 +796,19 @@ fn record_adjustment_doc() {}
 
 /// Supplier account statement.
 ///
-/// Returns every ledger entry oldest first with its running balance, the
+/// Returns ledger entries oldest first with their running balance, the
 /// supplier's current balance and unapplied credit, and every completed
 /// purchase with an open payable — all read from one consistent snapshot.
+/// Entries are bounded with `limit` (default 100, clamped to 1..=500) and
+/// `offset` (default 0), while `entries_total` always reports the whole ledger.
 #[utoipa::path(
     get,
     path = "/api/v1/suppliers/{id}/account",
     tag = "supplier_accounts",
-    params(("id" = Uuid, Path, description = "Supplier ID")),
+    params(
+        ("id" = Uuid, Path, description = "Supplier ID"),
+        ListStatementQuery,
+    ),
     responses(
         (status = 200, description = "Supplier account statement", body = SupplierAccountResponse),
         (status = 401, description = "No session", body = crate::openapi::Problem,
@@ -768,6 +821,9 @@ fn record_adjustment_doc() {}
 fn get_account_statement_doc() {}
 
 /// Payment write log for one supplier, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
 #[utoipa::path(
     get,
     path = "/api/v1/suppliers/{id}/payments",
@@ -788,6 +844,9 @@ fn get_account_statement_doc() {}
 fn list_payments_doc() {}
 
 /// Manual payable adjustment write log for one supplier, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
 #[utoipa::path(
     get,
     path = "/api/v1/suppliers/{id}/adjustments",
@@ -809,13 +868,17 @@ fn list_adjustments_doc() {}
 
 /// Accounts payable report across every supplier with an open position.
 ///
-/// Lists every supplier whose `balance != 0` or `unapplied_credit != 0`,
-/// ordered by highest balance first, with open-purchase aging buckets computed
-/// from each purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`).
+/// Lists suppliers whose `balance != 0` or `unapplied_credit != 0`, ordered by
+/// highest balance first, with open-purchase aging buckets computed from each
+/// purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
+/// bounded with `limit` (default 50, clamped to 1..=200) and `offset`
+/// (default 0), while totals, aging, and `items_total` always describe the
+/// whole report.
 #[utoipa::path(
     get,
     path = "/api/v1/accounts/payables",
     tag = "supplier_accounts",
+    params(ListReportQuery),
     responses(
         (status = 200, description = "Open supplier positions and aging buckets", body = PayablesResponse),
         (status = 401, description = "No session", body = crate::openapi::Problem,
