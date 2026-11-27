@@ -33,11 +33,6 @@ use crate::customer_accounts::service::{
 use crate::error::AppError;
 use crate::extract::{AppJson, AppPath, AppQuery};
 
-/// The published contract caps the idempotency key at this many characters.
-/// utoipa attributes do not validate, and the ledger stores the key as text,
-/// so the boundary is the only place the bound can be true.
-const MAX_IDEMPOTENCY_KEY_LEN: usize = 100;
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/customers/{id}/account", get(get_account_statement))
@@ -367,25 +362,6 @@ pub struct ReceivablesResponse {
 
 // --- Handlers -----------------------------------------------------------
 
-/// Normalize an optional idempotency key at the HTTP boundary.
-///
-/// Only *blank* keys are discarded. A non-blank key keeps exactly what the
-/// client sent: trimming it would rewrite the key namespace, so a record
-/// saved under a padded key would stop matching its own retry. The cap counts
-/// characters, matching the contract's wording.
-fn normalize_idempotency_key(raw: Option<String>) -> Result<Option<String>, AppError> {
-    let key = raw.filter(|key| !key.trim().is_empty());
-    if key
-        .as_ref()
-        .is_some_and(|key| key.chars().count() > MAX_IDEMPOTENCY_KEY_LEN)
-    {
-        return Err(AppError::Validation(format!(
-            "the idempotency key exceeds {MAX_IDEMPOTENCY_KEY_LEN} characters"
-        )));
-    }
-    Ok(key)
-}
-
 async fn collect_receipt(
     State(state): State<AppState>,
     user: AuthUser,
@@ -405,8 +381,6 @@ async fn collect_receipt(
         .map(|note| note.trim().to_string())
         .filter(|note| !note.is_empty());
 
-    let idempotency_key = normalize_idempotency_key(body.idempotency_key)?;
-
     let collected = service::collect(
         &state.pool,
         id,
@@ -414,7 +388,7 @@ async fn collect_receipt(
             payment_method_id: body.payment_method_id,
             amount: body.amount,
             allocations: &allocations,
-            idempotency_key: idempotency_key.as_deref(),
+            idempotency_key: body.idempotency_key.as_deref(),
             note: note.as_deref(),
             actor: user.id(),
         },
@@ -437,8 +411,6 @@ async fn refund_credit(
     AppPath(id): AppPath<Uuid>,
     AppJson(body): AppJson<RefundCreditRequest>,
 ) -> Result<(StatusCode, Json<CreditRefundResponse>), AppError> {
-    let idempotency_key = normalize_idempotency_key(body.idempotency_key)?;
-
     let refunded = service::refund_credit(
         &state.pool,
         id,
@@ -446,7 +418,7 @@ async fn refund_credit(
             payment_method_id: body.payment_method_id,
             amount: body.amount,
             note: &body.note,
-            idempotency_key: idempotency_key.as_deref(),
+            idempotency_key: body.idempotency_key.as_deref(),
             actor: user.id(),
         },
     )
@@ -703,6 +675,8 @@ impl From<ReceiptsError> for AppError {
             ReceiptsError::MethodUnavailable
             | ReceiptsError::AmountTooLarge { .. }
             | ReceiptsError::RefundNoteRequired
+            | ReceiptsError::IdempotencyKeyMissing
+            | ReceiptsError::IdempotencyKeyTooLong
             | ReceiptsError::Validation(_) => AppError::Validation(err.to_string()),
             ReceiptsError::Internal(repo) => AppError::Internal(repo.to_string()),
         }

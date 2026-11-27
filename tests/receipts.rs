@@ -594,11 +594,11 @@ async fn send(
     (status, value)
 }
 
-/// A blank key is no key. Accepting one would make every later blank-key
-/// collection answer with the first receipt: money collected, nothing booked,
-/// and a success reported for both.
+/// Blank idempotency keys are rejected with 422 (matching credit_notes and
+/// purchase_returns), and the database CHECK constraint refuses blank strings
+/// even on direct SQL writes.
 #[sqlx::test]
-async fn a_blank_idempotency_key_does_not_replay_the_first_collection(pool: PgPool) {
+async fn a_blank_idempotency_key_is_rejected(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
     charge_sale(&pool, customer, sale, dec!(100.00)).await;
@@ -608,37 +608,71 @@ async fn a_blank_idempotency_key_does_not_replay_the_first_collection(pool: PgPo
     let (_owner, owner_password) = seed_owner(&pool).await;
     let cookie = login(&router, "owner@pyme.com", &owner_password).await;
 
-    for attempt in 0..2 {
-        let (status, _) = send(
+    for blank in ["", "   "] {
+        let (status, problem) = send(
             &router,
             "POST",
             &format!("/api/v1/customers/{customer}/receipts"),
             Some(&cookie),
             Some(json!({
-                "idempotency_key": "   ",
+                "idempotency_key": blank,
                 "payment_method_id": method,
                 "amount": "10.00",
                 "allocations": [],
             })),
         )
         .await;
-        assert_eq!(
-            status,
-            StatusCode::CREATED,
-            "collection {attempt} answered as a replay of the previous one"
-        );
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(problem["detail"], "an idempotency key cannot be blank");
     }
 
-    assert_eq!(
-        account_payment_count(&pool, customer).await,
-        2,
-        "one of the two collections was swallowed as a replay"
-    );
+    assert_eq!(account_payment_count(&pool, customer).await, 0);
     let wallet_balance = wallets::get_wallet(&pool, wallet)
         .await
         .expect("wallet")
         .balance;
-    assert_eq!(wallet_balance, dec!(20.00), "the cash did not arrive twice");
+    assert_eq!(wallet_balance, Decimal::ZERO);
+
+    // Direct SQL write with a blank key is also rejected by the DB CHECK constraint.
+    let mv = wallets::insert_movement(
+        &pool,
+        wallets::NewWalletMovement {
+            wallet_id: wallet,
+            kind: organox::payments::model::WalletMovementKind::AccountPayment,
+            amount: dec!(10.00),
+            sale_id: None,
+            purchase_id: None,
+            payment_method_id: Some(method),
+            credit_note_id: None,
+            purchase_return_id: None,
+            customer_id: Some(customer),
+            supplier_id: None,
+            note: None,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("seed movement");
+    let db_err = sqlx::query(
+        "INSERT INTO customer_account_entries
+            (id, customer_id, kind, amount, wallet_movement_id, idempotency_key, created_by)
+         VALUES ($1, $2, 'receipt', -10.00, $3, '   ', $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(customer)
+    .bind(mv)
+    .bind(Uuid::now_v7())
+    .execute(&pool)
+    .await
+    .expect_err("DB CHECK must refuse blank customer_account_entries.idempotency_key");
+    let constraint = db_err
+        .as_database_error()
+        .and_then(|e| e.constraint())
+        .unwrap_or_default();
+    assert_eq!(
+        constraint,
+        "customer_account_entries_idempotency_key_not_blank"
+    );
 }
 
 /// The contract publishes a 100-character cap. utoipa attributes do not
@@ -719,12 +753,11 @@ async fn a_non_positive_or_sub_cent_amount_is_rejected(pool: PgPool) {
     assert_eq!(account_payment_count(&pool, customer).await, 0);
 }
 
-/// Only blank keys are discarded. A non-blank key keeps its exact bytes, so a
-/// padded key is its own identity: trimming it would make two distinct
-/// collections collapse onto one receipt, and a receipt recorded under a padded
-/// key before this rule existed would stop matching its own retry.
+/// Idempotency keys are trimmed like in credit_notes and purchase_returns:
+/// surrounding whitespace is not part of the identity, so `"  padded  "` and
+/// `"padded"` refer to the same collection.
 #[sqlx::test]
-async fn a_padded_key_keeps_its_own_identity(pool: PgPool) {
+async fn a_padded_key_is_trimmed_and_replays_its_trimmed_form(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
     charge_sale(&pool, customer, sale, dec!(100.00)).await;
@@ -755,26 +788,34 @@ async fn a_padded_key_keeps_its_own_identity(pool: PgPool) {
         }
     };
 
-    let (first, _) = collect("  padded  ").await;
+    let (first, first_body) = collect("  padded  ").await;
     assert_eq!(first, StatusCode::CREATED);
 
-    // The same bytes is a replay; the trimmed form is a different key and a
-    // different collection.
-    let (same, _) = collect("  padded  ").await;
-    assert_eq!(same, StatusCode::OK, "a padded key stopped matching itself");
+    let (same, same_body) = collect("  padded  ").await;
+    assert_eq!(same, StatusCode::OK, "a padded key must replay itself");
+    assert_eq!(same_body["receipt_id"], first_body["receipt_id"]);
 
-    let (trimmed, _) = collect("padded").await;
+    let (trimmed, trimmed_body) = collect("padded").await;
     assert_eq!(
         trimmed,
-        StatusCode::CREATED,
-        "a key that differs only in padding was collapsed onto the first"
+        StatusCode::OK,
+        "trimmed form must replay the original padded key"
     );
+    assert_eq!(trimmed_body["receipt_id"], first_body["receipt_id"]);
 
-    assert_eq!(account_payment_count(&pool, customer).await, 2);
+    assert_eq!(account_payment_count(&pool, customer).await, 1);
+
+    let stored_key: Option<String> = sqlx::query_scalar(
+        "SELECT idempotency_key FROM customer_account_entries WHERE customer_id = $1 AND kind = 'receipt'",
+    )
+    .bind(customer)
+    .fetch_one(&pool)
+    .await
+    .expect("stored key");
+    assert_eq!(stored_key.as_deref(), Some("padded"));
 }
 
-/// The cap measures the characters the client sent, so a key of exactly the
-/// limit is accepted. Nothing pinned the accept side before.
+/// The cap measures trimmed characters, so a key of exactly the limit is accepted.
 #[sqlx::test]
 async fn a_key_of_exactly_the_cap_is_accepted(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
@@ -802,12 +843,11 @@ async fn a_key_of_exactly_the_cap_is_accepted(pool: PgPool) {
     assert_eq!(account_payment_count(&pool, customer).await, 1);
 }
 
-/// The cap measures the key exactly as sent, padding included: a key whose
-/// raw length is over the limit is refused even when its trimmed length
-/// would fit, because measuring after trimming is the same rewrite of the
-/// key namespace the padded-identity rule exists to prevent.
+/// Because surrounding whitespace is trimmed before measuring the 100-character
+/// cap, a 99-character key with outer spaces fits (and a 101-character trimmed
+/// key is rejected).
 #[sqlx::test]
-async fn a_key_that_only_fits_after_trimming_is_rejected(pool: PgPool) {
+async fn a_key_is_measured_after_trimming(pool: PgPool) {
     let customer = seed_customer(&pool, "Ana").await;
     let (method, _wallet) = seed_method(&pool, "Cash").await;
 
@@ -815,17 +855,30 @@ async fn a_key_that_only_fits_after_trimming_is_rejected(pool: PgPool) {
     let (_owner, owner_password) = seed_owner(&pool).await;
     let cookie = login(&router, "owner@pyme.com", &owner_password).await;
 
-    // 101 characters as sent, two of them the padding; 99 once trimmed.
-    let key = format!(" {} ", "k".repeat(99));
-    assert_eq!(key.chars().count(), 101);
+    let fits = format!(" {} ", "k".repeat(99));
+    let (status, _) = send(
+        &router,
+        "POST",
+        &format!("/api/v1/customers/{customer}/receipts"),
+        Some(&cookie),
+        Some(json!({
+            "idempotency_key": fits,
+            "payment_method_id": method,
+            "amount": "10.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
 
+    let too_long = format!(" {} ", "k".repeat(101));
     let (status, problem) = send(
         &router,
         "POST",
         &format!("/api/v1/customers/{customer}/receipts"),
         Some(&cookie),
         Some(json!({
-            "idempotency_key": key,
+            "idempotency_key": too_long,
             "payment_method_id": method,
             "amount": "10.00",
             "allocations": [],
@@ -838,7 +891,7 @@ async fn a_key_that_only_fits_after_trimming_is_rejected(pool: PgPool) {
         problem["detail"],
         "the idempotency key exceeds 100 characters"
     );
-    assert_eq!(account_payment_count(&pool, customer).await, 0);
+    assert_eq!(account_payment_count(&pool, customer).await, 1);
 }
 
 /// The cap measures characters, not bytes: a key of 100 accented

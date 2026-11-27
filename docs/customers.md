@@ -228,12 +228,14 @@ What it does to the numbers:
 
 The answer is `201` with the receipt id, the movement id, the balance, the
 usable credit and each allocated sale's outstanding amount. A repeated
-`idempotency_key` answers `200` with the first receipt (paired with the
-account's **current** balance, usable credit and sale outstandings at replay
-time) and writes nothing — money that was already collected cannot be collected
-twice. The key is capped at 100 characters, counted exactly as sent, padding
-included: a blank key is no key at all, but a padded one is its own identity,
-and the cap must measure the same string the retry will send. Unknown or
+`idempotency_key` matches by key alone and answers `200` with the first receipt
+(paired with the account's **current** balance, usable credit and sale
+outstandings at replay time, regardless of request payload differences) and
+writes nothing — money that was already collected cannot be collected twice.
+The key is trimmed before validation and storage: blank keys (`""` or
+whitespace-only) and keys exceeding 100 trimmed characters are rejected with
+`422`, matching `credit_notes` and `purchase_returns` (and enforced by a
+database `CHECK` constraint). Unknown or
 inactive method, a bad amount or an allocation the ledger refuses answer `422`
 with a sentence the operator can act on; an unknown customer or sale answers
 `404`; an account busy under another writer's lock answers `409`.
