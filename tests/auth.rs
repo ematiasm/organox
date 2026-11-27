@@ -1526,3 +1526,271 @@ async fn login_and_change_password_cut_exactly_at_max_bytes() {
     .expect_err("exact-length current_password must reach the database");
     assert!(matches!(err, AuthError::Internal(RepoError::Database(_))));
 }
+
+// --- Sliding session cookie synchronization (issue #110) ----------------
+
+fn parse_set_cookie(response: &axum::response::Response) -> tower_cookies::Cookie<'static> {
+    let header = response
+        .headers()
+        .get("set-cookie")
+        .expect("must emit set-cookie")
+        .to_str()
+        .unwrap();
+    tower_cookies::Cookie::parse(header)
+        .expect("valid set-cookie header")
+        .into_owned()
+}
+
+#[sqlx::test]
+async fn fresh_session_does_not_emit_redundant_set_cookie(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "fresh@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("fresh@pyme.com", &password))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&login);
+
+    let me = app(pool)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={cookie}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(me.status(), StatusCode::OK);
+    assert!(
+        me.headers().get("set-cookie").is_none(),
+        "a freshly issued session within SESSION_REFRESH_INTERVAL must not churn Set-Cookie"
+    );
+}
+
+#[sqlx::test]
+async fn sliding_session_refreshes_db_and_cookie_expiry(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "slide@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("slide@pyme.com", &password))
+        .await
+        .unwrap();
+    let token = session_cookie(&login);
+
+    // Simulate 2 days elapsed since login: DB expires_at is now only 5 days out.
+    sqlx::query(
+        "UPDATE sessions
+         SET created_at   = now() - interval '2 days',
+             last_used_at = now() - interval '2 days',
+             expires_at   = now() + interval '5 days'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let before_expires: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT expires_at FROM sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let me = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(me.status(), StatusCode::OK);
+    assert_eq!(me.headers().get_all("set-cookie").iter().count(), 1);
+    let refreshed = parse_set_cookie(&me);
+    assert_eq!(refreshed.name(), "session");
+    assert_eq!(refreshed.value(), token);
+    assert_eq!(refreshed.http_only(), Some(true));
+    assert_eq!(
+        refreshed.same_site(),
+        Some(tower_cookies::cookie::SameSite::Strict)
+    );
+    assert_eq!(refreshed.path(), Some("/"));
+
+    let db_expires: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT expires_at FROM sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        db_expires > before_expires + chrono::Duration::days(1),
+        "DB expires_at must slide forward toward now() + 7 days"
+    );
+
+    let cookie_expires = refreshed
+        .expires_datetime()
+        .expect("refreshed cookie must set Expires");
+    assert_eq!(
+        cookie_expires.unix_timestamp(),
+        db_expires.timestamp(),
+        "cookie Expires must match the DB sliding expires_at"
+    );
+
+    // An immediate follow-up request is already synced and must not emit another Set-Cookie.
+    let second = app(pool)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+    assert!(
+        second.headers().get("set-cookie").is_none(),
+        "already-refreshed session must not emit redundant Set-Cookie"
+    );
+}
+
+#[sqlx::test]
+async fn sliding_session_cookie_respects_30_day_absolute_cap(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "cap30@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("cap30@pyme.com", &password))
+        .await
+        .unwrap();
+    let token = session_cookie(&login);
+
+    // Created 25 days ago, currently expiring in 2 days -> cap is created_at + 30d (~5d from now).
+    sqlx::query(
+        "UPDATE sessions
+         SET created_at   = now() - interval '25 days',
+             last_used_at = now() - interval '5 days',
+             expires_at   = now() + interval '2 days'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let cap: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT created_at + interval '30 days' FROM sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let me = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(me.status(), StatusCode::OK);
+    assert_eq!(me.headers().get_all("set-cookie").iter().count(), 1);
+    let refreshed = parse_set_cookie(&me);
+    let cookie_expires = refreshed
+        .expires_datetime()
+        .expect("refreshed cookie must set Expires");
+    assert_eq!(
+        cookie_expires.unix_timestamp(),
+        cap.timestamp(),
+        "cookie Expires must be capped at created_at + 30 days"
+    );
+
+    // Once at the 30-day cap, further requests emit no Set-Cookie.
+    let second = app(pool)
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+    assert!(
+        second.headers().get("set-cookie").is_none(),
+        "session already at 30-day cap must not re-emit Set-Cookie"
+    );
+}
+
+#[sqlx::test]
+async fn logout_and_password_change_on_stale_session_emit_single_set_cookie(pool: sqlx::PgPool) {
+    // 1. Logout on a stale session emits only the removal cookie, not a refreshed token.
+    let password = seed_user(&pool, "stale-logout@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("stale-logout@pyme.com", &password))
+        .await
+        .unwrap();
+    let token = session_cookie(&login);
+
+    sqlx::query("UPDATE sessions SET expires_at = now() + interval '2 days'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let logout = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/logout")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        logout.headers().get_all("set-cookie").iter().count(),
+        1,
+        "logout on a stale session must emit exactly one Set-Cookie (removal)"
+    );
+    let removed = parse_set_cookie(&logout);
+    assert_eq!(removed.name(), "session");
+    assert_eq!(removed.value(), "");
+    assert_eq!(
+        me_status(app(pool.clone()), &token).await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // 2. Password change on a stale session emits only the rotated cookie.
+    let login2 = app(pool.clone())
+        .oneshot(login_request("stale-logout@pyme.com", &password))
+        .await
+        .unwrap();
+    let old_token = session_cookie(&login2);
+    sqlx::query("UPDATE sessions SET expires_at = now() + interval '2 days'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let new_pw = test_password();
+    let changed = app(pool.clone())
+        .oneshot(change_password_request(&old_token, &password, &new_pw))
+        .await
+        .unwrap();
+
+    assert_eq!(changed.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        changed.headers().get_all("set-cookie").iter().count(),
+        1,
+        "password change on a stale session must emit exactly one Set-Cookie (rotated)"
+    );
+    let rotated = parse_set_cookie(&changed);
+    assert_eq!(rotated.name(), "session");
+    assert_ne!(rotated.value(), old_token);
+    assert_eq!(
+        me_status(app(pool.clone()), &old_token).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(me_status(app(pool), rotated.value()).await, StatusCode::OK);
+}

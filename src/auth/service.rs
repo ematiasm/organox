@@ -416,7 +416,15 @@ pub async fn login(
     })
 }
 
-/// Resolve a cookie token to an authenticated user.
+/// Result of authenticating an HTTP session: the resolved user plus the new
+/// server-side expiry when sliding expiration advanced the session.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedSession {
+    pub user: AuthenticatedUser,
+    pub refreshed_expires_at: Option<DateTime<Utc>>,
+}
+
+/// Resolve a cookie token to an authenticated user without extending it.
 pub async fn authenticate(
     pool: &PgPool,
     token: &SessionToken,
@@ -431,9 +439,37 @@ pub async fn authenticate(
     }))
 }
 
+/// Resolve a cookie token and, when due, slide its expiry forward synchronously
+/// so the caller can keep the browser cookie's `Expires` in sync with Postgres.
+pub async fn authenticate_session(
+    pool: &PgPool,
+    token: &SessionToken,
+) -> Result<Option<AuthenticatedSession>, AuthError> {
+    let token_hash = token.hash();
+    let Some(found) = repository::find_session_user(pool, &token_hash).await? else {
+        return Ok(None);
+    };
+
+    let refreshed_expires_at = if found.needs_refresh {
+        repository::touch_session(pool, &token_hash).await
+    } else {
+        None
+    };
+
+    Ok(Some(AuthenticatedSession {
+        user: AuthenticatedUser {
+            id: found.id,
+            email: found.email,
+            role: found.role,
+            token_hash,
+        },
+        refreshed_expires_at,
+    }))
+}
+
 /// Extend the session used. Best-effort: never fails the request.
-pub async fn touch(pool: &PgPool, token: &SessionToken) {
-    repository::touch_session(pool, &token.hash()).await;
+pub async fn touch(pool: &PgPool, token: &SessionToken) -> Option<DateTime<Utc>> {
+    repository::touch_session(pool, &token.hash()).await
 }
 
 /// End the session. Idempotent: deleting a nonexistent session is not an error.

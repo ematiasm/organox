@@ -9,13 +9,12 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tower_cookies::cookie::{Cookie, SameSite};
-use tower_cookies::{Cookies, cookie};
+use tower_cookies::Cookies;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::auth::extract::{AuthUser, SESSION_COOKIE};
+use crate::auth::extract::{AuthUser, removal_cookie, session_cookie};
 use crate::auth::model::Role;
 use crate::auth::service::{self, AuthError, LoginOutcome};
 use crate::error::AppError;
@@ -275,35 +274,6 @@ async fn reset_password(
     }
 
     Ok(StatusCode::NO_CONTENT)
-}
-
-// --- Cookies ------------------------------------------------------------
-
-fn session_cookie(value: String, expires_at: DateTime<Utc>, secure: bool) -> Cookie<'static> {
-    let mut cookie = Cookie::new(SESSION_COOKIE, value);
-    cookie.set_http_only(true);
-    cookie.set_secure(secure);
-    // Strict: the cookie does not travel on requests originating from another
-    // site, stopping CSRF at the root for this API. Lax would also support a
-    // frontend on another origin, but would require an explicit CSRF token.
-    cookie.set_same_site(SameSite::Strict);
-    cookie.set_path("/");
-    cookie.set_expires(
-        cookie::time::OffsetDateTime::from_unix_timestamp(expires_at.timestamp())
-            .unwrap_or_else(|_| cookie::time::OffsetDateTime::now_utc()),
-    );
-    cookie
-}
-
-fn removal_cookie(secure: bool) -> Cookie<'static> {
-    let mut cookie = Cookie::new(SESSION_COOKIE, "");
-    cookie.set_http_only(true);
-    cookie.set_secure(secure);
-    cookie.set_same_site(SameSite::Strict);
-    cookie.set_path("/");
-    // Expiring in the past is the canonical way to delete a cookie.
-    cookie.make_removal();
-    cookie
 }
 
 // --- Errors -------------------------------------------------------------
