@@ -400,7 +400,8 @@ make run          # Axum serves the SPA with a fallback to index.html
 ```
 
 Open `http://localhost:3000`. Interactive API documentation is at
-`http://localhost:3000/api/v1/docs`.
+`http://localhost:3000/api/v1/docs` when `APP_ENABLE_DOCS=true` (enabled in
+`.env.example`, disabled by default in production).
 
 `make fe-check` runs `svelte-kit sync` + `svelte-check`; it is part of
 `make check`, so a type error in a component fails the same gate as a clippy
@@ -538,7 +539,7 @@ the server starts.
 
 `tests/deploy.rs` renders `compose.prod.yaml` through `docker compose config`
 and asserts the contract: `DATABASE_URL` derived from `POSTGRES_PASSWORD`, the
-`migrate` gate, `APP_COOKIE_SECURE=false`, the database port unpublished, and
+`migrate` gate, `APP_COOKIE_SECURE=false`, `APP_ENABLE_DOCS=false`, the database port unpublished, and
 every key documented in `.env.prod.example` actually forwarded. A documented
 knob that compose never forwards is silently ignored, so the two files are
 checked against each other rather than against intent. Docker is a requirement,

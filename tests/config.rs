@@ -45,11 +45,15 @@ fn config_validates_environment() {
             ("APP_BIND_ADDR", None),
             ("APP_LOG_FORMAT", None),
             ("APP_RUST_LOG", None),
+            ("APP_COOKIE_SECURE", None),
+            ("APP_ENABLE_DOCS", None),
         ],
         || {
             let config = Config::from_env().expect("valid config");
             assert_eq!(config.bind_addr.port(), 3000);
             assert_eq!(config.log_format, LogFormat::Pretty);
+            assert!(config.cookie_secure);
+            assert!(!config.enable_docs);
         },
     );
 
@@ -86,6 +90,38 @@ fn config_validates_environment() {
         || {
             let err = Config::from_env().expect_err("invalid bind address must fail");
             assert!(err.to_string().contains("APP_BIND_ADDR"));
+        },
+    );
+
+    // 6. APP_ENABLE_DOCS accepts booleans and rejects invalid values.
+    with_env(
+        &[
+            ("DATABASE_URL", Some("postgres://localhost/x")),
+            ("APP_ENABLE_DOCS", Some("true")),
+        ],
+        || {
+            let config = Config::from_env().expect("valid config");
+            assert!(config.enable_docs);
+        },
+    );
+    with_env(
+        &[
+            ("DATABASE_URL", Some("postgres://localhost/x")),
+            ("APP_ENABLE_DOCS", Some("false")),
+        ],
+        || {
+            let config = Config::from_env().expect("valid config");
+            assert!(!config.enable_docs);
+        },
+    );
+    with_env(
+        &[
+            ("DATABASE_URL", Some("postgres://localhost/x")),
+            ("APP_ENABLE_DOCS", Some("maybe")),
+        ],
+        || {
+            let err = Config::from_env().expect_err("invalid APP_ENABLE_DOCS must fail");
+            assert!(err.to_string().contains("APP_ENABLE_DOCS"));
         },
     );
 }

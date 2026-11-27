@@ -40,6 +40,7 @@ fn config() -> organox::config::Config {
         log_format: organox::config::LogFormat::Pretty,
         rust_log: String::new(),
         cookie_secure: false,
+        enable_docs: false,
         login_max_failures: 3,
         login_block_minutes: 5,
         login_ip_max_per_minute: 30,

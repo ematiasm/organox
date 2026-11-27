@@ -18,6 +18,9 @@ x-app-env: &app-env
   # succeed and every later request would return 401. Set this to `true` only
   # together with TLS in front of the app.
   APP_COOKIE_SECURE: ${APP_COOKIE_SECURE:-false}
+  # OpenAPI spec and Swagger UI (`/api/v1/docs`, `/api/v1/openapi.json`).
+  # Disabled by default in production to avoid exposing the API surface.
+  APP_ENABLE_DOCS: ${APP_ENABLE_DOCS:-false}
   # Login rate limiting. Optional: the app has defaults for all three, but a
   # documented knob that compose does not forward would be silently ignored,
   # so the template's keys are wired here and `tests/deploy.rs` holds the line.

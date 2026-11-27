@@ -47,7 +47,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         config.cookie_secure,
         config.account_policy(),
         config.ip_policy(),
-    );
+    )
+    .with_docs(config.enable_docs);
 
     // Periodically purge expired sessions and stale login_attempts in the
     // background, stopping cleanly when the server receives SIGINT/SIGTERM.
