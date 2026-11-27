@@ -82,7 +82,9 @@ or to `None` + an explicit CSRF token. This depends on the deployment decision.
 
 ## Session lifetime
 
-- Sliding: every authenticated request extends it by 7 days.
+- Sliding: active sessions extend by 7 days, throttled to once per
+  `SESSION_REFRESH_INTERVAL` (1 hour) to avoid per-request `UPDATE`s and
+  `Set-Cookie` churn.
 - Absolute cap: 30 days from creation, even if used every day. Without this cap,
   a stolen cookie is valid indefinitely.
 
@@ -229,7 +231,9 @@ in sync with Postgres without churning `Set-Cookie` on every request.
 
 A background cleanup task started in `src/main.rs` (`auth::cleanup`) runs at
 startup and every hour to purge expired `sessions` and stale `login_attempts`
-(preserving active locks), shutting down cleanly on `SIGINT`/`SIGTERM`.
+(preserving active locks). On `SIGINT`/`SIGTERM`, `src/main.rs` drains in-flight
+HTTP requests, waits for the cleanup task to finish, and closes the Postgres
+connection pool cleanly.
 
 ## What is missing
 
