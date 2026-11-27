@@ -88,8 +88,10 @@ successful login is sufficient proof that it is not an attacker.
 ### Window and cleanup
 
 Attempts are counted within a 15-minute window: outside it, the counter starts
-over. `AccountLimiter::purge_stale` deletes rows with no activity (not yet
-hooked up to a job; see "What is missing").
+over. A background task spawned in `src/main.rs` (`auth::cleanup`) runs at
+startup and once per hour to call `AccountLimiter::purge_stale` (preserving any
+still-active lock) and `auth::repository::purge_expired_sessions`, stopping
+cleanly on `SIGINT`/`SIGTERM`.
 
 ## Layer 2 — Per IP (memory)
 
@@ -160,9 +162,6 @@ fatal error: configuration error: APP_LOGIN_MAX_FAILURES has an invalid value ("
 
 ## What is missing
 
-- **Cleanup job** for expired `login_attempts` and `sessions`. The functions
-  exist (`purge_stale`, `purge_expired_sessions`) but there is no scheduler. One
-  query per hour at startup is enough for an SMB.
 - **2FA (TOTP)** for `owner`. This defense closes the leaked-credentials gap
   that rate limiting does not address.
 - **Notification** to the owner when their account is repeatedly locked: the

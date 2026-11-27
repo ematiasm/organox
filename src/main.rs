@@ -48,6 +48,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         config.account_policy(),
         config.ip_policy(),
     );
+
+    // Periodically purge expired sessions and stale login_attempts in the
+    // background, stopping cleanly when the server receives SIGINT/SIGTERM.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let cleanup_handle = organox::auth::cleanup::spawn(
+        state.pool.clone(),
+        state.account_limiter.clone(),
+        organox::auth::cleanup::DEFAULT_CLEANUP_INTERVAL,
+        organox::auth::cleanup::attempt_retention(state.account_limiter.policy()),
+        shutdown_rx,
+    );
+
     let app = routes::router(state)
         .layer(tower_cookies::CookieManagerLayer::new())
         .layer(
@@ -70,8 +82,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(true);
+    })
     .await?;
+
+    let _ = cleanup_handle.await;
 
     Ok(())
 }

@@ -246,7 +246,7 @@
           "auth"
         ],
         "summary": "Change the current user's password.",
-        "description": "Requires the current password. The new one must satisfy the password rule.\nEvery other session of the user is revoked; the session making the change\nremains valid.",
+        "description": "Requires the current password. The new one must satisfy the password rule.\nEvery previous session of the user — including the caller's — is revoked\natomically and replaced with a rotated `session` cookie.\n\n`429` means the account or IP is temporarily throttled after failed\nattempts; includes `Retry-After` with the remaining seconds.",
         "operationId": "change_password_doc",
         "requestBody": {
           "content": {
@@ -260,7 +260,15 @@
         },
         "responses": {
           "204": {
-            "description": "Password changed, other sessions revoked"
+            "description": "Password changed, previous sessions revoked and caller session rotated",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "session=<new-token>; HttpOnly; SameSite=Strict"
+              }
+            }
           },
           "401": {
             "description": "Wrong current password or no session",
@@ -274,6 +282,24 @@
           },
           "422": {
             "description": "Invalid new password",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Account locked or IP rate limit exceeded",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Seconds until retry"
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4157,7 +4183,7 @@
           "auth"
         ],
         "summary": "Reset another user's password. Only `owner`.",
-        "description": "No current password is requested: the owner cannot know it. Every session\nof the target is revoked, except the caller's when resetting their own.",
+        "description": "No current password is requested: the owner cannot know it. Every previous\nsession of the target is revoked atomically; when the owner resets their\nown password, a rotated `session` cookie is emitted.",
         "operationId": "reset_password_doc",
         "parameters": [
           {
@@ -4183,7 +4209,7 @@
         },
         "responses": {
           "204": {
-            "description": "Password reset, target sessions revoked"
+            "description": "Password reset, target sessions revoked (and rotated Set-Cookie emitted on self-reset)"
           },
           "401": {
             "description": "No session",

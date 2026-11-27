@@ -1794,3 +1794,111 @@ async fn logout_and_password_change_on_stale_session_emit_single_set_cookie(pool
     );
     assert_eq!(me_status(app(pool), rotated.value()).await, StatusCode::OK);
 }
+
+// --- Scheduled auth cleanup (issue #110) --------------------------------
+
+#[sqlx::test]
+async fn cleanup_run_once_purges_expired_sessions_and_stale_attempts_only(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "cleanup@pyme.com", Role::Owner).await;
+    let active_login = app(pool.clone())
+        .oneshot(login_request("cleanup@pyme.com", &password))
+        .await
+        .unwrap();
+    let active_token = session_cookie(&active_login);
+
+    let expired_login = app(pool.clone())
+        .oneshot(login_request("cleanup@pyme.com", &password))
+        .await
+        .unwrap();
+    let expired_token = session_cookie(&expired_login);
+
+    // Expire only the second session.
+    let expired_hash = organox::auth::token::SessionToken::from_raw(&expired_token).hash();
+    sqlx::query(
+        "UPDATE sessions SET expires_at = now() - interval '1 minute' WHERE token_hash = $1",
+    )
+    .bind(expired_hash.as_bytes())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Seed one stale attempt, one fresh attempt, and one stale-updated active lock.
+    sqlx::query(
+        "INSERT INTO login_attempts (email, failed_count, window_start, blocked_until, updated_at)
+         VALUES
+           ('stale@pyme.com', 2, now() - interval '2 days', NULL, now() - interval '2 days'),
+           ('recent@pyme.com', 1, now() - interval '5 minutes', NULL, now() - interval '5 minutes'),
+           ('locked@pyme.com', 5, now() - interval '2 days', now() + interval '10 minutes', now() - interval '2 days')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let limiter = AccountLimiter::new(pool.clone(), AccountPolicy::default());
+    let report = organox::auth::cleanup::run_once(
+        &pool,
+        &limiter,
+        organox::auth::cleanup::attempt_retention(limiter.policy()),
+    )
+    .await;
+
+    assert_eq!(report.expired_sessions, 1);
+    assert_eq!(report.stale_attempts, 1);
+    assert_eq!(count_rows(&pool, "sessions").await, 1);
+    assert_eq!(
+        me_status(app(pool.clone()), &active_token).await,
+        StatusCode::OK
+    );
+
+    let remaining_attempts: Vec<String> =
+        sqlx::query_scalar("SELECT email::text FROM login_attempts ORDER BY email")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        remaining_attempts,
+        vec!["locked@pyme.com", "recent@pyme.com"]
+    );
+}
+
+#[sqlx::test]
+async fn cleanup_spawn_runs_initial_pass_and_stops_on_shutdown(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "spawn-cleanup@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("spawn-cleanup@pyme.com", &password))
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+
+    sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 minute'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count_rows(&pool, "sessions").await, 1);
+
+    let limiter = AccountLimiter::new(pool.clone(), AccountPolicy::default());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let handle = organox::auth::cleanup::spawn(
+        pool.clone(),
+        limiter,
+        Duration::from_secs(60),
+        organox::auth::cleanup::MIN_ATTEMPT_RETENTION,
+        shutdown_rx,
+    );
+
+    // Wait briefly for the initial pass to clear the expired session.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while count_rows(&pool, "sessions").await > 0 {
+        assert!(
+            Instant::now() < deadline,
+            "spawned cleanup task must purge expired sessions on startup"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    shutdown_tx.send(true).expect("send shutdown");
+    tokio::time::timeout(Duration::from_secs(2), handle)
+        .await
+        .expect("cleanup task must terminate promptly on shutdown")
+        .expect("cleanup task must exit without panicking");
+}

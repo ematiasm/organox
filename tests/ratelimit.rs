@@ -339,6 +339,39 @@ async fn limiter_purges_stale_rows(pool: PgPool) {
     assert_eq!(rows, 0);
 }
 
+#[sqlx::test]
+async fn limiter_purge_stale_preserves_active_lock(pool: PgPool) {
+    let state = strict_state(pool.clone());
+
+    sqlx::query(
+        "INSERT INTO login_attempts (email, failed_count, window_start, blocked_until, updated_at)
+         VALUES
+           ('active-lock@pyme.com', 5, now() - interval '2 days', now() + interval '1 hour', now() - interval '2 days'),
+           ('expired-lock@pyme.com', 5, now() - interval '2 days', now() - interval '1 minute', now() - interval '2 days'),
+           ('stale-unlocked@pyme.com', 2, now() - interval '2 days', NULL, now() - interval '2 days')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let purged = state
+        .account_limiter
+        .purge_stale(Duration::from_secs(24 * 60 * 60))
+        .await
+        .unwrap();
+    assert_eq!(
+        purged, 2,
+        "purge_stale must delete stale unlocked and expired-lock rows only"
+    );
+
+    let remaining: Vec<String> =
+        sqlx::query_scalar("SELECT email::text FROM login_attempts ORDER BY email")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, vec!["active-lock@pyme.com"]);
+}
+
 // --- Account isolation -------------------------------------------------
 
 #[sqlx::test]
