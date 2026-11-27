@@ -393,7 +393,6 @@ impl From<SalesError> for AppError {
             }
             SalesError::CustomerInactive => AppError::Conflict(err.to_string()),
             SalesError::CustomerAccountBusy => AppError::Conflict(err.to_string()),
-            SalesError::CustomerLookup(err) => AppError::Internal(err.to_string()),
             SalesError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
     }

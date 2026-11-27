@@ -93,30 +93,52 @@ pub enum RepoError {
     #[error("the payment method is unknown or inactive")]
     PaymentMethodUnavailable,
 
+    #[error("the customer is deactivated and cannot be attached to a sale")]
+    CustomerInactive,
+
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
 
-pub struct NewSaleDraft {
-    pub created_by: Uuid,
-}
+/// Reuse the operator's open draft, or create a new empty draft without racing
+/// against concurrent `open_draft` calls.
+///
+/// Backed by the `sales_one_open_draft_per_user_idx` partial unique index:
+/// when concurrent callers race past the fast-path lookup, `ON CONFLICT ...
+/// DO NOTHING` lets one insert win (`reused = false`) while losers reload the
+/// winning draft (`reused = true`).
+pub async fn open_or_find_draft(pool: &PgPool, user_id: Uuid) -> Result<(Uuid, bool), RepoError> {
+    if let Some(existing) = find_open_draft_for_user(pool, user_id).await? {
+        return Ok((existing, true));
+    }
 
-/// Create an empty draft.
-pub async fn create_draft(pool: &PgPool, new: NewSaleDraft) -> Result<Uuid, RepoError> {
-    let id = Uuid::now_v7();
+    for _ in 0..3 {
+        let candidate_id = Uuid::now_v7();
+        let inserted = sqlx::query_scalar!(
+            r#"
+            INSERT INTO sales (id, status, created_by)
+            VALUES ($1, 'draft', $2)
+            ON CONFLICT (created_by) WHERE status = 'draft' DO NOTHING
+            RETURNING id
+            "#,
+            candidate_id,
+            user_id,
+        )
+        .fetch_optional(pool)
+        .await?;
 
-    sqlx::query!(
-        r#"
-        INSERT INTO sales (id, status, created_by)
-        VALUES ($1, 'draft', $2)
-        "#,
-        id,
-        new.created_by,
-    )
-    .execute(pool)
-    .await?;
+        if let Some(id) = inserted {
+            return Ok((id, false));
+        }
 
-    Ok(id)
+        if let Some(existing) = find_open_draft_for_user(pool, user_id).await? {
+            return Ok((existing, true));
+        }
+    }
+
+    Err(RepoError::Database(sqlx::Error::Protocol(
+        "concurrent draft state changed repeatedly while opening sale draft".to_string(),
+    )))
 }
 
 /// Recalculate the draft total from its items.
@@ -349,51 +371,54 @@ pub async fn remove_item(pool: &PgPool, sale_id: Uuid, product_id: Uuid) -> Resu
     set_item_quantity(pool, sale_id, product_id, Decimal::ZERO).await
 }
 
-/// Attach or clear the sale's customer. Draft-only: same rule as every other
-/// draft mutation, checked the same way.
+/// Attach or clear the sale's customer inside a single transaction.
 ///
-/// Existence and active state are NOT checked here: they are the customers
-/// module's rule (`service::get_customer`), and a copy in sales SQL would drift.
+/// Locks the `sales` row (`FOR NO KEY UPDATE`) before locking the `customers`
+/// row (`FOR SHARE`), matching `complete()`'s lock order to prevent deadlocks
+/// while serializing against concurrent customer deactivation.
 pub async fn set_customer(
     pool: &PgPool,
     sale_id: Uuid,
     customer_id: Option<Uuid>,
 ) -> Result<(), RepoError> {
-    // One statement instead of "read the status, then write": the sale could be
-    // completed in between, and a customer attached after completion would land
-    // on a closed sale with no snapshot — a sale whose name could still change.
-    // The draft guard therefore lives in the WHERE clause. The item mutations
-    // above lock the row in a transaction because they span multiple tables;
-    // this one does not.
-    let result = sqlx::query!(
-        "UPDATE sales SET customer_id = $2 WHERE id = $1 AND status = 'draft'",
-        sale_id,
-        customer_id,
-    )
-    .execute(pool)
-    .await?;
+    let mut tx = pool.begin().await?;
 
-    if result.rows_affected() > 0 {
-        return Ok(());
-    }
-
-    // Nothing was updated: report why. A frame that matched no row is either a
-    // missing sale or a closed one, never a draft.
     let status = sqlx::query_scalar!(
-        r#"SELECT status AS "status: SaleStatus" FROM sales WHERE id = $1"#,
+        r#"SELECT status AS "status: SaleStatus" FROM sales WHERE id = $1 FOR NO KEY UPDATE"#,
         sale_id
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(RepoError::NotFound)?;
 
-    if status.is_editable() {
-        return Err(RepoError::Database(sqlx::Error::Protocol(
-            "the draft sale was not updated".to_string(),
-        )));
+    if !status.is_editable() {
+        return Err(RepoError::NotEditable);
     }
 
-    Err(RepoError::NotEditable)
+    if let Some(cid) = customer_id {
+        let is_active = sqlx::query_scalar!(
+            r#"SELECT is_active FROM customers WHERE id = $1 FOR SHARE"#,
+            cid
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RepoError::NotFound)?;
+
+        if !is_active {
+            return Err(RepoError::CustomerInactive);
+        }
+    }
+
+    sqlx::query!(
+        "UPDATE sales SET customer_id = $2 WHERE id = $1",
+        sale_id,
+        customer_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Cancel a draft. Does not touch the stock ledger because a draft never did:

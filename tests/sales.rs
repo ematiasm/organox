@@ -211,6 +211,70 @@ async fn open_draft_creates_new_after_completion(pool: PgPool) {
     assert_ne!(draft, next, "after completion, the next draft is new");
 }
 
+/// Concurrent `open_draft` calls by the same operator must collapse onto one
+/// single open draft (exactly one `reused: false`, the rest `reused: true`).
+#[sqlx::test]
+async fn concurrent_open_draft_creates_only_one_draft_per_operator(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let pool = pool.clone();
+        let barrier = std::sync::Arc::clone(&barrier);
+        set.spawn(async move {
+            barrier.wait().await;
+            sales::open_draft(&pool, actor).await
+        });
+    }
+
+    let mut results = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        results.push(
+            joined
+                .expect("task must not panic")
+                .expect("open_draft must succeed"),
+        );
+    }
+
+    let first_id = results[0].0;
+    assert!(
+        results.iter().all(|(id, _)| *id == first_id),
+        "all concurrent calls must return the same draft id: {results:?}"
+    );
+    let created_count = results.iter().filter(|(_, reused)| !reused).count();
+    assert_eq!(
+        created_count, 1,
+        "exactly one concurrent caller must create the draft: {results:?}"
+    );
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sales WHERE created_by = $1 AND status = 'draft'")
+            .bind(actor)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 1,
+        "database must hold at most one open draft per operator"
+    );
+
+    // Direct SQL insert of a second draft for the same operator is also rejected by the DB index.
+    let dup_err =
+        sqlx::query("INSERT INTO sales (id, status, created_by) VALUES ($1, 'draft', $2)")
+            .bind(Uuid::now_v7())
+            .bind(actor)
+            .execute(&pool)
+            .await
+            .expect_err("partial unique index must reject a second open draft for the same user");
+    let db_err = dup_err.as_database_error().expect("database error");
+    assert_eq!(db_err.code().as_deref(), Some("23505"));
+    assert_eq!(
+        db_err.constraint(),
+        Some("sales_one_open_draft_per_user_idx")
+    );
+}
+
 // --- Items --------------------------------------------------------------
 
 #[sqlx::test]
@@ -769,7 +833,8 @@ async fn an_unknown_customer_cannot_be_attached(pool: PgPool) {
     assert_eq!(stored_customer_id(&pool, draft).await, None);
 }
 
-/// The active check is the customers module's rule, not a copy in sales SQL.
+/// A deactivated customer cannot be attached to a draft (enforced inside the
+/// draft update transaction with `FOR SHARE`).
 #[sqlx::test]
 async fn a_deactivated_customer_cannot_be_attached(pool: PgPool) {
     let actor = seed_user(&pool).await;
@@ -783,6 +848,41 @@ async fn a_deactivated_customer_cannot_be_attached(pool: PgPool) {
         .await
         .expect_err("a deactivated customer cannot be attached");
     assert!(matches!(err, SalesError::CustomerInactive));
+    assert_eq!(stored_customer_id(&pool, draft).await, None);
+}
+
+/// Concurrent customer deactivation must serialize against `set_customer` so a
+/// deactivated customer can never be attached to a draft via TOCTOU.
+#[sqlx::test]
+async fn set_customer_serializes_with_concurrent_deactivation(pool: PgPool) {
+    let actor = seed_user(&pool).await;
+    let customer = seed_customer(&pool, "Ana Pérez").await;
+    let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
+
+    // Hold a row lock deactivating the customer without committing yet.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("UPDATE customers SET is_active = false WHERE id = $1")
+        .bind(customer)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    let pool_clone = pool.clone();
+    let handle =
+        tokio::spawn(async move { sales::set_customer(&pool_clone, draft, Some(customer)).await });
+
+    // Give `set_customer` time to reach the customer row lock.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tx.commit().await.unwrap();
+
+    let err = handle
+        .await
+        .expect("task must not panic")
+        .expect_err("must reject customer deactivated concurrently");
+    assert!(
+        matches!(err, SalesError::CustomerInactive),
+        "expected CustomerInactive, got {err:?}"
+    );
     assert_eq!(stored_customer_id(&pool, draft).await, None);
 }
 
