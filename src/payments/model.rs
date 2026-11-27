@@ -94,25 +94,47 @@ impl WalletMovementKind {
         amount * Decimal::from(self.sign())
     }
 
-    /// Kinds an operator records by hand. A sale payment is only ever produced
-    /// by charging a sale, a sale refund only by a credit note, an account
-    /// payment only by collecting against a customer's account, an account
-    /// payment refund only by refunding customer credit, a purchase payment
-    /// only by completing a purchase, a purchase refund only by a purchase
-    /// return, and supplier account movements only by supplier account
-    /// payment/refund endpoints: none of them is ever typed into a form.
+    /// Kinds an operator records by hand.
     pub fn is_manual(self) -> bool {
-        !matches!(
-            self,
-            WalletMovementKind::SalePayment
-                | WalletMovementKind::SaleRefund
-                | WalletMovementKind::AccountPayment
-                | WalletMovementKind::AccountPaymentRefund
-                | WalletMovementKind::PurchasePayment
-                | WalletMovementKind::PurchaseRefund
-                | WalletMovementKind::SupplierAccountPayment
-                | WalletMovementKind::SupplierAccountRefund
-        )
+        self.manual_entry_rejection().is_none()
+    }
+
+    /// Why this kind cannot be typed by hand, or `None` when it can.
+    ///
+    /// One table owns the mapping and [`Self::is_manual`] is derived from it, so
+    /// a new kind cannot answer the predicate and the explanation differently.
+    /// Each phrase names the endpoint that does record the money; the same list
+    /// lives in `docs/payments.md`.
+    pub fn manual_entry_rejection(self) -> Option<&'static str> {
+        match self {
+            WalletMovementKind::SalePayment => {
+                Some("a sale payment is recorded by charging a sale, not by hand")
+            }
+            WalletMovementKind::SaleRefund => {
+                Some("a sale refund is recorded by a credit note, not by hand")
+            }
+            WalletMovementKind::AccountPayment => Some(
+                "an account payment is recorded by collecting against a customer's account, not by hand",
+            ),
+            WalletMovementKind::AccountPaymentRefund => Some(
+                "an account payment refund is recorded by refunding customer credit, not by hand",
+            ),
+            WalletMovementKind::PurchasePayment => {
+                Some("a purchase payment is recorded by completing a purchase, not by hand")
+            }
+            WalletMovementKind::PurchaseRefund => {
+                Some("a purchase refund is recorded by a purchase return, not by hand")
+            }
+            WalletMovementKind::SupplierAccountPayment => Some(
+                "a supplier account payment is recorded by paying against a supplier's account, not by hand",
+            ),
+            WalletMovementKind::SupplierAccountRefund => Some(
+                "a supplier account refund is recorded by refunding supplier credit, not by hand",
+            ),
+            WalletMovementKind::Expense
+            | WalletMovementKind::AdjustmentIn
+            | WalletMovementKind::AdjustmentOut => None,
+        }
     }
 }
 

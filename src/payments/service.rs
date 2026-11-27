@@ -206,10 +206,8 @@ pub async fn record_manual_movement(
     wallet_id: Uuid,
     input: ManualMovementInput,
 ) -> Result<Uuid, PaymentsError> {
-    if !input.kind.is_manual() {
-        return Err(PaymentsError::Validation(
-            "a sale payment is recorded by charging a sale, not by hand".to_string(),
-        ));
+    if let Some(reason) = input.kind.manual_entry_rejection() {
+        return Err(PaymentsError::Validation(reason.to_string()));
     }
 
     if input.amount <= Decimal::ZERO {
