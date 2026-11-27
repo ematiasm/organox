@@ -1,7 +1,7 @@
 # Validation consistency gaps (#115)
 
 Objective: Fix the five validation and consistency gaps in GitHub issue #115 across sales quantities, manual wallet movements, catalog pagination echo, supplier return ledger self-defense, and account idempotency key handling.
-Branch: `fix/validation-consistency-gaps` | Delivery: `ask-on-risk` (~550 authored changed lines forecasted across 5 work units) | Runner: `cargo test` (`make check`, `make prepare`, `make fe-schema`)
+Branch: `fix/115-1-sales-quantity`..`fix/115-6-supplier-idempotency` | Delivery: `stacked-to-main` (6 module PRs `#143`–`#148`, each ≤260 authored lines) | Runner: `cargo test` (`make check`, `make prepare`, `make fe-schema`)
 
 ## Specs
 
@@ -42,4 +42,11 @@ L1. User request (2026-11-27): "si, segui con el proximo" (GitHub issue #115: `v
 L2. User product decisions for S5 (2026-11-27): "para el primero la opcion B. para 2 la opcion A KISS" — unify blank/trimmed `idempotency_key` validation (trim + 422 on blank + service-layer enforcement + DB CHECK constraint) across `customer_accounts` and `supplier_accounts`; keep KISS key-only replay (`200 OK` with original record, `409` only on cross-kind reuse).
 L3. Route & risk assessment (2026-11-27): T1–T3 are <= 100 lines each (inline); T4 and T5 share `src/supplier_accounts/` and `tests/supplier_accounts.rs` so they run sequentially inline. High-risk items present: item 1 (DB migration adding CHECK constraints in T5), item 3 (requested contract change in T1 & T5), item 4 (wallet row locking inside tx in T2). Independent read-only verifier will audit the full feature branch against baseline `c6c917b` at feature end.
 L4. Verification evidence (2026-11-27): `make migrate`, `make prepare`, `make fe-schema`, `cargo fmt --check`, `SQLX_OFFLINE=true cargo check --all-targets`, `SQLX_OFFLINE=true cargo clippy --all-targets -- -D warnings`, `cd frontend && npm run check` (0 errors, 0 warnings), and full `SQLX_OFFLINE=true cargo test` all passed on `0d5c95d`. Launching independent read-only verifier against baseline `c6c917b`.
-L5. Independent verification (2026-11-27): Fresh read-only verifier audited `c6c917b..0d5c95d` across S1–S5, migration `0035`, contract parity, and `insert_manual_movement` `FOR SHARE` lock ordering, and re-ran `cargo fmt --check`, `SQLX_OFFLINE=true cargo check --all-targets`, `SQLX_OFFLINE=true cargo clippy --all-targets -- -D warnings`, and `SQLX_OFFLINE=true cargo test --lib` (115/115). Verdict: 0 blockers (3 non-blocking advisories noted). Authored changed lines across the 5 code commits: ~919 lines (567 tests, 40 docs, 312 Rust/SQL; generated `.sqlx/`, `openapi.json`, `schema.d.ts` excluded). Ready for delivery decision (`ask-on-risk`: single PR vs stacked PRs).
+L5. Independent verification (2026-11-27): Fresh read-only verifier audited `c6c917b..0d5c95d` across S1–S5, migration `0035`, contract parity, and `insert_manual_movement` `FOR SHARE` lock ordering, and re-ran `cargo fmt --check`, `SQLX_OFFLINE=true cargo check --all-targets`, `SQLX_OFFLINE=true cargo clippy --all-targets -- -D warnings`, and `SQLX_OFFLINE=true cargo test --lib` (115/115). Verdict: 0 blockers (3 non-blocking advisories noted).
+L6. Delivery slices (2026-11-27, user choice: `stacked-to-main` by module):
+  - PR #143 (`fix/115-1-sales-quantity` → `main`, `4b37be8`): S1 sales negative quantity + OpenAPI (106 authored lines).
+  - PR #144 (`fix/115-2-payments-wallet` → `#143`, `21b6484`): S2 inactive wallet `FOR SHARE` check + `.sqlx` + OpenAPI (108 authored lines).
+  - PR #145 (`fix/115-3-catalog-paging` → `#144`, `31615b8`): S3 catalog clamped pagination echo (40 authored lines).
+  - PR #146 (`fix/115-4-supplier-returns` → `#145`, `b347d19`): S4 supplier return ledger self-defense + `.sqlx` (198 authored lines).
+  - PR #147 (`fix/115-5-customer-idempotency` → `#146`, `e994821`): S5 customer_accounts idempotency unification + migration `0035` (254 authored lines).
+  - PR #148 (`fix/115-6-supplier-idempotency` → `#147`, `Closes #115`): S5 supplier_accounts idempotency unification + ODD logbook (258 authored lines).
