@@ -4632,7 +4632,7 @@
             }
           },
           "422": {
-            "description": "Invalid input",
+            "description": "Invalid input or wallet is inactive",
             "content": {
               "application/problem+json": {
                 "schema": {

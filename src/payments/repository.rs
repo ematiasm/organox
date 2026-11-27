@@ -16,6 +16,9 @@ pub enum RepoError {
     #[error("wallet not found")]
     WalletNotFound,
 
+    #[error("the wallet is deactivated and cannot receive manual movements")]
+    WalletInactive,
+
     #[error("payment method not found")]
     MethodNotFound,
 
@@ -426,6 +429,32 @@ where
         _ => RepoError::Database(err),
     })?;
 
+    Ok(id)
+}
+
+/// Insert a manual wallet movement inside a transaction that locks the wallet
+/// row `FOR SHARE`, preventing a concurrent deactivation from racing past the
+/// `is_active` check.
+pub async fn insert_manual_movement(
+    pool: &PgPool,
+    new: NewWalletMovement<'_>,
+) -> Result<Uuid, RepoError> {
+    let mut tx = pool.begin().await?;
+
+    let is_active = sqlx::query_scalar!(
+        "SELECT is_active FROM wallets WHERE id = $1 FOR SHARE",
+        new.wallet_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RepoError::WalletNotFound)?;
+
+    if !is_active {
+        return Err(RepoError::WalletInactive);
+    }
+
+    let id = insert_movement(&mut *tx, new).await?;
+    tx.commit().await?;
     Ok(id)
 }
 

@@ -6028,7 +6028,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Invalid input */
+            /** @description Invalid input or wallet is inactive */
             422: {
                 headers: {
                     [name: string]: unknown;
