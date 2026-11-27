@@ -1649,3 +1649,142 @@ async fn applying_credit_consumes_more_than_100_payments_oldest_first(pool: PgPo
     assert_eq!(position.balance, dec!(-4.50));
     assert!(position.is_consistent());
 }
+
+#[sqlx::test]
+async fn a_purchase_return_must_belong_to_the_purchase_it_cancels(pool: PgPool) {
+    let actor = setup_actor();
+    let supplier = setup_supplier(&pool, "MismatchSupplier", None).await;
+    let first =
+        setup_completed_purchase(&pool, supplier, "MismatchSupplier", dec!(100.00), actor).await;
+    let other =
+        setup_completed_purchase(&pool, supplier, "MismatchSupplier", dec!(100.00), actor).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, first, dec!(100.00), actor)
+        .await
+        .unwrap();
+    ledger::record_charge(&mut tx, supplier, other, dec!(100.00), actor)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let ret = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchase_returns (id, purchase_id, total, surplus_mode, reason, created_by)
+         VALUES ($1, $2, 30.00, 'supplier_credit', 'Defective batch', $3)",
+    )
+    .bind(ret)
+    .bind(first)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let result =
+        ledger::record_purchase_return(&mut tx, supplier, other, ret, dec!(30.00), None, actor)
+            .await;
+    assert!(matches!(result, Err(RepoError::PurchaseReturnMismatch)));
+    tx.rollback().await.unwrap();
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM supplier_account_entries
+         WHERE supplier_id = $1 AND kind = 'purchase_return'",
+    )
+    .bind(supplier)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[sqlx::test]
+async fn a_purchase_return_cannot_cancel_or_credit_more_than_it_carries(pool: PgPool) {
+    let actor = setup_actor();
+    let supplier = setup_supplier(&pool, "CapSupplier", None).await;
+    let other_supplier = setup_supplier(&pool, "OtherCapSupplier", None).await;
+    let purchase =
+        setup_completed_purchase(&pool, supplier, "CapSupplier", dec!(100.00), actor).await;
+
+    let ret = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO purchase_returns (id, purchase_id, total, surplus_mode, reason, created_by)
+         VALUES ($1, $2, 20.00, 'supplier_credit', 'Partial return', $3)",
+    )
+    .bind(ret)
+    .bind(purchase)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    ledger::record_charge(&mut tx, supplier, purchase, dec!(100.00), actor)
+        .await
+        .unwrap();
+
+    // Missing purchase_return -> PurchaseReturnNotFound.
+    let missing = ledger::record_purchase_return(
+        &mut tx,
+        supplier,
+        purchase,
+        Uuid::now_v7(),
+        dec!(10.00),
+        None,
+        actor,
+    )
+    .await;
+    assert!(matches!(missing, Err(RepoError::PurchaseReturnNotFound)));
+
+    // Cancelling 30 against a 20 return -> PurchaseReturnExceeded.
+    let exceeded =
+        ledger::record_purchase_return(&mut tx, supplier, purchase, ret, dec!(30.00), None, actor)
+            .await;
+    assert!(matches!(
+        exceeded,
+        Err(RepoError::PurchaseReturnExceeded { requested, available })
+            if requested == dec!(30.00) && available == dec!(20.00)
+    ));
+
+    // Crediting 25 against a 20 return -> PurchaseReturnExceeded.
+    let credit_exceeded =
+        ledger::record_purchase_return_credit(&mut tx, supplier, ret, dec!(25.00), None, actor)
+            .await;
+    assert!(matches!(
+        credit_exceeded,
+        Err(RepoError::PurchaseReturnExceeded { requested, available })
+            if requested == dec!(25.00) && available == dec!(20.00)
+    ));
+
+    // Crediting another supplier for this return -> PurchaseOfAnotherSupplier.
+    let wrong_supplier = ledger::record_purchase_return_credit(
+        &mut tx,
+        other_supplier,
+        ret,
+        dec!(10.00),
+        None,
+        actor,
+    )
+    .await;
+    assert!(matches!(
+        wrong_supplier,
+        Err(RepoError::PurchaseOfAnotherSupplier)
+    ));
+
+    // Missing return on credit -> PurchaseReturnNotFound.
+    let missing_credit = ledger::record_purchase_return_credit(
+        &mut tx,
+        supplier,
+        Uuid::now_v7(),
+        dec!(10.00),
+        None,
+        actor,
+    )
+    .await;
+    assert!(matches!(
+        missing_credit,
+        Err(RepoError::PurchaseReturnNotFound)
+    ));
+
+    tx.rollback().await.unwrap();
+}
