@@ -3190,6 +3190,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Invalid quantity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           }
         }
       },

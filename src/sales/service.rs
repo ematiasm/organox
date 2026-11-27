@@ -44,6 +44,9 @@ pub enum SalesError {
     #[error("the quantity must be greater than zero")]
     QuantityNotPositive,
 
+    #[error("the quantity cannot be negative")]
+    QuantityNegative,
+
     #[error("the quantity has more than 3 decimal places")]
     QuantityPrecision,
 
@@ -121,6 +124,8 @@ fn map_repo_error(err: RepoError) -> SalesError {
         },
         RepoError::NotEditable => SalesError::NotEditable,
         RepoError::EmptySale => SalesError::EmptySale,
+        RepoError::QuantityNotPositive => SalesError::QuantityNotPositive,
+        RepoError::QuantityNegative => SalesError::QuantityNegative,
         RepoError::QuantityPrecision => SalesError::QuantityPrecision,
         RepoError::QuantityTooLarge => SalesError::QuantityTooLarge,
         RepoError::TotalTooLarge => SalesError::TotalTooLarge,
@@ -214,6 +219,9 @@ pub async fn set_item_quantity(
     product_id: Uuid,
     quantity: Decimal,
 ) -> Result<Sale, SalesError> {
+    if quantity < Decimal::ZERO {
+        return Err(SalesError::QuantityNegative);
+    }
     if quantity > Decimal::ZERO {
         if quantity.round_dp(3) != quantity {
             return Err(SalesError::QuantityPrecision);

@@ -338,6 +338,7 @@ impl From<SalesError> for AppError {
             SalesError::ProductNotFound => AppError::NotFound,
             SalesError::ServiceNotSellable
             | SalesError::QuantityNotPositive
+            | SalesError::QuantityNegative
             | SalesError::QuantityPrecision
             | SalesError::QuantityTooLarge
             | SalesError::TotalTooLarge => AppError::Validation(err.to_string()),
@@ -478,6 +479,8 @@ fn add_item_doc() {}
         (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
         (status = 409, description = "Sale is already closed", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid quantity", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
