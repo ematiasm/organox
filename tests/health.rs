@@ -218,3 +218,115 @@ async fn spa_shell_served_outside_api(pool: sqlx::PgPool) {
         "application/problem+json"
     );
 }
+
+/// Exact `/api` (without trailing slash) must return RFC 7807 JSON 404,
+/// never falling through to the SPA fallback.
+#[tokio::test]
+async fn exact_api_path_returns_problem_json_404() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://127.0.0.1:1/never_connected")
+        .expect("lazy pool");
+    let app = router(AppState::new(pool, false));
+
+    let response = app
+        .oneshot(Request::builder().uri("/api").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/problem+json"),
+        "exact /api must return RFC 7807 problem+json 404"
+    );
+}
+
+/// `AppState::with_frontend_dir` serves static assets and SPA fallback from the
+/// configured directory while guarding `/api` and `/api/*` (and leaving sibling
+/// paths like `/api-docs` to the SPA).
+#[tokio::test]
+async fn spa_uses_configured_frontend_dir_and_guards_api_prefix() {
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let dir =
+        TempDir(std::env::temp_dir().join(format!("organox-spa-test-{}", uuid::Uuid::now_v7())));
+    std::fs::create_dir_all(&dir.0).expect("create temp frontend dir");
+    std::fs::write(dir.0.join("index.html"), "<html>spa-custom-root</html>")
+        .expect("write index.html");
+    std::fs::write(dir.0.join("hello.txt"), "static-asset-ok").expect("write asset");
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://127.0.0.1:1/never_connected")
+        .expect("lazy pool");
+    let app = router(AppState::new(pool, false).with_frontend_dir(&dir.0));
+
+    // Real file in the custom directory.
+    let asset = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/hello.txt")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(asset.into_body(), 1024).await.unwrap();
+    assert_eq!(&body[..], b"static-asset-ok");
+
+    // Client-side SPA route and non-`/api` sibling path fall back to index.html.
+    for spa_path in ["/products", "/api-docs"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(spa_path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "expected SPA 200 for {spa_path}"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"<html>spa-custom-root</html>");
+    }
+
+    // Exact `/api` and `/api/*` return RFC 7807 JSON 404 even when index.html exists.
+    for api_path in ["/api", "/api/", "/api/unknown"] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(api_path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "expected 404 for {api_path}"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/problem+json"),
+            "expected problem+json for {api_path}"
+        );
+    }
+}

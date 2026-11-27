@@ -59,7 +59,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         config.account_policy(),
         config.ip_policy(),
     )
-    .with_docs(config.enable_docs);
+    .with_docs(config.enable_docs)
+    .with_frontend_dir(config.frontend_dir);
 
     serve_until_shutdown(
         listener,

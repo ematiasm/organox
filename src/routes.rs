@@ -1,6 +1,7 @@
 //! Routes. The API root lives under `/api/v1` from day one: versioning later
 //! breaks clients; versioning now is free.
 
+use std::path::Path;
 use std::time::Duration;
 
 use axum::Router;
@@ -20,10 +21,6 @@ use tracing::Level;
 use crate::AppState;
 use crate::db;
 use crate::error::AppError;
-
-/// Frontend build directory. Configurable to avoid tying the binary to a fixed
-/// relative path.
-const FRONTEND_DIR: &str = "frontend/build";
 
 /// Default per-request timeout. Well above normal handler latency and the 5 s
 /// database acquire timeout, while preventing stalled requests from pinning
@@ -62,6 +59,7 @@ pub fn router(state: AppState) -> Router {
 
 pub fn router_with_limits(state: AppState, limits: HttpLimits) -> Router {
     let cookie_secure = state.cookie_secure;
+    let frontend = frontend_service(&state.frontend_dir);
 
     Router::new()
         .route("/healthz", get(healthz))
@@ -70,7 +68,7 @@ pub fn router_with_limits(state: AppState, limits: HttpLimits) -> Router {
         // The fallback goes LAST and after `/api/v1`: if declared earlier, an
         // API `fetch` matching no route receives `index.html` instead of a JSON
         // 404, and the frontend fails with an uninformative parsing error.
-        .fallback(spa_fallback)
+        .fallback(move |request| spa_fallback(request, frontend.clone()))
         .with_state(state)
         // Disable Axum's implicit 2 MiB extractor limit so `RequestBodyLimitLayer`
         // is the single source of truth across JSON and non-JSON routes.
@@ -152,34 +150,40 @@ async fn map_middleware_errors(response: Response) -> Response {
     }
 }
 
-/// Serve the SvelteKit build.
+/// Serve the SvelteKit build from `dir`.
 ///
 /// As this is an SPA (`adapter-static` with `fallback: 'index.html'`), any
 /// route that is not a real file returns `index.html` and the browser router
 /// resolves it. Without this, `/products` works when navigating but returns 404
 /// on refresh.
-fn frontend_service() -> ServeDir<ServeFile> {
-    ServeDir::new(FRONTEND_DIR).fallback(ServeFile::new(format!("{FRONTEND_DIR}/index.html")))
+///
+/// Built once when assembling the router and cloned per fallback request.
+fn frontend_service(dir: &Path) -> ServeDir<ServeFile> {
+    ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))
 }
 
 /// Fallback for all unrecognized routes.
 ///
 /// Two different behaviors depending on the prefix, and this matters:
 ///
-///  * **`/api/*` without a declared route** → JSON `404` (`application/problem+json`).
+///  * **`/api` or `/api/*` without a declared route** → JSON `404` (`application/problem+json`).
 ///    Returning `index.html` here would give a `fetch` to a nonexistent endpoint
 ///    HTML with status 200, and the frontend would fail with an uninformative
 ///    parsing error. The `unknown_api_route_returns_404` test caught this.
 ///  * **Any other route** → the SPA build (a real file, or `index.html` for
 ///    routes resolved by the browser router).
-async fn spa_fallback(request: axum::extract::Request) -> axum::response::Response {
+async fn spa_fallback(
+    request: axum::extract::Request,
+    frontend: ServeDir<ServeFile>,
+) -> axum::response::Response {
     use tower::ServiceExt;
 
-    if request.uri().path().starts_with("/api/") {
+    let path = request.uri().path();
+    if path == "/api" || path.starts_with("/api/") {
         return AppError::NotFound.into_response();
     }
 
-    match frontend_service().oneshot(request).await {
+    match frontend.oneshot(request).await {
         Ok(response) => response.into_response(),
         Err(err) => {
             tracing::error!(error = ?err, "could not serve the frontend");

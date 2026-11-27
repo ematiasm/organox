@@ -23,6 +23,7 @@ pub mod suppliers;
 pub mod telemetry;
 
 use sqlx::PgPool;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ratelimit::AccountLimiter;
@@ -51,6 +52,9 @@ pub struct AppState {
     /// Defaults to `false` so production deployments do not expose API docs
     /// unless explicitly enabled (`APP_ENABLE_DOCS=true`).
     pub enable_docs: bool,
+    /// Directory containing the built SPA assets served by the fallback route.
+    /// Defaults to `frontend/build` (`APP_FRONTEND_DIR`).
+    pub frontend_dir: PathBuf,
 }
 
 impl AppState {
@@ -75,12 +79,19 @@ impl AppState {
             pool,
             cookie_secure,
             enable_docs: false,
+            frontend_dir: PathBuf::from(crate::config::DEFAULT_FRONTEND_DIR),
         }
     }
 
     /// Enable or disable mounting `/api/v1/docs` and `/api/v1/openapi.json`.
     pub fn with_docs(mut self, enable_docs: bool) -> Self {
         self.enable_docs = enable_docs;
+        self
+    }
+
+    /// Override the directory from which SPA static assets and `index.html` are served.
+    pub fn with_frontend_dir(mut self, frontend_dir: impl Into<PathBuf>) -> Self {
+        self.frontend_dir = frontend_dir.into();
         self
     }
 }
