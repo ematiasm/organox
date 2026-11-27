@@ -1908,6 +1908,67 @@ async fn supplier_payment_allocation_rejects_decimal_max_without_panicking(pool:
     ));
 }
 
+/// The supplier twin of the customer allocation guard: one payment entry may
+/// back a purchase only once, and the unique constraint must surface as
+/// `DuplicateAllocation`, not as an unmapped database error.
+#[sqlx::test(migrations = "./migrations")]
+async fn allocating_the_same_purchase_twice_is_a_typed_conflict(pool: PgPool) {
+    let (_owner_id, pw) = seed_owner(&pool).await;
+    let (_wallet_id, method_id) = seed_method(&pool, "Bank").await;
+    let product_id = seed_good(&pool, "Grain").await;
+    let app = app(pool.clone());
+    let cookie = login(&app, "owner@pyme.com", &pw).await;
+
+    let supplier_id = create_supplier(&app, &cookie, "Grain Co", None, None).await;
+    let (purchase_id, _) = complete_on_account_purchase(
+        &app,
+        &cookie,
+        supplier_id,
+        product_id,
+        "2",
+        "50.00",
+        "100.00",
+    )
+    .await;
+
+    let (st, _, created) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/payments"),
+        Some(&cookie),
+        Some(json!({
+            "payment_method_id": method_id,
+            "amount": "50.00",
+            "allocations": [{ "purchase_id": purchase_id, "amount": "10.00" }],
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+    let entry_id: Uuid = created["payment_id"].as_str().unwrap().parse().unwrap();
+
+    // 40 of the payment is still free and the purchase still owes 90, so the
+    // caps pass and only the once-per-purchase constraint can reject this.
+    let mut tx = pool.begin().await.unwrap();
+    let err = organox::supplier_accounts::repository::allocate(
+        &mut tx,
+        entry_id,
+        purchase_id,
+        dec!(10.00),
+    )
+    .await
+    .expect_err("the same purchase cannot be allocated twice from one payment");
+    assert!(
+        matches!(
+            err,
+            organox::supplier_accounts::repository::RepoError::DuplicateAllocation {
+                purchase_id: duplicated
+            } if duplicated == purchase_id
+        ),
+        "second allocation of the same purchase: {err:?}"
+    );
+    tx.rollback().await.unwrap();
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn adjustment_in_reconciles_over_adjusted_supplier_account_and_preserves_advance_credit(
     pool: PgPool,

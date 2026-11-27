@@ -1258,7 +1258,17 @@ pub async fn allocate(
         amount,
     )
     .execute(&mut *conn)
-    .await?;
+    .await
+    .map_err(|err| match violated_constraint(&err) {
+        // The same purchase cannot be backed twice by one payment: the
+        // constraint is the last line of defence behind the in-memory set in
+        // `record_payment`, and it must read as a rejected allocation instead
+        // of a server error.
+        Some("supplier_account_allocations_once_per_purchase") => {
+            RepoError::DuplicateAllocation { purchase_id }
+        }
+        _ => RepoError::Database(err),
+    })?;
 
     Ok(())
 }
