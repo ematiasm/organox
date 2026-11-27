@@ -1,14 +1,14 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT status AS \"status: SaleStatus\" FROM sales WHERE id = $1",
+  "query": "SELECT status AS \"status: PurchaseStatus\" FROM purchases WHERE id = $1 FOR NO KEY UPDATE",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "status: SaleStatus",
+        "name": "status: PurchaseStatus",
         "type_info": {
           "Custom": {
-            "name": "sale_status",
+            "name": "purchase_status",
             "kind": {
               "Enum": [
                 "draft",
@@ -20,7 +20,7 @@
         },
         "origin": {
           "Table": {
-            "table": "sales",
+            "table": "purchases",
             "name": "status"
           }
         }
@@ -35,5 +35,5 @@
       false
     ]
   },
-  "hash": "feb2e896ca98927b571fd0aa6d4b4175dbb2757d8696dbc1a39b2589165e5312"
+  "hash": "d2b24e0613655a0604d2c751df03f64656310b7b641571d98964e46efb981e3b"
 }

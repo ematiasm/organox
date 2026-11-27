@@ -15,7 +15,6 @@ use uuid::Uuid;
 
 use super::model::{Sale, SalePaymentInput};
 use super::repository::{self, CompletedSale, RepoError};
-use crate::customers::service::{CustomerError, get_customer};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SalesError {
@@ -99,11 +98,6 @@ pub enum SalesError {
     #[error("the customer is deactivated and cannot be attached to a sale")]
     CustomerInactive,
 
-    /// Customer lookup failures that carry no sales policy. The only one
-    /// reachable through `get_customer` is `NotFound`, handled above.
-    #[error("customer lookup error: {0}")]
-    CustomerLookup(#[from] CustomerError),
-
     #[error("internal sales error")]
     Internal(#[from] RepoError),
 }
@@ -151,6 +145,7 @@ fn map_repo_error(err: RepoError) -> SalesError {
             SalesError::OnAccountExceedsCreditLimit { available }
         }
         RepoError::CustomerAccountBusy => SalesError::CustomerAccountBusy,
+        RepoError::CustomerInactive => SalesError::CustomerInactive,
         other => SalesError::Internal(other),
     }
 }
@@ -164,23 +159,9 @@ fn map_repo_error(err: RepoError) -> SalesError {
 /// Returns `(id, reused)` where `reused` is `true` if an existing open draft
 /// was returned and `false` if a new draft was created.
 pub async fn open_draft(pool: &PgPool, user_id: Uuid) -> Result<(Uuid, bool), SalesError> {
-    if let Some(existing) = repository::find_open_draft_for_user(pool, user_id)
+    repository::open_or_find_draft(pool, user_id)
         .await
-        .map_err(map_repo_error)?
-    {
-        return Ok((existing, true));
-    }
-
-    let id = repository::create_draft(
-        pool,
-        repository::NewSaleDraft {
-            created_by: user_id,
-        },
-    )
-    .await
-    .map_err(map_repo_error)?;
-
-    Ok((id, false))
+        .map_err(map_repo_error)
 }
 
 pub async fn get(pool: &PgPool, sale_id: Uuid) -> Result<Sale, SalesError> {
@@ -256,28 +237,14 @@ pub async fn cancel(pool: &PgPool, sale_id: Uuid) -> Result<(), SalesError> {
         .map_err(map_repo_error)
 }
 
-/// Attach or clear the sale's customer. Draft-only (the repository enforces
-/// it), and only an active customer can be attached.
-///
-/// Existence and active state reuse the customers module's own `get_customer`:
-/// the rule "who is attachable" already lives there, and a second copy in
-/// sales would drift out of sync with it.
+/// Attach or clear the sale's customer. Draft-only, and only an active
+/// customer can be attached; both checks run inside the same repository
+/// transaction to prevent TOCTOU races with concurrent deactivation.
 pub async fn set_customer(
     pool: &PgPool,
     sale_id: Uuid,
     customer_id: Option<Uuid>,
 ) -> Result<(), SalesError> {
-    if let Some(id) = customer_id {
-        let customer = get_customer(pool, id).await.map_err(|err| match err {
-            CustomerError::NotFound => SalesError::NotFound,
-            other => SalesError::CustomerLookup(other),
-        })?;
-
-        if !customer.is_active {
-            return Err(SalesError::CustomerInactive);
-        }
-    }
-
     repository::set_customer(pool, sale_id, customer_id)
         .await
         .map_err(map_repo_error)

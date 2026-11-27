@@ -21,6 +21,8 @@ x-app-env: &app-env
   # OpenAPI spec and Swagger UI (`/api/v1/docs`, `/api/v1/openapi.json`).
   # Disabled by default in production to avoid exposing the API surface.
   APP_ENABLE_DOCS: ${APP_ENABLE_DOCS:-false}
+  APP_DB_MAX_CONNECTIONS: ${APP_DB_MAX_CONNECTIONS:-5}
+  APP_FRONTEND_DIR: ${APP_FRONTEND_DIR:-frontend/build}
   # Login rate limiting. Optional: the app has defaults for all three, but a
   # documented knob that compose does not forward would be silently ignored,
   # so the template's keys are wired here and `tests/deploy.rs` holds the line.

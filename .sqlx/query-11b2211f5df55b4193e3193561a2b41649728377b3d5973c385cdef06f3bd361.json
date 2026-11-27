@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE sales SET customer_id = $2 WHERE id = $1 AND status = 'draft'",
+  "query": "UPDATE sales SET customer_id = $2 WHERE id = $1",
   "describe": {
     "columns": [],
     "parameters": {
@@ -11,5 +11,5 @@
     },
     "nullable": []
   },
-  "hash": "03d11336e888d92d47cae11d041bca16b997ca38aa8edaf31bb6d8cdf89f55c1"
+  "hash": "11b2211f5df55b4193e3193561a2b41649728377b3d5973c385cdef06f3bd361"
 }

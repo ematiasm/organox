@@ -55,8 +55,8 @@ COPY --from=backend /app/target/release/create-user /usr/local/bin/create-user
 # One-shot migration step, run by compose before the server starts.
 COPY --from=backend /app/target/release/migrate /usr/local/bin/migrate
 
-# `FRONTEND_DIR` in src/routes.rs is relative, so this path is the contract: the
-# server looks for `frontend/build` under its working directory.
+# Default `APP_FRONTEND_DIR` is relative (`frontend/build`), so this path
+# matches the server's default under its working directory.
 COPY --from=frontend /app/frontend/build ./frontend/build
 
 USER organox
