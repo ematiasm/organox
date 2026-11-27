@@ -26,6 +26,9 @@ pub enum PaymentsError {
     #[error("wallet not found")]
     WalletNotFound,
 
+    #[error("the wallet is deactivated and cannot receive manual movements")]
+    WalletInactive,
+
     #[error("payment method not found")]
     MethodNotFound,
 
@@ -45,6 +48,7 @@ impl From<RepoError> for PaymentsError {
     fn from(err: RepoError) -> Self {
         match err {
             RepoError::WalletNotFound => PaymentsError::WalletNotFound,
+            RepoError::WalletInactive => PaymentsError::WalletInactive,
             RepoError::MethodNotFound => PaymentsError::MethodNotFound,
             RepoError::NameTaken => PaymentsError::NameTaken,
             RepoError::Database(_) => PaymentsError::Internal(err),
@@ -236,7 +240,7 @@ pub async fn record_manual_movement(
         .map(|note| note.trim().to_string())
         .filter(|note| !note.is_empty());
 
-    Ok(repository::insert_movement(
+    Ok(repository::insert_manual_movement(
         pool,
         repository::NewWalletMovement {
             wallet_id,

@@ -1157,3 +1157,73 @@ async fn supplier_account_wallet_link_constraints_reject_invalid_combinations(po
 
     assert_eq!(movement_count(&pool, wallet).await, 0);
 }
+
+#[sqlx::test]
+async fn manual_movement_on_inactive_wallet_returns_422(pool: PgPool) {
+    let cookie = login(&pool).await;
+    let wallet = create_wallet(&pool, &cookie, "Closed Cashbox").await;
+
+    let (patch_status, _) = call(
+        &pool,
+        &cookie,
+        "PATCH",
+        &format!("/api/v1/wallets/{wallet}"),
+        Some(json!({ "is_active": false })),
+    )
+    .await;
+    assert_eq!(patch_status, StatusCode::NO_CONTENT);
+
+    for kind in ["expense", "adjustment_in", "adjustment_out"] {
+        let (status, _) = call(
+            &pool,
+            &cookie,
+            "POST",
+            &format!("/api/v1/wallets/{wallet}/movements"),
+            Some(json!({
+                "kind": kind,
+                "amount": "150.00",
+                "note": "Should be rejected",
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "inactive wallet must reject manual movement kind {kind}"
+        );
+    }
+    assert_eq!(movement_count(&pool, wallet).await, 0);
+
+    // Unknown wallet still returns 404.
+    let (missing_status, _) = call(
+        &pool,
+        &cookie,
+        "POST",
+        &format!("/api/v1/wallets/{}/movements", Uuid::now_v7()),
+        Some(json!({ "kind": "expense", "amount": "50.00" })),
+    )
+    .await;
+    assert_eq!(missing_status, StatusCode::NOT_FOUND);
+
+    // Reactivating the wallet permits manual movements again.
+    let (reactivate_status, _) = call(
+        &pool,
+        &cookie,
+        "PATCH",
+        &format!("/api/v1/wallets/{wallet}"),
+        Some(json!({ "is_active": true })),
+    )
+    .await;
+    assert_eq!(reactivate_status, StatusCode::NO_CONTENT);
+
+    let (ok_status, _) = call(
+        &pool,
+        &cookie,
+        "POST",
+        &format!("/api/v1/wallets/{wallet}/movements"),
+        Some(json!({ "kind": "expense", "amount": "50.00" })),
+    )
+    .await;
+    assert_eq!(ok_status, StatusCode::CREATED);
+    assert_eq!(movement_count(&pool, wallet).await, 1);
+}

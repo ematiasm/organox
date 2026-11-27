@@ -326,6 +326,7 @@ impl From<PaymentsError> for AppError {
     fn from(err: PaymentsError) -> Self {
         match err {
             PaymentsError::Validation(detail) => AppError::Validation(detail),
+            PaymentsError::WalletInactive => AppError::Validation(err.to_string()),
             PaymentsError::WalletNotFound | PaymentsError::MethodNotFound => AppError::NotFound,
             PaymentsError::NameTaken => {
                 AppError::Conflict("the name is already in use".to_string())
@@ -451,7 +452,7 @@ fn list_wallet_movements_doc() {}
          content_type = "application/problem+json"),
         (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+        (status = 422, description = "Invalid input or wallet is inactive", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]
