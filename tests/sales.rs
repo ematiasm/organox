@@ -2709,10 +2709,11 @@ async fn closed_sales_and_their_items_are_immutable_in_db(pool: PgPool) {
     );
 }
 
-/// Edge cases for the DB immutability triggers: draft deletion cascade still
-/// works, non-existent `sale_id` still surfaces FK violation `23503`,
-/// `ON CONFLICT DO UPDATE` and status reopen are rejected, and a raw
-/// `sale_items` write racing with cancellation serializes via `FOR SHARE`.
+/// Edge cases for the DB immutability triggers: draft deletion with items is
+/// rejected by `ON DELETE RESTRICT` (`23001`), non-existent `sale_id` still
+/// surfaces FK violation `23503`, `ON CONFLICT DO UPDATE` and status reopen
+/// are rejected, and a raw `sale_items` write racing with cancellation
+/// serializes via `FOR SHARE`.
 #[sqlx::test]
 async fn sales_immutability_trigger_edge_cases(pool: PgPool) {
     let actor = seed_user(&pool).await;
@@ -2720,14 +2721,29 @@ async fn sales_immutability_trigger_edge_cases(pool: PgPool) {
     let sugar = seed_product(&pool, "Sugar", dec!(50.00)).await;
     stock(&pool, actor, flour, dec!(10)).await;
 
-    // 1. Deleting a draft sale with items still cascades cleanly.
+    // 1. Deleting a draft sale with items is blocked by ON DELETE RESTRICT (23001);
+    //    deleting the draft once its items are removed still succeeds.
     let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, flour, dec!(1)).await.unwrap();
+    let err = sqlx::query("DELETE FROM sales WHERE id = $1")
+        .bind(draft)
+        .execute(&pool)
+        .await
+        .expect_err("ON DELETE RESTRICT must block deleting a sale that still has items");
+    let db_err = err
+        .as_database_error()
+        .expect("expected Postgres RESTRICT violation error");
+    assert_eq!(db_err.code().as_deref(), Some("23001"));
+    sqlx::query("DELETE FROM sale_items WHERE sale_id = $1")
+        .bind(draft)
+        .execute(&pool)
+        .await
+        .expect("deleting items of an open draft must succeed");
     sqlx::query("DELETE FROM sales WHERE id = $1")
         .bind(draft)
         .execute(&pool)
         .await
-        .expect("draft deletion must cascade cleanly through sale_items trigger");
+        .expect("deleting an empty draft sale must succeed");
     let remaining_items: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM sale_items WHERE sale_id = $1")
             .bind(draft)

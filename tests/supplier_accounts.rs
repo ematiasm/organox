@@ -35,6 +35,30 @@ fn app(pool: PgPool) -> axum::Router {
     router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
 }
 
+/// Test-only helper to backdate `completed_at` for aging bucket tests.
+/// Temporarily disables `purchases_prevent_closed_mutation` inside a single
+/// transaction so production keeps strict immutability without loopholes.
+async fn backdate_completed_purchase(pool: &PgPool, purchase_id: Uuid, days_ago: i32) {
+    let mut tx = pool.begin().await.expect("begin backdate tx");
+    sqlx::query("ALTER TABLE purchases DISABLE TRIGGER purchases_prevent_closed_mutation")
+        .execute(&mut *tx)
+        .await
+        .expect("disable immutability trigger");
+    sqlx::query(
+        "UPDATE purchases SET completed_at = NOW() - ($1::int * INTERVAL '1 day') WHERE id = $2",
+    )
+    .bind(days_ago)
+    .bind(purchase_id)
+    .execute(&mut *tx)
+    .await
+    .expect("backdate purchase");
+    sqlx::query("ALTER TABLE purchases ENABLE TRIGGER purchases_prevent_closed_mutation")
+        .execute(&mut *tx)
+        .await
+        .expect("re-enable immutability trigger");
+    tx.commit().await.expect("commit backdate tx");
+}
+
 async fn seed_owner(pool: &PgPool) -> (Uuid, String) {
     let password = test_password();
     let email = validation::ValidatedEmail::parse("owner@pyme.com").expect("email");
@@ -1625,14 +1649,7 @@ async fn payables_report_computes_totals_aging_buckets_and_sorts_open_positions(
         )
         .await;
         if days_ago > 0 {
-            sqlx::query(
-                "UPDATE purchases SET completed_at = NOW() - ($1::int * INTERVAL '1 day') WHERE id = $2",
-            )
-            .bind(days_ago)
-            .bind(purchase_id)
-            .execute(&pool)
-            .await
-            .expect("backdate purchase");
+            backdate_completed_purchase(&pool, purchase_id, days_ago).await;
         }
     }
     let (st, _, _) = send(
@@ -1651,11 +1668,7 @@ async fn payables_report_computes_totals_aging_buckets_and_sorts_open_positions(
         &app, &cookie, offset_id, product_id, "1", "100.00", "100.00",
     )
     .await;
-    sqlx::query("UPDATE purchases SET completed_at = NOW() - INTERVAL '45 days' WHERE id = $1")
-        .bind(offset_purchase)
-        .execute(&pool)
-        .await
-        .expect("backdate offsetting purchase");
+    backdate_completed_purchase(&pool, offset_purchase, 45).await;
     let (st, _, _) = send(
         &app,
         "POST",

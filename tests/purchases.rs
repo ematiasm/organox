@@ -1915,8 +1915,8 @@ async fn midpoint_rounding_and_line_subtotal_sum_stay_consistent_between_db_and_
     //    and list endpoints rather than recomputing.
     let legacy_purchase = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO purchases (id, status, supplier_id, supplier_name, total, created_by, completed_by, completed_at)
-         VALUES ($1, 'completed', $2, 'Rounding Mill', 1.01, $3, $3, now())",
+        "INSERT INTO purchases (id, status, supplier_id, created_by)
+         VALUES ($1, 'draft', $2, $3)",
     )
     .bind(legacy_purchase)
     .bind(supplier_id)
@@ -1936,6 +1936,17 @@ async fn midpoint_rounding_and_line_subtotal_sum_stay_consistent_between_db_and_
         .await
         .unwrap();
     }
+    sqlx::query(
+        "UPDATE purchases
+         SET status = 'completed', supplier_name = 'Rounding Mill', total = 1.01,
+             completed_by = $2, completed_at = now()
+         WHERE id = $1",
+    )
+    .bind(legacy_purchase)
+    .bind(actor)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let fetched = purchases::get_purchase(&pool, legacy_purchase)
         .await
