@@ -1568,6 +1568,225 @@ async fn fresh_session_does_not_emit_redundant_set_cookie(pool: sqlx::PgPool) {
 }
 
 #[sqlx::test]
+async fn session_touch_skips_db_update_within_refresh_interval(pool: sqlx::PgPool) {
+    let password = seed_user(&pool, "throttled@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("throttled@pyme.com", &password))
+        .await
+        .unwrap();
+    let token = session_cookie(&login);
+
+    // 10 minutes after login is still well within SESSION_REFRESH_INTERVAL (1 hour):
+    // authenticated requests must NOT write to `sessions`.
+    sqlx::query(
+        "UPDATE sessions
+         SET created_at   = now() - interval '10 minutes',
+             last_used_at = now() - interval '10 minutes',
+             expires_at   = now() + interval '7 days' - interval '10 minutes'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (before_last_used, before_expires): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT last_used_at, expires_at FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let within_window = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(within_window.status(), StatusCode::OK);
+    assert!(
+        within_window.headers().get("set-cookie").is_none(),
+        "throttled request must not emit Set-Cookie"
+    );
+
+    let (after_last_used, after_expires): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT last_used_at, expires_at FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        after_last_used, before_last_used,
+        "last_used_at must not be updated within SESSION_REFRESH_INTERVAL"
+    );
+    assert_eq!(
+        after_expires, before_expires,
+        "expires_at must not be updated within SESSION_REFRESH_INTERVAL"
+    );
+
+    // Once older than SESSION_REFRESH_INTERVAL, the next request refreshes DB + cookie once.
+    sqlx::query(
+        "UPDATE sessions
+         SET created_at   = now() - interval '2 hours',
+             last_used_at = now() - interval '2 hours',
+             expires_at   = now() + interval '7 days' - interval '2 hours'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (stale_last_used, stale_expires): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT last_used_at, expires_at FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let refreshed = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(refreshed.status(), StatusCode::OK);
+    assert_eq!(refreshed.headers().get_all("set-cookie").iter().count(), 1);
+
+    let (updated_last_used, updated_expires): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT last_used_at, expires_at FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    assert!(
+        updated_last_used > stale_last_used,
+        "last_used_at must advance once SESSION_REFRESH_INTERVAL has elapsed"
+    );
+    assert!(
+        updated_expires > stale_expires,
+        "expires_at must advance once SESSION_REFRESH_INTERVAL has elapsed"
+    );
+
+    // An immediate follow-up request must again skip the DB UPDATE.
+    let follow_up = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(follow_up.status(), StatusCode::OK);
+    assert!(follow_up.headers().get("set-cookie").is_none());
+
+    let (final_last_used, final_expires): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT last_used_at, expires_at FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(final_last_used, updated_last_used);
+    assert_eq!(final_expires, updated_expires);
+}
+
+#[sqlx::test]
+async fn session_touch_reaches_30_day_cap_within_refresh_interval_then_stops_updating(
+    pool: sqlx::PgPool,
+) {
+    let password = seed_user(&pool, "cap-throttle@pyme.com", Role::Owner).await;
+    let login = app(pool.clone())
+        .oneshot(login_request("cap-throttle@pyme.com", &password))
+        .await
+        .unwrap();
+    let token = session_cookie(&login);
+
+    // Remaining gap to the 30-day cap is only 30 minutes (< 1h SESSION_REFRESH_INTERVAL):
+    // one final refresh advances `expires_at` to `created_at + 30 days`, and later requests
+    // must skip DB writes completely.
+    sqlx::query(
+        "UPDATE sessions
+         SET created_at   = now() - interval '23 days' - interval '30 minutes',
+             last_used_at = now() - interval '30 minutes',
+             expires_at   = (now() - interval '23 days' - interval '30 minutes')
+                            + interval '30 days' - interval '30 minutes'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let cap: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT created_at + interval '30 days' FROM sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let first = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.headers().get_all("set-cookie").iter().count(), 1);
+
+    let (at_cap_last_used, at_cap_expires): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT last_used_at, expires_at FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(at_cap_expires, cap);
+
+    let second = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/me")
+                .header("cookie", format!("session={token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(second.status(), StatusCode::OK);
+    assert!(second.headers().get("set-cookie").is_none());
+
+    let (after_last_used, after_expires): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT last_used_at, expires_at FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(after_last_used, at_cap_last_used);
+    assert_eq!(after_expires, at_cap_expires);
+}
+
+#[sqlx::test]
 async fn sliding_session_refreshes_db_and_cookie_expiry(pool: sqlx::PgPool) {
     let password = seed_user(&pool, "slide@pyme.com", Role::Owner).await;
     let login = app(pool.clone())
