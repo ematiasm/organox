@@ -763,6 +763,42 @@ async fn http_list_past_the_last_page_still_reports_the_total(pool: PgPool) {
     );
 }
 
+#[sqlx::test]
+async fn http_list_echoes_clamped_limit_and_offset(pool: PgPool) {
+    let (_, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
+    seed_product(&pool, ProductKind::Product, "Flour", None).await;
+
+    for (query, expected_limit, expected_offset) in [
+        ("limit=9999&offset=-5", 200, 0),
+        ("limit=0&offset=-1", 1, 0),
+        ("limit=-10&offset=0", 1, 0),
+    ] {
+        let response = app(pool.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/products?{query}"))
+                    .header("cookie", format!("session={cookie}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(
+            body["limit"], expected_limit,
+            "query {query} must echo clamped limit"
+        );
+        assert_eq!(
+            body["offset"], expected_offset,
+            "query {query} must echo clamped offset"
+        );
+        assert_eq!(body["total"], 1);
+    }
+}
+
 async fn body_json(response: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 256)
         .await

@@ -150,8 +150,8 @@ async fn list_products(
     _user: AuthUser,
     AppQuery(query): AppQuery<ListProductsQuery>,
 ) -> Result<Json<ProductListResponse>, AppError> {
-    let limit = query.limit.unwrap_or(50);
-    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
 
     let (items, total) = service::list_products(
         &state.pool,
