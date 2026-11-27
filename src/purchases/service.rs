@@ -6,7 +6,6 @@ use uuid::Uuid;
 
 use super::model::{Purchase, PurchasePaymentInput, PurchaseStatus};
 use super::repository::{self, CompletedPurchase, RepoError};
-use crate::suppliers::service::{SupplierError, get_supplier};
 
 /// Maximum `numeric(12, 3)` quantity accepted at the boundary.
 fn max_quantity() -> Decimal {
@@ -102,9 +101,6 @@ pub enum PurchaseError {
     #[error("the supplier account is busy, retry")]
     SupplierAccountBusy,
 
-    #[error("supplier lookup error: {0}")]
-    SupplierLookup(#[from] SupplierError),
-
     #[error("internal purchase error")]
     Internal(#[from] RepoError),
 }
@@ -174,17 +170,6 @@ pub async fn set_supplier(
     purchase_id: Uuid,
     supplier_id: Option<Uuid>,
 ) -> Result<(), PurchaseError> {
-    if let Some(id) = supplier_id {
-        let supplier = match get_supplier(pool, id).await {
-            Ok(supplier) => supplier,
-            Err(SupplierError::NotFound) => return Err(PurchaseError::SupplierNotFound),
-            Err(other) => return Err(PurchaseError::SupplierLookup(other)),
-        };
-        if !supplier.is_active {
-            return Err(PurchaseError::SupplierInactive);
-        }
-    }
-
     repository::set_supplier(pool, purchase_id, supplier_id)
         .await
         .map_err(map_repo_error)

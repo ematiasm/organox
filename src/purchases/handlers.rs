@@ -387,7 +387,6 @@ impl From<PurchaseError> for AppError {
             | PurchaseError::OnAccountNegative
             | PurchaseError::OnAccountPrecision
             | PurchaseError::OnAccountTooLarge => AppError::Validation(err.to_string()),
-            PurchaseError::SupplierLookup(inner) => AppError::Internal(inner.to_string()),
             PurchaseError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
     }

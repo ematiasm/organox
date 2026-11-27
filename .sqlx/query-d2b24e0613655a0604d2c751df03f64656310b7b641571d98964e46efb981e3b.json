@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT status AS \"status: PurchaseStatus\" FROM purchases WHERE id = $1 FOR NO KEY UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status: PurchaseStatus",
+        "type_info": {
+          "Custom": {
+            "name": "purchase_status",
+            "kind": {
+              "Enum": [
+                "draft",
+                "completed",
+                "cancelled"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "purchases",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d2b24e0613655a0604d2c751df03f64656310b7b641571d98964e46efb981e3b"
+}

@@ -195,6 +195,107 @@ async fn open_draft_reuses_the_operators_open_draft(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn concurrent_open_draft_creates_only_one_draft_per_operator(pool: PgPool) {
+    let (actor, _) = seed_user(&pool, "race@organox.test", Role::Manager).await;
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+
+    let mut set = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let pool = pool.clone();
+        let barrier = std::sync::Arc::clone(&barrier);
+        set.spawn(async move {
+            barrier.wait().await;
+            purchases::open_draft(&pool, actor).await
+        });
+    }
+
+    let mut results = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        results.push(
+            joined
+                .expect("task must not panic")
+                .expect("open_draft must succeed under concurrency"),
+        );
+    }
+
+    let first_id = results[0].0;
+    assert!(
+        results.iter().all(|(id, _)| *id == first_id),
+        "all concurrent calls must return the same draft id: {results:?}"
+    );
+    let created_count = results.iter().filter(|(_, reused)| !reused).count();
+    assert_eq!(
+        created_count, 1,
+        "exactly one concurrent caller must create the draft: {results:?}"
+    );
+
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM purchases WHERE created_by = $1 AND status = 'draft'",
+    )
+    .bind(actor)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        count, 1,
+        "database must hold at most one open draft per operator"
+    );
+
+    // Direct SQL insert of a second draft for the same operator is also rejected by the DB index.
+    let dup_err =
+        sqlx::query("INSERT INTO purchases (id, status, created_by) VALUES ($1, 'draft', $2)")
+            .bind(Uuid::now_v7())
+            .bind(actor)
+            .execute(&pool)
+            .await
+            .expect_err("partial unique index must reject a second open draft for the same user");
+    let db_err = dup_err.as_database_error().expect("database error");
+    assert_eq!(db_err.code().as_deref(), Some("23505"));
+    assert_eq!(
+        db_err.constraint(),
+        Some("purchases_one_open_draft_per_user_idx")
+    );
+}
+
+#[sqlx::test]
+async fn set_supplier_serializes_with_concurrent_deactivation(pool: PgPool) {
+    let (actor, _) = seed_user(&pool, "race-sup@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Vendor Race").await;
+    let (draft_id, _) = purchases::open_draft(&pool, actor).await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("UPDATE suppliers SET is_active = false WHERE id = $1")
+        .bind(supplier_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    let pool_clone = pool.clone();
+    let handle = tokio::spawn(async move {
+        purchases::set_supplier(&pool_clone, draft_id, Some(supplier_id)).await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tx.commit().await.unwrap();
+
+    let err = handle
+        .await
+        .expect("task must not panic")
+        .expect_err("must reject supplier deactivated concurrently");
+    assert!(
+        matches!(err, PurchaseError::SupplierInactive),
+        "expected SupplierInactive, got {err:?}"
+    );
+    let stored: Option<Uuid> =
+        sqlx::query_scalar("SELECT supplier_id FROM purchases WHERE id = $1")
+            .bind(draft_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, None);
+}
+
+#[sqlx::test]
 async fn rejects_services_inactive_products_and_invalid_quantities_or_costs(pool: PgPool) {
     let (actor, _) = seed_user(&pool, "actor@organox.test", Role::Manager).await;
     let (draft_id, _) = purchases::open_draft(&pool, actor).await.unwrap();

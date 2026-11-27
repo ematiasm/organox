@@ -89,9 +89,8 @@ pub enum RepoError {
     Database(#[from] sqlx::Error),
 }
 
-/// Reuse the operator's latest open draft, or create a new empty draft.
-pub async fn open_or_find_draft(pool: &PgPool, actor: Uuid) -> Result<(Uuid, bool), RepoError> {
-    if let Some(existing) = sqlx::query_scalar!(
+async fn find_open_draft_for_user(pool: &PgPool, actor: Uuid) -> Result<Option<Uuid>, RepoError> {
+    let id = sqlx::query_scalar!(
         r#"
         SELECT id
         FROM purchases
@@ -102,24 +101,50 @@ pub async fn open_or_find_draft(pool: &PgPool, actor: Uuid) -> Result<(Uuid, boo
         actor
     )
     .fetch_optional(pool)
-    .await?
-    {
+    .await?;
+
+    Ok(id)
+}
+
+/// Reuse the operator's open draft, or create a new empty draft without racing
+/// against concurrent `open_draft` calls.
+///
+/// Backed by the `purchases_one_open_draft_per_user_idx` partial unique index:
+/// when concurrent callers race past the fast-path lookup, `ON CONFLICT ...
+/// DO NOTHING` lets one insert win (`reused = false`) while losers reload the
+/// winning draft (`reused = true`).
+pub async fn open_or_find_draft(pool: &PgPool, actor: Uuid) -> Result<(Uuid, bool), RepoError> {
+    if let Some(existing) = find_open_draft_for_user(pool, actor).await? {
         return Ok((existing, true));
     }
 
-    let id = Uuid::now_v7();
-    sqlx::query!(
-        r#"
-        INSERT INTO purchases (id, status, created_by)
-        VALUES ($1, 'draft', $2)
-        "#,
-        id,
-        actor,
-    )
-    .execute(pool)
-    .await?;
+    for _ in 0..3 {
+        let candidate_id = Uuid::now_v7();
+        let inserted = sqlx::query_scalar!(
+            r#"
+            INSERT INTO purchases (id, status, created_by)
+            VALUES ($1, 'draft', $2)
+            ON CONFLICT (created_by) WHERE status = 'draft' DO NOTHING
+            RETURNING id
+            "#,
+            candidate_id,
+            actor,
+        )
+        .fetch_optional(pool)
+        .await?;
 
-    Ok((id, false))
+        if let Some(id) = inserted {
+            return Ok((id, false));
+        }
+
+        if let Some(existing) = find_open_draft_for_user(pool, actor).await? {
+            return Ok((existing, true));
+        }
+    }
+
+    Err(RepoError::Database(sqlx::Error::Protocol(
+        "concurrent draft state changed repeatedly while opening purchase draft".to_string(),
+    )))
 }
 
 async fn refresh_total_in(
@@ -142,36 +167,58 @@ async fn refresh_total_in(
     Ok(())
 }
 
-/// Attach or clear the supplier on a draft atomically (`WHERE status = 'draft'`).
+/// Attach or clear the supplier on a draft inside a single transaction.
+///
+/// Locks the `purchases` row (`FOR NO KEY UPDATE`) before locking the
+/// `suppliers` row (`FOR SHARE`), matching `complete()`'s lock order to
+/// prevent deadlocks while serializing against concurrent supplier
+/// deactivation.
 pub async fn set_supplier(
     pool: &PgPool,
     purchase_id: Uuid,
     supplier_id: Option<Uuid>,
 ) -> Result<(), RepoError> {
-    let result = sqlx::query!(
+    let mut tx = pool.begin().await?;
+
+    let status = sqlx::query_scalar!(
+        r#"SELECT status AS "status: PurchaseStatus" FROM purchases WHERE id = $1 FOR NO KEY UPDATE"#,
+        purchase_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RepoError::NotFound)?;
+
+    if status != PurchaseStatus::Draft {
+        return Err(RepoError::NotEditable);
+    }
+
+    if let Some(sid) = supplier_id {
+        let is_active = sqlx::query_scalar!(
+            r#"SELECT is_active FROM suppliers WHERE id = $1 FOR SHARE"#,
+            sid
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RepoError::SupplierNotFound)?;
+
+        if !is_active {
+            return Err(RepoError::SupplierInactive);
+        }
+    }
+
+    sqlx::query!(
         r#"
         UPDATE purchases
         SET supplier_id = $2
-        WHERE id = $1 AND status = 'draft'
+        WHERE id = $1
         "#,
         purchase_id,
         supplier_id,
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
-    if result.rows_affected() == 0 {
-        let exists = sqlx::query_scalar!("SELECT 1 FROM purchases WHERE id = $1", purchase_id)
-            .fetch_optional(pool)
-            .await?
-            .is_some();
-        return Err(if exists {
-            RepoError::NotEditable
-        } else {
-            RepoError::NotFound
-        });
-    }
-
+    tx.commit().await?;
     Ok(())
 }
 
