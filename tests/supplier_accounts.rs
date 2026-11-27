@@ -701,7 +701,29 @@ async fn supplier_payments_allocated_unallocated_idempotency_and_wallet_outflow(
     assert_eq!(replay["allocations"][0]["outstanding"], "150.00");
     assert_eq!(wallet_balance(&pool, wallet_id).await, dec!(-180.00));
 
-    // Unallocated advance with blank idempotency key -> normalized to None, writes fresh 201 twice.
+    // Blank idempotency key -> rejected with 422 and writes nothing.
+    let (status, _, problem) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/payments"),
+        Some(&cookie),
+        Some(json!({
+            "idempotency_key": "   ",
+            "payment_method_id": method_id,
+            "amount": "20.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "blank key must be rejected: {problem}"
+    );
+    assert_eq!(problem["detail"], "an idempotency key cannot be blank");
+    assert_eq!(wallet_balance(&pool, wallet_id).await, dec!(-180.00));
+
+    // Omitting idempotency_key writes fresh 201 twice.
     for expected_wallet in [dec!(-200.00), dec!(-220.00)] {
         let (status, _, adv) = send(
             &app,
@@ -709,17 +731,89 @@ async fn supplier_payments_allocated_unallocated_idempotency_and_wallet_outflow(
             &format!("/api/v1/suppliers/{supplier_id}/payments"),
             Some(&cookie),
             Some(json!({
-                "idempotency_key": "   ",
                 "payment_method_id": method_id,
                 "amount": "20.00",
                 "allocations": [],
             })),
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "blank key advance: {adv}");
+        assert_eq!(status, StatusCode::CREATED, "advance without key: {adv}");
         assert_eq!(adv["allocations"].as_array().unwrap().len(), 0);
         assert_eq!(wallet_balance(&pool, wallet_id).await, expected_wallet);
     }
+
+    // Padded key trims to match its trimmed form on replay.
+    let (status, _, first) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/payments"),
+        Some(&cookie),
+        Some(json!({
+            "idempotency_key": "  trimmed-pay  ",
+            "payment_method_id": method_id,
+            "amount": "10.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _, replay) = send(
+        &app,
+        "POST",
+        &format!("/api/v1/suppliers/{supplier_id}/payments"),
+        Some(&cookie),
+        Some(json!({
+            "idempotency_key": "trimmed-pay",
+            "payment_method_id": method_id,
+            "amount": "10.00",
+            "allocations": [],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay["payment_id"], first["payment_id"]);
+    assert_eq!(wallet_balance(&pool, wallet_id).await, dec!(-230.00));
+
+    // Direct SQL write with a blank key is rejected by the DB CHECK constraint.
+    let mv = organox::payments::repository::insert_movement(
+        &pool,
+        organox::payments::repository::NewWalletMovement {
+            wallet_id,
+            kind: organox::payments::model::WalletMovementKind::SupplierAccountPayment,
+            amount: dec!(5.00),
+            sale_id: None,
+            purchase_id: None,
+            payment_method_id: Some(method_id),
+            credit_note_id: None,
+            purchase_return_id: None,
+            customer_id: None,
+            supplier_id: Some(supplier_id),
+            note: None,
+            created_by: None,
+        },
+    )
+    .await
+    .expect("seed supplier movement");
+    let db_err = sqlx::query(
+        "INSERT INTO supplier_account_entries
+            (id, supplier_id, kind, amount, wallet_movement_id, idempotency_key, created_by)
+         VALUES ($1, $2, 'payment', -5.00, $3, '   ', $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(supplier_id)
+    .bind(mv)
+    .bind(Uuid::now_v7())
+    .execute(&pool)
+    .await
+    .expect_err("DB CHECK must refuse blank supplier_account_entries.idempotency_key");
+    let constraint = db_err
+        .as_database_error()
+        .and_then(|e| e.constraint())
+        .unwrap_or_default();
+    assert_eq!(
+        constraint,
+        "supplier_account_entries_idempotency_key_not_blank"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]

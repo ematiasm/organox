@@ -169,12 +169,13 @@ prevents a deactivation from racing an on-account purchase.
   `supplier_id`, `payment_method_id`, and the method's default `wallet_id` at
   write time, with no wallet-balance floor) plus one `payment` ledger entry
   (`-amount`) and its explicit `allocations` in one transaction. Optional
-  `idempotency_key` (max 100 characters; blank keys are discarded, non-blank
-  keys keep their exact bytes including padding) makes retries safe: fresh
-  writes answer `201`, replays answer `200` with the original payment paired
-  with the account's **current** balance, unapplied credit, and allocated
-  purchase outstandings at replay time, and reusing a key from another entry
-  kind answers `409`.
+  `idempotency_key` (trimmed; blank keys or keys over 100 trimmed characters
+  return `422`, backed by a database `CHECK` constraint) makes retries safe:
+  fresh writes answer `201`, replays match by key alone and answer `200` with
+  the original payment paired with the account's **current** balance, unapplied
+  credit, and allocated purchase outstandings at replay time (regardless of
+  request payload differences), and reusing a key from another entry kind
+  answers `409`.
 - **Credit refunds (`POST /api/v1/suppliers/{id}/credit-refunds`)**: receives
   unapplied advance credit back from a supplier by writing one
   `supplier_account_refund` wallet movement (`+1` inflow, copying the method's
