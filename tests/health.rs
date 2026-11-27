@@ -90,16 +90,13 @@ async fn unknown_api_route_returns_404(pool: sqlx::PgPool) {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-/// The request ID is generated and propagated in the response.
+/// The request ID is generated and propagated in the response by `routes::router`.
 #[sqlx::test]
 async fn request_id_is_propagated(pool: sqlx::PgPool) {
-    use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+    let app = router(AppState::new(pool, false));
 
-    let app = router(AppState::new(pool, false))
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
-
-    let response = app
+    let generated = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/healthz")
@@ -109,9 +106,35 @@ async fn request_id_is_propagated(pool: sqlx::PgPool) {
         .await
         .unwrap();
 
+    let generated_id = generated
+        .headers()
+        .get("x-request-id")
+        .expect("the response must include x-request-id")
+        .to_str()
+        .expect("x-request-id must be valid ASCII");
     assert!(
-        response.headers().get("x-request-id").is_some(),
-        "the response must include x-request-id"
+        uuid::Uuid::parse_str(generated_id).is_ok(),
+        "generated x-request-id must be a UUID, got {generated_id:?}"
+    );
+
+    let incoming = app
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .header("x-request-id", "client-req-123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        incoming
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok()),
+        Some("client-req-123"),
+        "caller-provided x-request-id must be propagated"
     );
 }
 

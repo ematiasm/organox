@@ -9,7 +9,6 @@ use organox::auth::service as auth_service;
 use organox::routes::router;
 use serde_json::{Value, json};
 use tower::ServiceExt;
-use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
 async fn assert_problem_json(
@@ -50,7 +49,7 @@ async fn login_as_owner(pool: &sqlx::PgPool) -> String {
         .await
         .expect("seed owner");
 
-    let app = router(AppState::new(pool.clone(), false)).layer(CookieManagerLayer::new());
+    let app = router(AppState::new(pool.clone(), false));
     let payload = serde_json::to_vec(&json!({ "email": email, "password": password })).unwrap();
     let response = app
         .oneshot(
@@ -76,7 +75,7 @@ async fn login_as_owner(pool: &sqlx::PgPool) -> String {
 #[sqlx::test]
 async fn json_extractor_rejections_return_problem_json(pool: sqlx::PgPool) {
     let cookie = login_as_owner(&pool).await;
-    let app = router(AppState::new(pool, false)).layer(CookieManagerLayer::new());
+    let app = router(AppState::new(pool, false));
     let dummy_id = Uuid::now_v7();
 
     // 1. Malformed JSON syntax -> 400 Bad Request with problem+json across routes.
@@ -171,7 +170,7 @@ async fn json_extractor_rejections_return_problem_json(pool: sqlx::PgPool) {
 #[sqlx::test]
 async fn path_and_query_extractor_rejections_return_problem_json(pool: sqlx::PgPool) {
     let cookie = login_as_owner(&pool).await;
-    let app = router(AppState::new(pool, false)).layer(CookieManagerLayer::new());
+    let app = router(AppState::new(pool, false));
     let dummy_id = Uuid::now_v7();
 
     // Invalid UUID path parameters across every module -> 400 problem+json.

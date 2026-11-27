@@ -7,7 +7,6 @@ use axum::http::{Request, Response, StatusCode, header};
 use organox::AppState;
 use organox::routes::{HttpLimits, router, router_with_limits};
 use tower::ServiceExt;
-use tower_cookies::CookieManagerLayer;
 
 fn assert_base_security_headers<B>(response: &Response<B>, context: &str) {
     let headers = response.headers();
@@ -133,8 +132,7 @@ async fn security_headers_are_set_across_success_error_spa_and_middleware_respon
         body_limit_bytes: 32,
         auth_body_limit_bytes: 32,
     };
-    let app =
-        router_with_limits(AppState::new(pool, false), limits).layer(CookieManagerLayer::new());
+    let app = router_with_limits(AppState::new(pool, false), limits);
 
     // 1. Health endpoint (204)
     let health = app
@@ -311,8 +309,7 @@ async fn security_headers_cover_docs_assets_400_429_503_and_https_errors() {
             body_limit_bytes: 32,
             auth_body_limit_bytes: 32,
         },
-    )
-    .layer(CookieManagerLayer::new());
+    );
 
     // Disabled Swagger UI subpaths return 404 problem+json with security headers + HSTS.
     for path in ["/api/v1/docs/index.html", "/api/v1/docs/swagger-ui.css"] {

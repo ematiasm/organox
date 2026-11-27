@@ -6,9 +6,6 @@ use std::process::ExitCode;
 use organox::config::Config;
 use organox::telemetry;
 use organox::{AppState, db, routes};
-use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
-use tracing::Level;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -40,8 +37,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "starting organox"
     );
 
-    // CookieManagerLayer must wrap the router: the `Cookies` and `AuthUser`
-    // extractors depend on it.
     let state = AppState::with_policies(
         pool,
         config.cookie_secure,
@@ -61,17 +56,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_rx,
     );
 
-    let app = routes::router(state)
-        .layer(tower_cookies::CookieManagerLayer::new())
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(DefaultOnResponse::new().level(Level::INFO)),
-        )
-        // Generate the request id BEFORE the trace span so the span sees it,
-        // and propagate it in the response.
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
+    let app = routes::router(state);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!("listening on http://{}", listener.local_addr()?);

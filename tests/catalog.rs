@@ -18,7 +18,6 @@ use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
-use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
 /// A password generated per test run, so no credential is written down.
@@ -27,7 +26,7 @@ fn test_password() -> String {
 }
 
 fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
+    router(AppState::new(pool, false))
 }
 
 /// Creates a user and returns both its ID (the movement author) and the

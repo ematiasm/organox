@@ -24,7 +24,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
-use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
 /// A password generated per test run, so no credential is written down.
@@ -66,7 +65,7 @@ fn strict_state(pool: PgPool) -> AppState {
 }
 
 fn app(pool: PgPool) -> axum::Router {
-    router(strict_state(pool)).layer(CookieManagerLayer::new())
+    router(strict_state(pool))
 }
 
 /// Returns the generated password so a caller that logs in reuses it.
@@ -186,7 +185,6 @@ async fn block_survives_a_simulated_restart(pool: PgPool) {
 
     let fresh_state = strict_state(pool.clone());
     let response = router(fresh_state)
-        .layer(CookieManagerLayer::new())
         .oneshot(login_request("owner@pyme.com", &password))
         .await
         .unwrap();
@@ -417,7 +415,7 @@ fn state_with_max_failures(pool: PgPool, max_failures: i32) -> AppState {
 async fn max_failures_one_locks_on_first_failure(pool: PgPool) {
     let password = seed_user(&pool, "one@pyme.com").await;
     let wrong = test_password();
-    let app = router(state_with_max_failures(pool.clone(), 1)).layer(CookieManagerLayer::new());
+    let app = router(state_with_max_failures(pool.clone(), 1));
 
     // A valid first login succeeds and clears any attempt state.
     let ok = app
@@ -544,7 +542,7 @@ async fn expired_lock_reset_cannot_wipe_fresh_active_lock(pool: PgPool) {
 async fn concurrent_login_burst_cannot_bypass_max_failures(pool: PgPool) {
     seed_user(&pool, "burst@pyme.com").await;
     let state = state_with_max_failures(pool.clone(), 3);
-    let app = router(state).layer(CookieManagerLayer::new());
+    let app = router(state);
 
     let mut set = tokio::task::JoinSet::new();
     for _ in 0..8 {
@@ -582,7 +580,7 @@ async fn concurrent_login_burst_cannot_bypass_max_failures(pool: PgPool) {
 #[sqlx::test]
 async fn concurrent_burst_on_unknown_email_respects_max_failures(pool: PgPool) {
     let state = state_with_max_failures(pool, 3);
-    let app = router(state).layer(CookieManagerLayer::new());
+    let app = router(state);
 
     let mut set = tokio::task::JoinSet::new();
     for _ in 0..8 {
@@ -657,7 +655,7 @@ async fn ip_limiter_groups_ipv6_hosts_by_64_prefix_via_http(pool: PgPool) {
         window: Duration::from_secs(60),
         burst: 0,
     });
-    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+    let app = router(state_with_ip_limiter(pool, limiter));
     let wrong = test_password();
 
     // Two distinct hosts in the same /64 consume the shared quota (2).
@@ -721,7 +719,7 @@ async fn ip_limiter_fails_closed_at_max_entries_via_http(pool: PgPool) {
         },
         2,
     );
-    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+    let app = router(state_with_ip_limiter(pool, limiter));
     let wrong = test_password();
 
     let ip1: IpAddr = "198.51.100.1".parse().unwrap();
@@ -780,7 +778,7 @@ async fn ip_limiter_unwraps_ipv4_mapped_ipv6_via_http(pool: PgPool) {
         window: Duration::from_secs(60),
         burst: 0,
     });
-    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+    let app = router(state_with_ip_limiter(pool, limiter));
     let wrong = test_password();
 
     // IPv4 consumes the 1-request quota.
@@ -832,7 +830,7 @@ async fn ip_rate_limit_returns_rfc7807_problem_json_with_retry_after(pool: PgPoo
         window: Duration::from_secs(60),
         burst: 0,
     });
-    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+    let app = router(state_with_ip_limiter(pool, limiter));
     let wrong = test_password();
     let ip: IpAddr = "198.51.100.77".parse().unwrap();
 
@@ -1087,7 +1085,7 @@ async fn password_change_is_rate_limited_by_ip(pool: PgPool) {
         window: Duration::from_secs(60),
         burst: 0,
     });
-    let app = router(state_with_ip_limiter(pool, limiter)).layer(CookieManagerLayer::new());
+    let app = router(state_with_ip_limiter(pool, limiter));
 
     // Log in from a separate IP so login does not consume the target IP's quota.
     let other_ip: IpAddr = "198.51.100.10".parse().unwrap();

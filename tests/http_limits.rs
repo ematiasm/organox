@@ -12,7 +12,6 @@ use organox::routes::{
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
-use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
 async fn assert_problem_json(response: axum::response::Response, expected: StatusCode) {
@@ -42,7 +41,7 @@ async fn login_as_owner(pool: &sqlx::PgPool) -> String {
         .await
         .expect("seed owner");
 
-    let app = router(AppState::new(pool.clone(), false)).layer(CookieManagerLayer::new());
+    let app = router(AppState::new(pool.clone(), false));
     let payload = serde_json::to_vec(&json!({ "email": email, "password": password })).unwrap();
     let response = app
         .oneshot(
@@ -73,8 +72,7 @@ async fn request_exceeding_timeout_returns_504_problem_json(pool: sqlx::PgPool) 
         request_timeout: Duration::from_millis(120),
         ..HttpLimits::default()
     };
-    let app = router_with_limits(AppState::new(pool.clone(), false), limits)
-        .layer(CookieManagerLayer::new());
+    let app = router_with_limits(AppState::new(pool.clone(), false), limits);
 
     // Hold an exclusive lock on `users` so `POST /api/v1/auth/login` stalls on
     // `find_user_by_email` past the configured request timeout.
@@ -105,6 +103,10 @@ async fn request_exceeding_timeout_returns_504_problem_json(pool: sqlx::PgPool) 
         .unwrap();
     let elapsed = started.elapsed();
 
+    assert!(
+        response.headers().get("x-request-id").is_some(),
+        "504 timeout must retain x-request-id from outer layers"
+    );
     assert_problem_json(response, StatusCode::GATEWAY_TIMEOUT).await;
     assert!(
         elapsed < Duration::from_secs(2),
@@ -152,7 +154,7 @@ async fn global_body_limit_rejects_oversized_non_json_route_with_413(pool: sqlx:
 #[sqlx::test]
 async fn global_body_limit_enforced_on_streamed_json_and_auth_cap_stays_scoped(pool: sqlx::PgPool) {
     let cookie = login_as_owner(&pool).await;
-    let app = router(AppState::new(pool, false)).layer(CookieManagerLayer::new());
+    let app = router(AppState::new(pool, false));
 
     // 1. 32 KiB payload (> AUTH_BODY_LIMIT_BYTES, < DEFAULT_BODY_LIMIT_BYTES)
     //    reaches a non-auth handler instead of hitting 413.
@@ -211,7 +213,7 @@ async fn global_body_limit_enforced_on_streamed_json_and_auth_cap_stays_scoped(p
 /// handlers, for both Content-Length and streamed (no Content-Length) payloads.
 #[sqlx::test]
 async fn auth_routes_reject_oversized_body_before_handler(pool: sqlx::PgPool) {
-    let app = router(AppState::new(pool.clone(), false)).layer(CookieManagerLayer::new());
+    let app = router(AppState::new(pool.clone(), false));
 
     let oversized_password = "x".repeat(AUTH_BODY_LIMIT_BYTES + 1024);
     let payload = serde_json::to_vec(&json!({
@@ -284,8 +286,7 @@ async fn custom_body_limit_above_axum_default_is_respected(pool: sqlx::PgPool) {
         body_limit_bytes: 3 * 1024 * 1024,
         ..HttpLimits::default()
     };
-    let app =
-        router_with_limits(AppState::new(pool, false), limits).layer(CookieManagerLayer::new());
+    let app = router_with_limits(AppState::new(pool, false), limits);
 
     // 2.1 MiB exceeds Axum's built-in 2 MiB DefaultBodyLimit but fits inside 3 MiB.
     let large_notes = "a".repeat(2_200_000);
@@ -316,15 +317,11 @@ async fn custom_body_limit_above_axum_default_is_respected(pool: sqlx::PgPool) {
     );
 }
 
-/// Middleware rejections inside `routes::router` still pass through outer
-/// request-id layers mounted in `main.rs`, preserving `x-request-id`.
+/// Middleware rejections inside `routes::router_with_limits` pass through the
+/// outer request-id layers assembled in `routes`, preserving `x-request-id`.
 #[sqlx::test]
 async fn request_id_is_preserved_on_413_rejection(pool: sqlx::PgPool) {
-    use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
-
-    let app = router(AppState::new(pool, false))
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid));
+    let app = router(AppState::new(pool, false));
 
     let response = app
         .oneshot(

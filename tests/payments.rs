@@ -20,7 +20,6 @@ use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
-use tower_cookies::CookieManagerLayer;
 use uuid::Uuid;
 
 const EMAIL: &str = "owner@pyme.com";
@@ -36,7 +35,7 @@ fn test_password() -> String {
 }
 
 fn app(pool: PgPool) -> Router {
-    router(AppState::new(pool, false)).layer(CookieManagerLayer::new())
+    router(AppState::new(pool, false))
 }
 
 async fn seed_owner(pool: &PgPool, password: &str) {
