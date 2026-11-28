@@ -662,6 +662,57 @@ async fn http_unknown_product_movements_returns_404(pool: PgPool) {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
+/// The other side of the same gate: an id that exists keeps answering `200`
+/// with whatever history it has — `[]` when the product never moved, and the
+/// movements of a deactivated product, because the ledger outlives the product.
+#[sqlx::test]
+async fn http_movements_of_an_existing_product_stay_200(pool: PgPool) {
+    let (actor, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
+    let cookie = login_cookie(&pool, "a@pyme.com", &password).await;
+    let never_moved = seed_product(&pool, ProductKind::Product, "Flour", None).await;
+    let deactivated = seed_product(&pool, ProductKind::Product, "Rice", None).await;
+    move_stock(&pool, actor, deactivated, MovementReason::Purchase, dec!(5))
+        .await
+        .unwrap();
+    service::deactivate_product(&pool, deactivated)
+        .await
+        .unwrap();
+
+    let empty = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/products/{never_moved}/movements"))
+                .header("cookie", format!("session={cookie}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(empty).await.as_array().unwrap().len(),
+        0,
+        "a product that never moved has an empty history, not a missing one"
+    );
+
+    let history = app(pool)
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/products/{deactivated}/movements"))
+                .header("cookie", format!("session={cookie}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(history.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(history).await.as_array().unwrap().len(),
+        1,
+        "deactivating a product must not hide its ledger"
+    );
+}
+
 #[sqlx::test]
 async fn http_insufficient_stock_returns_409_with_normalized_quantities(pool: PgPool) {
     let (actor, password) = seed_user_with_password(&pool, "a@pyme.com", Role::Owner).await;
