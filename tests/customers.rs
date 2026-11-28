@@ -265,8 +265,47 @@ async fn deactivated_customers_are_hidden_unless_asked_for(pool: PgPool) {
     assert_eq!(total, 2);
 }
 
-// --- Update and deactivation --------------------------------------------
+/// The registry is a list an operator scans, so the order must be the one a
+/// human expects: `lower(name)`, which is also what `customers_name_lower_idx`
+/// indexes. Byte order would put every capitalized name before every lower-case
+/// one and split `Banana` from `apple`.
+///
+/// The query orders twice: the CTE clause chooses which rows make the page and
+/// the outer clause re-sorts them, so a single wide-page assertion would pass
+/// even if the CTE silently reverted to byte order. The limit-below-the-row-count
+/// assertions are the ones that pin the CTE: byte order would admit `Banana` and
+/// `Date` to the first page while `lower(name)` admits `apple` and `Banana`.
+#[sqlx::test]
+async fn list_orders_customers_case_insensitively_by_lower_name(pool: PgPool) {
+    // Seeded in byte order, so neither insertion order nor the outer re-sort can
+    // mask a CTE that no longer matches the index.
+    for name in ["Banana", "Date", "apple", "cherry"] {
+        seed_customer(&pool, name, None).await;
+    }
 
+    let (page, total) = service::list_customers(&pool, false, None, 50, 0)
+        .await
+        .expect("page");
+    assert_eq!(total, 4);
+    let names: Vec<&str> = page.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["apple", "Banana", "cherry", "Date"]);
+
+    let (page, total) = service::list_customers(&pool, false, None, 2, 0)
+        .await
+        .expect("page");
+    assert_eq!(total, 4, "the total ignores the page");
+    let names: Vec<&str> = page.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["apple", "Banana"]);
+
+    let (page, total) = service::list_customers(&pool, false, None, 2, 2)
+        .await
+        .expect("page");
+    assert_eq!(total, 4, "the total ignores the page");
+    let names: Vec<&str> = page.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["cherry", "Date"]);
+}
+
+// --- Update and deactivation --------------------------------------------
 #[sqlx::test]
 async fn update_touches_only_the_fields_sent(pool: PgPool) {
     let id = seed_customer(&pool, "Ana", Some("20-1")).await;

@@ -1639,6 +1639,53 @@ async fn refunded_credit_cannot_be_allocated_again(pool: PgPool) {
     assert!(position.is_consistent(), "the books stopped balancing");
 }
 
+/// One receipt may back a sale only once. The batch path checks that set in
+/// memory; the single allocation path relies on the unique constraint, which
+/// must surface as `DuplicateAllocation` and not as a `500`.
+#[sqlx::test]
+async fn allocating_the_same_sale_twice_is_a_typed_conflict(pool: PgPool) {
+    let customer = seed_customer(&pool, "Ana").await;
+    let sale = seed_completed_sale(&pool, customer, dec!(100.00)).await;
+    let collected = seed_account_payment(&pool, customer, dec!(100.00)).await;
+    let actor = Uuid::now_v7();
+
+    let mut tx = pool.begin().await.expect("transaction");
+    let receipt = repository::record_receipt(
+        &mut tx,
+        repository::NewReceipt {
+            customer_id: customer,
+            wallet_movement_id: collected,
+            amount: dec!(100.00),
+            allocations: &[],
+            idempotency_key: None,
+            note: None,
+            created_by: actor,
+        },
+    )
+    .await
+    .expect("receipt")
+    .entry_id;
+    repository::record_charge(&mut tx, customer, sale, dec!(100.00), actor)
+        .await
+        .expect("charge");
+
+    repository::allocate(&mut tx, receipt, sale, dec!(40.00))
+        .await
+        .expect("first allocation");
+
+    // Half the receipt is still free and the sale still owes half, so the caps
+    // pass and only the once-per-sale constraint can reject this one.
+    let second = repository::allocate(&mut tx, receipt, sale, dec!(40.00)).await;
+    assert!(
+        matches!(
+            second,
+            Err(repository::RepoError::DuplicateAllocation { sale_id }) if sale_id == sale
+        ),
+        "second allocation of the same sale: {second:?}"
+    );
+    tx.rollback().await.expect("rollback");
+}
+
 // --- The review advisories -----------------------------------------------
 
 /// A wallet movement that collected part of a sale at the till. The account's

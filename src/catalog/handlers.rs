@@ -323,7 +323,9 @@ impl From<CatalogError> for AppError {
                 available,
                 requested,
             } => AppError::Conflict(format!(
-                "insufficient stock: available {available}, requested {requested}"
+                "insufficient stock: available {}, requested {}",
+                format_quantity(available),
+                format_quantity(requested)
             )),
             CatalogError::Internal(repo) => AppError::Internal(repo.to_string()),
         }
@@ -429,6 +431,9 @@ fn update_product_doc() {}
 fn deactivate_product_doc() {}
 
 /// Movement history, newest first.
+///
+/// `404` when no product has that id: an unknown product is not a product with
+/// an empty history.
 #[utoipa::path(
     get,
     path = "/api/v1/products/{id}/movements",
@@ -440,6 +445,8 @@ fn deactivate_product_doc() {}
     responses(
         (status = 200, description = "Movements", body = Vec<MovementResponse>),
         (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Product not found", body = crate::openapi::Problem,
          content_type = "application/problem+json"),
     )
 )]

@@ -281,7 +281,10 @@ async fn reset_password(
 impl From<AuthError> for AppError {
     fn from(err: AuthError) -> Self {
         match err {
-            AuthError::InvalidCredentials | AuthError::Forbidden => AppError::Unauthorized,
+            AuthError::InvalidCredentials => AppError::Unauthorized,
+            // A missing permission is not a missing session: the client must
+            // not be told to log in again when logging in changes nothing.
+            AuthError::Forbidden => AppError::Forbidden,
             AuthError::AccountLocked { until } => AppError::TooManyRequests {
                 retry_after_secs: (until - chrono::Utc::now()).num_seconds().max(1) as u64,
             },
@@ -443,3 +446,23 @@ fn change_password_doc() {}
 )]
 #[allow(dead_code)]
 fn reset_password_doc() {}
+
+// --- Tests --------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A missing permission is `403`, not `401`. The service-level `Forbidden`
+    /// is defense in depth: the handlers already reject first through
+    /// `require_user_management`, so only this conversion decides the code
+    /// should that gate ever move.
+    #[test]
+    fn forbidden_is_403_and_bad_credentials_stay_401() {
+        let forbidden = AppError::from(AuthError::Forbidden).into_response();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let unauthorized = AppError::from(AuthError::InvalidCredentials).into_response();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+    }
+}

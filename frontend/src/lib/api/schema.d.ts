@@ -423,7 +423,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Movement history, newest first. */
+        /**
+         * Movement history, newest first.
+         * @description `404` when no product has that id: an unknown product is not a product with
+         *     an empty history.
+         */
         get: operations["list_movements_doc"];
         put?: never;
         /**
@@ -3791,6 +3795,15 @@ export interface operations {
             };
             /** @description No session */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Product not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

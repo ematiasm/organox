@@ -1617,6 +1617,7 @@
           "catalog"
         ],
         "summary": "Movement history, newest first.",
+        "description": "`404` when no product has that id: an unknown product is not a product with\nan empty history.",
         "operationId": "list_movements_doc",
         "parameters": [
           {
@@ -1655,6 +1656,16 @@
           },
           "401": {
             "description": "No session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Product not found",
             "content": {
               "application/problem+json": {
                 "schema": {

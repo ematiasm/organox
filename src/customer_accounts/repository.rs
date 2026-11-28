@@ -687,7 +687,7 @@ async fn receivables_page(
         LEFT JOIN aging_by_customer ag ON ag.customer_id = et.customer_id
         WHERE et.balance <> 0
            OR (et.received - et.refunded - COALESCE(ca.total, 0)) <> 0
-        ORDER BY et.balance DESC, c.name ASC, c.id ASC
+        ORDER BY et.balance DESC, lower(c.name) ASC, c.id ASC
         LIMIT $1 OFFSET $2
         "#,
         limit,
@@ -1369,7 +1369,16 @@ pub async fn allocate(
         amount,
     )
     .execute(&mut *conn)
-    .await?;
+    .await
+    .map_err(|err| match violated_constraint(&err) {
+        // The same sale cannot be backed twice by one receipt: the constraint is
+        // the last line of defence behind the in-memory set `record_receipt`
+        // builds, and it must read as a rejected allocation, not a server error.
+        Some("customer_account_allocations_once_per_sale") => {
+            RepoError::DuplicateAllocation { sale_id }
+        }
+        _ => RepoError::Database(err),
+    })?;
 
     Ok(())
 }

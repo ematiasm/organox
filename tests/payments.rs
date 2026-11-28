@@ -514,6 +514,31 @@ async fn a_sale_payment_cannot_be_typed_by_hand(pool: PgPool) {
     assert_eq!(balance(&pool, &cookie, wallet).await, "0.00");
 }
 
+/// Every kind that cannot be typed by hand names its own recording path. A
+/// purchase refund is not a sale payment, and telling the operator it is would
+/// leave them with no idea what to do instead.
+#[sqlx::test]
+async fn a_purchase_refund_rejection_names_the_purchase_return_path(pool: PgPool) {
+    let cookie = login(&pool).await;
+    let wallet = create_wallet(&pool, &cookie, "Caja").await;
+
+    let (status, body) = call(
+        &pool,
+        &cookie,
+        "POST",
+        &format!("/api/v1/wallets/{wallet}/movements"),
+        Some(json!({ "kind": "purchase_refund", "amount": "100.00" })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["detail"],
+        "a purchase refund is recorded by a purchase return, not by hand"
+    );
+    assert_eq!(movement_count(&pool, wallet).await, 0);
+}
+
 #[sqlx::test]
 async fn a_zero_amount_is_rejected_and_nothing_is_written(pool: PgPool) {
     let cookie = login(&pool).await;

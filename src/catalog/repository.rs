@@ -17,7 +17,7 @@ pub enum RepoError {
     #[error("product not found")]
     NotFound,
 
-    #[error("the email is already registered")]
+    #[error("the SKU is already in use")]
     SkuTaken,
 
     #[error("the product has movements: deactivate it instead of deleting it")]
@@ -484,6 +484,21 @@ pub async fn list_movements(
         .collect())
 }
 
+/// Whether a product id exists, without reading the whole row.
+///
+/// A primary-key probe: `list_movements` needs the answer before it can tell a
+/// product with no movements from an id nobody ever created.
+pub async fn product_exists(pool: &PgPool, product_id: Uuid) -> Result<bool, RepoError> {
+    let found = sqlx::query!(
+        r#"SELECT 1 AS found FROM products WHERE id = $1"#,
+        product_id
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(found.is_some())
+}
+
 /// Calculated current stock of a product.
 pub async fn current_stock(pool: &PgPool, product_id: Uuid) -> Result<Decimal, RepoError> {
     let stock = sqlx::query_scalar!(
@@ -517,5 +532,18 @@ impl From<ValidationError> for RepoError {
             ValidationError::ProductNotFound => RepoError::NotFound,
             _ => RepoError::Database(sqlx::Error::Protocol(err.to_string())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The text names the SKU, the thing the operator typed. An email message
+    /// here is a copy-paste from the auth repository that describes a column
+    /// this module never touches.
+    #[test]
+    fn sku_taken_names_the_sku() {
+        assert_eq!(RepoError::SkuTaken.to_string(), "the SKU is already in use");
     }
 }

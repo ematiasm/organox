@@ -110,7 +110,10 @@ pub async fn list_customers(
                     OR c.name ILIKE $2::text ESCAPE E'\\'
                     OR c.tax_id ILIKE $2::text ESCAPE E'\\'
               )
-            ORDER BY c.name, c.id
+            -- `lower(name)` is what `customers_name_lower_idx` indexes, and it is
+            -- the order an operator scanning the list expects: byte order would
+            -- file every capitalized name ahead of every lower-case one.
+            ORDER BY lower(c.name), c.id
             LIMIT $3 OFFSET $4
         )
         SELECT
@@ -142,7 +145,7 @@ pub async fn list_customers(
             JOIN customer_account_entries en ON en.id = al.entry_id
             WHERE en.customer_id = p.id
         ) a ON TRUE
-        ORDER BY p.name, p.id
+        ORDER BY lower(p.name), p.id
         "#,
         include_inactive,
         pattern,
