@@ -362,6 +362,37 @@ pub struct ReceivablesResponse {
 
 // --- Handlers -----------------------------------------------------------
 
+/// Collect money against a customer's account.
+///
+/// One request, one transaction: the money enters a wallet as a single
+/// `account_payment` movement carrying the customer and the method, and the
+/// customer's ledger records one receipt linked to it. The allocations are the
+/// operator's — the server never invents or applies them — and the money no
+/// allocation consumes becomes the customer's usable credit. An optional
+/// idempotency key makes a retry return the first receipt with `200` instead
+/// of collecting twice.
+#[utoipa::path(
+    post,
+    operation_id = "collect_receipt_doc",
+    path = "/api/v1/customers/{id}/receipts",
+    tag = "customer_accounts",
+    params(("id" = Uuid, Path, description = "Customer ID")),
+    request_body = CollectReceiptRequest,
+    responses(
+        (status = 201, description = "Money collected: the wallet movement and the receipt are written together",
+         body = ReceiptResponse),
+        (status = 200, description = "Existing receipt returned for a repeated idempotency key; nothing was written",
+         body = ReceiptResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer, or an allocation names an unknown sale", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "The customer account is busy, retry", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Unknown or inactive payment method, a non-positive, too precise or too large amount, or allocations beyond what the sales owe", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn collect_receipt(
     State(state): State<AppState>,
     user: AuthUser,
@@ -405,6 +436,35 @@ async fn collect_receipt(
     Ok((status, Json(to_response(collected))))
 }
 
+/// Hand collected credit back to a customer through a wallet movement.
+///
+/// One request, one transaction: an `account_payment_refund` outflow leaves
+/// the method's wallet and a `credit_refund` entry moves the customer's
+/// balance toward zero. Refused unless `amount <= unapplied_credit` and
+/// `balance + amount <= 0`. An optional idempotency key returns the first
+/// refund with `200` instead of handing money back twice.
+#[utoipa::path(
+    post,
+    operation_id = "refund_credit_doc",
+    path = "/api/v1/customers/{id}/credit-refunds",
+    tag = "customer_accounts",
+    params(("id" = Uuid, Path, description = "Customer ID")),
+    request_body = RefundCreditRequest,
+    responses(
+        (status = 201, description = "Credit refunded: the wallet movement and ledger entry are written together",
+         body = CreditRefundResponse),
+        (status = 200, description = "Existing credit refund returned for a repeated idempotency key; nothing was written",
+         body = CreditRefundResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Busy customer account, or idempotency key already used by another entry kind", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Unknown or inactive payment method, blank note, invalid amount, or amount exceeding available credit", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn refund_credit(
     State(state): State<AppState>,
     user: AuthUser,
@@ -432,6 +492,31 @@ async fn refund_credit(
     Ok((status, Json(to_refund_response(refunded))))
 }
 
+/// Record a manual debt adjustment on a customer's account.
+///
+/// Writes `adjustment_in` or `adjustment_out` without touching any wallet.
+/// Both directions require the balance to stay `>= 0`: an adjustment may
+/// load an opening balance or correct a debt, never create or consume
+/// available credit.
+#[utoipa::path(
+    post,
+    operation_id = "record_adjustment_doc",
+    path = "/api/v1/customers/{id}/adjustments",
+    tag = "customer_accounts",
+    params(("id" = Uuid, Path, description = "Customer ID")),
+    request_body = RecordAdjustmentRequest,
+    responses(
+        (status = 201, description = "Adjustment recorded", body = AdjustmentResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "The customer account is busy, retry", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Blank note, invalid amount, or adjustment crossing zero", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn record_adjustment(
     State(state): State<AppState>,
     user: AuthUser,
@@ -453,6 +538,30 @@ async fn record_adjustment(
     Ok((StatusCode::CREATED, Json(to_adjustment_response(recorded))))
 }
 
+/// Customer account statement.
+///
+/// Returns ledger entries oldest first with their running balance, the
+/// customer's current balance and unapplied credit (`U`), and every sale that
+/// still owes money — all read from one consistent snapshot. Entries are
+/// bounded with `limit` (default 100, clamped to 1..=500) and `offset`
+/// (default 0), while `entries_total` always reports the whole ledger.
+#[utoipa::path(
+    get,
+    operation_id = "get_account_statement_doc",
+    path = "/api/v1/customers/{id}/account",
+    tag = "customer_accounts",
+    params(
+        ("id" = Uuid, Path, description = "Customer ID"),
+        ListStatementQuery,
+    ),
+    responses(
+        (status = 200, description = "Account statement", body = CustomerAccountResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn get_account_statement(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -466,6 +575,27 @@ async fn get_account_statement(
     Ok(Json(to_account_response(statement)))
 }
 
+/// Collection write log for one customer, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
+#[utoipa::path(
+    get,
+    operation_id = "list_receipts_doc",
+    path = "/api/v1/customers/{id}/receipts",
+    tag = "customer_accounts",
+    params(
+        ("id" = Uuid, Path, description = "Customer ID"),
+        ListAccountLogQuery,
+    ),
+    responses(
+        (status = 200, description = "Receipts recorded for this customer", body = [ReceiptLogResponse]),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_receipts(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -478,6 +608,27 @@ async fn list_receipts(
     Ok(Json(receipts.into_iter().map(to_receipt_log).collect()))
 }
 
+/// Manual debt adjustment write log for one customer, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
+#[utoipa::path(
+    get,
+    operation_id = "list_adjustments_doc",
+    path = "/api/v1/customers/{id}/adjustments",
+    tag = "customer_accounts",
+    params(
+        ("id" = Uuid, Path, description = "Customer ID"),
+        ListAccountLogQuery,
+    ),
+    responses(
+        (status = 200, description = "Manual adjustments recorded for this customer", body = [AdjustmentLogResponse]),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_adjustments(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -492,6 +643,26 @@ async fn list_adjustments(
     ))
 }
 
+/// Accounts receivable report across customers with an open position.
+///
+/// Lists customers whose `balance != 0` or `unapplied_credit != 0`, ordered by
+/// highest balance first, with open-sale aging buckets computed from each
+/// sale's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
+/// bounded with `limit` (default 50, clamped to 1..=200) and `offset`
+/// (default 0), while totals, aging, and `items_total` always describe the
+/// whole report.
+#[utoipa::path(
+    get,
+    operation_id = "list_receivables_doc",
+    path = "/api/v1/accounts/receivables",
+    tag = "customer_accounts",
+    params(ListReportQuery),
+    responses(
+        (status = 200, description = "Open customer positions and aging buckets", body = ReceivablesResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_receivables(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -682,190 +853,3 @@ impl From<ReceiptsError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ----------------------------------------------
-
-/// Collect money against a customer's account.
-///
-/// One request, one transaction: the money enters a wallet as a single
-/// `account_payment` movement carrying the customer and the method, and the
-/// customer's ledger records one receipt linked to it. The allocations are the
-/// operator's — the server never invents or applies them — and the money no
-/// allocation consumes becomes the customer's usable credit. An optional
-/// idempotency key makes a retry return the first receipt with `200` instead
-/// of collecting twice.
-#[utoipa::path(
-    post,
-    path = "/api/v1/customers/{id}/receipts",
-    tag = "customer_accounts",
-    params(("id" = Uuid, Path, description = "Customer ID")),
-    request_body = CollectReceiptRequest,
-    responses(
-        (status = 201, description = "Money collected: the wallet movement and the receipt are written together",
-         body = ReceiptResponse),
-        (status = 200, description = "Existing receipt returned for a repeated idempotency key; nothing was written",
-         body = ReceiptResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown customer, or an allocation names an unknown sale", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "The customer account is busy, retry", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Unknown or inactive payment method, a non-positive, too precise or too large amount, or allocations beyond what the sales owe", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn collect_receipt_doc() {}
-
-/// Hand collected credit back to a customer through a wallet movement.
-///
-/// One request, one transaction: an `account_payment_refund` outflow leaves
-/// the method's wallet and a `credit_refund` entry moves the customer's
-/// balance toward zero. Refused unless `amount <= unapplied_credit` and
-/// `balance + amount <= 0`. An optional idempotency key returns the first
-/// refund with `200` instead of handing money back twice.
-#[utoipa::path(
-    post,
-    path = "/api/v1/customers/{id}/credit-refunds",
-    tag = "customer_accounts",
-    params(("id" = Uuid, Path, description = "Customer ID")),
-    request_body = RefundCreditRequest,
-    responses(
-        (status = 201, description = "Credit refunded: the wallet movement and ledger entry are written together",
-         body = CreditRefundResponse),
-        (status = 200, description = "Existing credit refund returned for a repeated idempotency key; nothing was written",
-         body = CreditRefundResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Busy customer account, or idempotency key already used by another entry kind", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Unknown or inactive payment method, blank note, invalid amount, or amount exceeding available credit", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn refund_credit_doc() {}
-
-/// Record a manual debt adjustment on a customer's account.
-///
-/// Writes `adjustment_in` or `adjustment_out` without touching any wallet.
-/// Both directions require the balance to stay `>= 0`: an adjustment may
-/// load an opening balance or correct a debt, never create or consume
-/// available credit.
-#[utoipa::path(
-    post,
-    path = "/api/v1/customers/{id}/adjustments",
-    tag = "customer_accounts",
-    params(("id" = Uuid, Path, description = "Customer ID")),
-    request_body = RecordAdjustmentRequest,
-    responses(
-        (status = 201, description = "Adjustment recorded", body = AdjustmentResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "The customer account is busy, retry", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Blank note, invalid amount, or adjustment crossing zero", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn record_adjustment_doc() {}
-
-/// Customer account statement.
-///
-/// Returns ledger entries oldest first with their running balance, the
-/// customer's current balance and unapplied credit (`U`), and every sale that
-/// still owes money — all read from one consistent snapshot. Entries are
-/// bounded with `limit` (default 100, clamped to 1..=500) and `offset`
-/// (default 0), while `entries_total` always reports the whole ledger.
-#[utoipa::path(
-    get,
-    path = "/api/v1/customers/{id}/account",
-    tag = "customer_accounts",
-    params(
-        ("id" = Uuid, Path, description = "Customer ID"),
-        ListStatementQuery,
-    ),
-    responses(
-        (status = 200, description = "Account statement", body = CustomerAccountResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_account_statement_doc() {}
-
-/// Collection write log for one customer, newest first.
-///
-/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
-/// to page through the log.
-#[utoipa::path(
-    get,
-    path = "/api/v1/customers/{id}/receipts",
-    tag = "customer_accounts",
-    params(
-        ("id" = Uuid, Path, description = "Customer ID"),
-        ListAccountLogQuery,
-    ),
-    responses(
-        (status = 200, description = "Receipts recorded for this customer", body = [ReceiptLogResponse]),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_receipts_doc() {}
-
-/// Manual debt adjustment write log for one customer, newest first.
-///
-/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
-/// to page through the log.
-#[utoipa::path(
-    get,
-    path = "/api/v1/customers/{id}/adjustments",
-    tag = "customer_accounts",
-    params(
-        ("id" = Uuid, Path, description = "Customer ID"),
-        ListAccountLogQuery,
-    ),
-    responses(
-        (status = 200, description = "Manual adjustments recorded for this customer", body = [AdjustmentLogResponse]),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown customer", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_adjustments_doc() {}
-
-/// Accounts receivable report across customers with an open position.
-///
-/// Lists customers whose `balance != 0` or `unapplied_credit != 0`, ordered by
-/// highest balance first, with open-sale aging buckets computed from each
-/// sale's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
-/// bounded with `limit` (default 50, clamped to 1..=200) and `offset`
-/// (default 0), while totals, aging, and `items_total` always describe the
-/// whole report.
-#[utoipa::path(
-    get,
-    path = "/api/v1/accounts/receivables",
-    tag = "customer_accounts",
-    params(ListReportQuery),
-    responses(
-        (status = 200, description = "Open customer positions and aging buckets", body = ReceivablesResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_receivables_doc() {}

@@ -16,6 +16,7 @@ use super::model::{
 };
 use crate::catalog::model::MovementReason;
 use crate::customer_accounts::repository as customer_accounts;
+use crate::db::violated_constraint;
 use crate::payments::model::WalletMovementKind;
 use crate::payments::repository::{self as wallet, NewWalletMovement};
 use crate::sales::model::SaleStatus;
@@ -90,14 +91,6 @@ pub struct NewCreditNote<'a> {
     /// Trimmed by the service. A replay with the same key returns the first
     /// note instead of writing a second one.
     pub idempotency_key: Option<&'a str>,
-}
-
-/// The constraint that rejected the row, when the error came from the database.
-fn violated_constraint(err: &sqlx::Error) -> Option<&str> {
-    match err {
-        sqlx::Error::Database(db_err) => db_err.constraint(),
-        _ => None,
-    }
 }
 
 /// `lock_customer` and `record_credit_note` re-validate, under the customer

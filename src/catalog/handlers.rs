@@ -145,6 +145,19 @@ pub struct ListMovementsQuery {
 
 // --- Handlers -----------------------------------------------------------
 
+/// List the catalog with calculated stock.
+#[utoipa::path(
+    get,
+    operation_id = "list_products_doc",
+    path = "/api/v1/products",
+    tag = "catalog",
+    params(ListProductsQuery),
+    responses(
+        (status = 200, description = "Product page", body = ProductListResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_products(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -171,6 +184,25 @@ async fn list_products(
     }))
 }
 
+/// Create a product or service.
+///
+/// A service does not track stock: `min_stock` is rejected with 422.
+#[utoipa::path(
+    post,
+    operation_id = "create_product_doc",
+    path = "/api/v1/products",
+    tag = "catalog",
+    request_body = CreateProductRequest,
+    responses(
+        (status = 201, description = "Product created", body = IdResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "SKU is already in use", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn create_product(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -192,6 +224,23 @@ async fn create_product(
     Ok((StatusCode::CREATED, Json(IdResponse { id })))
 }
 
+/// Product details, including calculated current stock.
+///
+/// `stock` is `null` for services: not applicable, not zero.
+#[utoipa::path(
+    get,
+    operation_id = "get_product_doc",
+    path = "/api/v1/products/{id}",
+    tag = "catalog",
+    params(("id" = Uuid, Path, description = "Product ID")),
+    responses(
+        (status = 200, description = "Product", body = ProductResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn get_product(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -201,6 +250,24 @@ async fn get_product(
     Ok(Json(to_response(item)))
 }
 
+/// Update only the fields sent.
+#[utoipa::path(
+    patch,
+    operation_id = "update_product_doc",
+    path = "/api/v1/products/{id}",
+    tag = "catalog",
+    params(("id" = Uuid, Path, description = "Product ID")),
+    request_body = UpdateProductRequest,
+    responses(
+        (status = 204, description = "Updated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn update_product(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -224,6 +291,22 @@ async fn update_product(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Soft deletion. Idempotent. Never deletes: a product with movements retains
+/// its history.
+#[utoipa::path(
+    post,
+    operation_id = "deactivate_product_doc",
+    path = "/api/v1/products/{id}/deactivate",
+    tag = "catalog",
+    params(("id" = Uuid, Path, description = "Product ID")),
+    responses(
+        (status = 204, description = "Deactivated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn deactivate_product(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -233,6 +316,29 @@ async fn deactivate_product(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Record a stock movement.
+///
+/// `quantity` is always positive; `reason` determines the sign. An outflow
+/// that would leave stock negative is rejected with 409.
+#[utoipa::path(
+    post,
+    operation_id = "record_movement_doc",
+    path = "/api/v1/products/{id}/movements",
+    tag = "catalog",
+    params(("id" = Uuid, Path, description = "Product ID")),
+    request_body = RecordMovementRequest,
+    responses(
+        (status = 201, description = "Movement recorded", body = IdResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Product not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Insufficient stock", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input or service without stock", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn record_movement(
     State(state): State<AppState>,
     user: AuthUser,
@@ -255,6 +361,27 @@ async fn record_movement(
     Ok((StatusCode::CREATED, Json(IdResponse { id })))
 }
 
+/// Movement history, newest first.
+///
+/// `404` when no product has that id: an unknown product is not a product with
+/// an empty history.
+#[utoipa::path(
+    get,
+    operation_id = "list_movements_doc",
+    path = "/api/v1/products/{id}/movements",
+    tag = "catalog",
+    params(
+        ("id" = Uuid, Path, description = "Product ID"),
+        ListMovementsQuery,
+    ),
+    responses(
+        (status = 200, description = "Movements", body = Vec<MovementResponse>),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Product not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_movements(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -267,14 +394,7 @@ async fn list_movements(
 
 // --- Conversions --------------------------------------------------------
 
-use crate::money::format_money;
-
-/// Quantity without extra zeros: `"12.5"`, not `"12.500"`. The column is
-/// `numeric(12,3)` and `SUM` returns the full scale; displaying it that way
-/// would leak a storage detail into the HTTP contract.
-fn format_quantity(value: Decimal) -> String {
-    value.normalize().to_string()
-}
+use crate::money::{format_money, format_quantity};
 
 fn to_response(item: model::ProductWithStock) -> ProductResponse {
     let low_stock = model::is_low_stock(&item.product, item.stock);
@@ -331,149 +451,3 @@ impl From<CatalogError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ---------------------------------------------
-//
-// Stubs exist only for `#[utoipa::path]` to generate the PathItem. The real
-// route is served by the handler above.
-
-/// List the catalog with calculated stock.
-#[utoipa::path(
-    get,
-    path = "/api/v1/products",
-    tag = "catalog",
-    params(ListProductsQuery),
-    responses(
-        (status = 200, description = "Product page", body = ProductListResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_products_doc() {}
-
-/// Create a product or service.
-///
-/// A service does not track stock: `min_stock` is rejected with 422.
-#[utoipa::path(
-    post,
-    path = "/api/v1/products",
-    tag = "catalog",
-    request_body = CreateProductRequest,
-    responses(
-        (status = 201, description = "Product created", body = IdResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "SKU is already in use", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn create_product_doc() {}
-
-/// Product details, including calculated current stock.
-///
-/// `stock` is `null` for services: not applicable, not zero.
-#[utoipa::path(
-    get,
-    path = "/api/v1/products/{id}",
-    tag = "catalog",
-    params(("id" = Uuid, Path, description = "Product ID")),
-    responses(
-        (status = 200, description = "Product", body = ProductResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_product_doc() {}
-
-/// Update only the fields sent.
-#[utoipa::path(
-    patch,
-    path = "/api/v1/products/{id}",
-    tag = "catalog",
-    params(("id" = Uuid, Path, description = "Product ID")),
-    request_body = UpdateProductRequest,
-    responses(
-        (status = 204, description = "Updated"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn update_product_doc() {}
-
-/// Soft deletion. Idempotent. Never deletes: a product with movements retains
-/// its history.
-#[utoipa::path(
-    post,
-    path = "/api/v1/products/{id}/deactivate",
-    tag = "catalog",
-    params(("id" = Uuid, Path, description = "Product ID")),
-    responses(
-        (status = 204, description = "Deactivated"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn deactivate_product_doc() {}
-
-/// Movement history, newest first.
-///
-/// `404` when no product has that id: an unknown product is not a product with
-/// an empty history.
-#[utoipa::path(
-    get,
-    path = "/api/v1/products/{id}/movements",
-    tag = "catalog",
-    params(
-        ("id" = Uuid, Path, description = "Product ID"),
-        ListMovementsQuery,
-    ),
-    responses(
-        (status = 200, description = "Movements", body = Vec<MovementResponse>),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Product not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_movements_doc() {}
-
-/// Record a stock movement.
-///
-/// `quantity` is always positive; `reason` determines the sign. An outflow
-/// that would leave stock negative is rejected with 409.
-#[utoipa::path(
-    post,
-    path = "/api/v1/products/{id}/movements",
-    tag = "catalog",
-    params(("id" = Uuid, Path, description = "Product ID")),
-    request_body = RecordMovementRequest,
-    responses(
-        (status = 201, description = "Movement recorded", body = IdResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Product not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Insufficient stock", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input or service without stock", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn record_movement_doc() {}

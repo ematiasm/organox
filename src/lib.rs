@@ -9,6 +9,7 @@ pub mod customers;
 pub mod db;
 pub mod error;
 pub mod extract;
+pub mod http;
 pub mod money;
 pub mod openapi;
 pub mod payments;

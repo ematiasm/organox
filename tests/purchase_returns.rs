@@ -1,8 +1,10 @@
 //! Purchase returns (supplier returns) HTTP & concurrency integration tests.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use organox::AppState;
+use common::{app, test_password};
 use organox::auth::model::Role;
 use organox::auth::repository::{self as auth_repo, NewUser};
 use organox::auth::{password, validation};
@@ -11,7 +13,6 @@ use organox::catalog::service::{self as catalog, CreateProductInput, RecordMovem
 use organox::payments::service::{self as payments, CreateMethodInput, CreateWalletInput};
 use organox::purchases::model::PurchasePaymentInput;
 use organox::purchases::service as purchases;
-use organox::routes::router;
 use organox::supplier_accounts::repository as supplier_accounts;
 use organox::suppliers::service::{self as suppliers, CreateSupplierInput};
 use rust_decimal::Decimal;
@@ -20,14 +21,6 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
-
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
-}
 
 async fn seed_user(pool: &PgPool, email: &str, role: Role) -> (Uuid, String) {
     let password = test_password();

@@ -19,6 +19,7 @@ use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::extract::{AppJson, AppPath, AppQuery};
+use crate::http::present_option;
 use crate::sales::model::{Sale, SalePaymentInput, SaleStatus};
 use crate::sales::service::{self, SalesError};
 
@@ -151,17 +152,24 @@ pub struct SetSaleCustomerRequest {
     pub customer_id: Option<Option<Uuid>>,
 }
 
-/// Distinguishes an omitted field (`None`) from an explicit `null`
-/// (`Some(None)`): serde collapses both to `None` for a plain `Option`.
-fn present_option<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<Uuid>::deserialize(deserializer).map(Some)
-}
-
 // --- Handlers -----------------------------------------------------------
 
+/// Open a sale draft, or return the one already open.
+///
+/// A user has **one** draft at a time: reloading the sale screen does not
+/// create new carts.
+#[utoipa::path(
+    post,
+    operation_id = "open_draft_doc",
+    path = "/api/v1/sales/draft",
+    tag = "sales",
+    responses(
+        (status = 201, description = "New draft", body = DraftResponse),
+        (status = 200, description = "Open draft reused", body = DraftResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn open_draft(
     State(state): State<AppState>,
     user: AuthUser,
@@ -178,6 +186,21 @@ async fn open_draft(
     ))
 }
 
+/// Sale with its items and server-calculated total.
+#[utoipa::path(
+    get,
+    operation_id = "get_sale_doc",
+    path = "/api/v1/sales/{id}",
+    tag = "sales",
+    params(("id" = Uuid, Path, description = "Sale ID")),
+    responses(
+        (status = 200, description = "Sale", body = SaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn get_sale(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -187,6 +210,28 @@ async fn get_sale(
     Ok(Json(to_response(sale)))
 }
 
+/// Add a product to the draft. If already present, add the quantity.
+///
+/// Returns the recalculated sale: the client does not add anything.
+#[utoipa::path(
+    post,
+    operation_id = "add_item_doc",
+    path = "/api/v1/sales/{id}/items",
+    tag = "sales",
+    params(("id" = Uuid, Path, description = "Sale ID")),
+    request_body = AddItemRequest,
+    responses(
+        (status = 200, description = "Sale updated", body = SaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Sale is already closed", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid quantity or item is a service", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn add_item(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -197,6 +242,29 @@ async fn add_item(
     Ok(Json(to_response(sale)))
 }
 
+/// Set an item's quantity. Quantity 0 removes it.
+#[utoipa::path(
+    put,
+    operation_id = "set_quantity_doc",
+    path = "/api/v1/sales/{id}/items/{product_id}",
+    tag = "sales",
+    params(
+        ("id" = Uuid, Path, description = "Sale ID"),
+        ("product_id" = Uuid, Path, description = "Product ID"),
+    ),
+    request_body = SetQuantityRequest,
+    responses(
+        (status = 200, description = "Sale updated", body = SaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Sale is already closed", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid quantity", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn set_quantity(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -207,6 +275,24 @@ async fn set_quantity(
     Ok(Json(to_response(sale)))
 }
 
+/// Remove an item from the draft.
+#[utoipa::path(
+    delete,
+    operation_id = "remove_item_doc",
+    path = "/api/v1/sales/{id}/items/{product_id}",
+    tag = "sales",
+    params(
+        ("id" = Uuid, Path, description = "Sale ID"),
+        ("product_id" = Uuid, Path, description = "Product ID"),
+    ),
+    responses(
+        (status = 200, description = "Sale updated", body = SaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn remove_item(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -216,6 +302,35 @@ async fn remove_item(
     Ok(Json(to_response(sale)))
 }
 
+/// Complete the sale.
+///
+/// In one transaction: validate stock with the product row locked, check that
+/// the payments plus the optional `on_account` amount add up to the total,
+/// authorize the on-account part against the customer's activity and credit
+/// limit, write an outflow movement per item, a money movement per payment
+/// and, when part of the total is on account, the charge in the customer's
+/// ledger — which their available credit then pays, oldest receipt first, up
+/// to the charged part — then close the sale. Any rejection leaves **no**
+/// movements, no ledger entry and no status change.
+#[utoipa::path(
+    post,
+    operation_id = "complete_sale_doc",
+    path = "/api/v1/sales/{id}/complete",
+    tag = "sales",
+    params(("id" = Uuid, Path, description = "Sale ID")),
+    request_body = CompleteSaleRequest,
+    responses(
+        (status = 200, description = "Sale completed", body = CompletedSaleResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Insufficient stock, sale already closed, busy customer account, or an on-account amount beyond the customer's credit limit (the remaining credit is named in the message)", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Sale empty, wrong sum, unusable method, or an on-account amount without an active customer", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn complete_sale(
     State(state): State<AppState>,
     user: AuthUser,
@@ -244,6 +359,23 @@ async fn complete_sale(
     }))
 }
 
+/// Cancel a draft. Does not touch the stock ledger, because it never did.
+#[utoipa::path(
+    post,
+    operation_id = "cancel_sale_doc",
+    path = "/api/v1/sales/{id}/cancel",
+    tag = "sales",
+    params(("id" = Uuid, Path, description = "Sale ID")),
+    responses(
+        (status = 204, description = "Draft cancelled"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Sale is no longer editable", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn cancel_sale(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -253,6 +385,30 @@ async fn cancel_sale(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Attach or clear the sale's customer. Draft-only.
+///
+/// `customer_id` is required in the body; `null` clears the customer. A closed
+/// sale is a fact and takes no customer (409). The customer must exist (404) and
+/// be active (409): those are the customers module's rules, not a copy in sales.
+#[utoipa::path(
+    put,
+    operation_id = "set_sale_customer_doc",
+    path = "/api/v1/sales/{id}/customer",
+    tag = "sales",
+    params(("id" = Uuid, Path, description = "Sale ID")),
+    request_body = SetSaleCustomerRequest,
+    responses(
+        (status = 204, description = "Customer attached or cleared"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Sale or customer not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Sale is closed, or the customer is deactivated", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "customer_id is missing", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn set_sale_customer(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -278,6 +434,19 @@ pub struct ListSalesQuery {
     pub offset: Option<i64>,
 }
 
+/// One page of completed sales, most recent first.
+#[utoipa::path(
+    get,
+    operation_id = "list_sales_doc",
+    path = "/api/v1/sales",
+    tag = "sales",
+    params(ListSalesQuery),
+    responses(
+        (status = 200, description = "Completed sales", body = SaleListResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_sales(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -298,12 +467,7 @@ async fn list_sales(
 
 // --- Conversions --------------------------------------------------------
 
-use crate::money::format_money;
-
-/// Quantities without extra zeros (`"2"`, `"1.5"`).
-fn format_quantity(value: Decimal) -> String {
-    value.normalize().to_string()
-}
+use crate::money::{format_money, format_quantity};
 
 fn to_response(sale: Sale) -> SaleResponse {
     let items: Vec<SaleItemResponse> = sale
@@ -397,202 +561,3 @@ impl From<SalesError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ---------------------------------------------
-//
-// Stubs exist only for `#[utoipa::path]` to generate the PathItem.
-
-/// Open a sale draft, or return the one already open.
-///
-/// A user has **one** draft at a time: reloading the sale screen does not
-/// create new carts.
-#[utoipa::path(
-    post,
-    path = "/api/v1/sales/draft",
-    tag = "sales",
-    responses(
-        (status = 201, description = "New draft", body = DraftResponse),
-        (status = 200, description = "Open draft reused", body = DraftResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn open_draft_doc() {}
-
-/// Sale with its items and server-calculated total.
-#[utoipa::path(
-    get,
-    path = "/api/v1/sales/{id}",
-    tag = "sales",
-    params(("id" = Uuid, Path, description = "Sale ID")),
-    responses(
-        (status = 200, description = "Sale", body = SaleResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_sale_doc() {}
-
-/// Add a product to the draft. If already present, add the quantity.
-///
-/// Returns the recalculated sale: the client does not add anything.
-#[utoipa::path(
-    post,
-    path = "/api/v1/sales/{id}/items",
-    tag = "sales",
-    params(("id" = Uuid, Path, description = "Sale ID")),
-    request_body = AddItemRequest,
-    responses(
-        (status = 200, description = "Sale updated", body = SaleResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Sale is already closed", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid quantity or item is a service", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn add_item_doc() {}
-
-/// Set an item's quantity. Quantity 0 removes it.
-#[utoipa::path(
-    put,
-    path = "/api/v1/sales/{id}/items/{product_id}",
-    tag = "sales",
-    params(
-        ("id" = Uuid, Path, description = "Sale ID"),
-        ("product_id" = Uuid, Path, description = "Product ID"),
-    ),
-    request_body = SetQuantityRequest,
-    responses(
-        (status = 200, description = "Sale updated", body = SaleResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Sale is already closed", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid quantity", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn set_quantity_doc() {}
-
-/// Remove an item from the draft.
-#[utoipa::path(
-    delete,
-    path = "/api/v1/sales/{id}/items/{product_id}",
-    tag = "sales",
-    params(
-        ("id" = Uuid, Path, description = "Sale ID"),
-        ("product_id" = Uuid, Path, description = "Product ID"),
-    ),
-    responses(
-        (status = 200, description = "Sale updated", body = SaleResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Sale or product not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn remove_item_doc() {}
-
-/// Complete the sale.
-///
-/// In one transaction: validate stock with the product row locked, check that
-/// the payments plus the optional `on_account` amount add up to the total,
-/// authorize the on-account part against the customer's activity and credit
-/// limit, write an outflow movement per item, a money movement per payment
-/// and, when part of the total is on account, the charge in the customer's
-/// ledger — which their available credit then pays, oldest receipt first, up
-/// to the charged part — then close the sale. Any rejection leaves **no**
-/// movements, no ledger entry and no status change.
-#[utoipa::path(
-    post,
-    path = "/api/v1/sales/{id}/complete",
-    tag = "sales",
-    params(("id" = Uuid, Path, description = "Sale ID")),
-    request_body = CompleteSaleRequest,
-    responses(
-        (status = 200, description = "Sale completed", body = CompletedSaleResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Insufficient stock, sale already closed, busy customer account, or an on-account amount beyond the customer's credit limit (the remaining credit is named in the message)", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Sale empty, wrong sum, unusable method, or an on-account amount without an active customer", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn complete_sale_doc() {}
-
-/// Cancel a draft. Does not touch the stock ledger, because it never did.
-#[utoipa::path(
-    post,
-    path = "/api/v1/sales/{id}/cancel",
-    tag = "sales",
-    params(("id" = Uuid, Path, description = "Sale ID")),
-    responses(
-        (status = 204, description = "Draft cancelled"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Sale is no longer editable", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn cancel_sale_doc() {}
-
-/// Attach or clear the sale's customer. Draft-only.
-///
-/// `customer_id` is required in the body; `null` clears the customer. A closed
-/// sale is a fact and takes no customer (409). The customer must exist (404) and
-/// be active (409): those are the customers module's rules, not a copy in sales.
-#[utoipa::path(
-    put,
-    path = "/api/v1/sales/{id}/customer",
-    tag = "sales",
-    params(("id" = Uuid, Path, description = "Sale ID")),
-    request_body = SetSaleCustomerRequest,
-    responses(
-        (status = 204, description = "Customer attached or cleared"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Sale or customer not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Sale is closed, or the customer is deactivated", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "customer_id is missing", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn set_sale_customer_doc() {}
-
-/// One page of completed sales, most recent first.
-#[utoipa::path(
-    get,
-    path = "/api/v1/sales",
-    tag = "sales",
-    params(ListSalesQuery),
-    responses(
-        (status = 200, description = "Completed sales", body = SaleListResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_sales_doc() {}

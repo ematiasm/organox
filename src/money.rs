@@ -56,6 +56,14 @@ pub fn format_money(value: Decimal) -> String {
     format!("{:.2}", round_money(value))
 }
 
+/// Quantity without extra zeros: `"12.5"`, not `"12.500"`.
+///
+/// The column is `numeric(12,3)` and `SUM` returns the full scale; displaying
+/// the value raw would leak a storage detail into the HTTP contract.
+pub fn format_quantity(value: Decimal) -> String {
+    value.normalize().to_string()
+}
+
 /// Compute a single document line's rounded subtotal (`ROUND(quantity * unit_price, 2)`
 /// half-away-from-zero).
 pub fn line_subtotal(quantity: Decimal, unit_price: Decimal) -> Decimal {

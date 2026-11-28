@@ -105,6 +105,28 @@ fn request_user_agent(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.to_str().ok())
 }
 
+/// Log in.
+///
+/// Returns the `session` cookie (HttpOnly, SameSite=Strict) and the user.
+///
+/// `429` means the account is locked after failed attempts; includes
+/// `Retry-After` with the remaining seconds.
+#[utoipa::path(
+    post,
+    operation_id = "login_doc",
+    path = "/api/v1/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Session started", body = LoginResponse,
+         headers(("Set-Cookie", description = "session=<token>; HttpOnly; SameSite=Strict"))),
+        (status = 401, description = "Invalid credentials", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 429, description = "Account locked after failed attempts", body = crate::openapi::Problem,
+         content_type = "application/problem+json",
+         headers(("Retry-After", description = "Seconds until retry"))),
+    )
+)]
 async fn login(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -156,6 +178,18 @@ async fn login(
     }
 }
 
+/// End the session on the server, not just the client.
+#[utoipa::path(
+    post,
+    operation_id = "logout_doc",
+    path = "/api/v1/auth/logout",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Session deleted"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn logout(
     State(state): State<AppState>,
     user: AuthUser,
@@ -169,6 +203,18 @@ async fn logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Authenticated user in the current request.
+#[utoipa::path(
+    get,
+    operation_id = "me_doc",
+    path = "/api/v1/auth/me",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Current user", body = UserResponse),
+        (status = 401, description = "No session or expired session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn me(user: AuthUser) -> Json<UserResponse> {
     Json(UserResponse {
         id: user.id(),
@@ -177,6 +223,20 @@ async fn me(user: AuthUser) -> Json<UserResponse> {
     })
 }
 
+/// List every user, ordered by email. Only `owner`.
+#[utoipa::path(
+    get,
+    operation_id = "list_users_doc",
+    path = "/api/v1/users",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Users ordered by email", body = Vec<UserResponse>),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_users(
     State(state): State<AppState>,
     user: AuthUser,
@@ -198,6 +258,25 @@ async fn list_users(
     ))
 }
 
+/// Create a user. Only `owner`.
+#[utoipa::path(
+    post,
+    operation_id = "create_user_doc",
+    path = "/api/v1/users",
+    tag = "auth",
+    request_body = CreateUserRequest,
+    responses(
+        (status = 201, description = "User created", body = CreateUserResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Email is already registered", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input (email or password)", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn create_user(
     State(state): State<AppState>,
     user: AuthUser,
@@ -218,6 +297,32 @@ async fn create_user(
     Ok((StatusCode::CREATED, Json(CreateUserResponse { id })))
 }
 
+/// Change the current user's password.
+///
+/// Requires the current password. The new one must satisfy the password rule.
+/// Every previous session of the user — including the caller's — is revoked
+/// atomically and replaced with a rotated `session` cookie.
+///
+/// `429` means the account or IP is temporarily throttled after failed
+/// attempts; includes `Retry-After` with the remaining seconds.
+#[utoipa::path(
+    post,
+    operation_id = "change_password_doc",
+    path = "/api/v1/auth/password",
+    tag = "auth",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 204, description = "Password changed, previous sessions revoked and caller session rotated",
+         headers(("Set-Cookie", description = "session=<new-token>; HttpOnly; SameSite=Strict"))),
+        (status = 401, description = "Wrong current password or no session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid new password", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 429, description = "Account locked or IP rate limit exceeded", body = crate::openapi::Problem,
+         content_type = "application/problem+json",
+         headers(("Retry-After", description = "Seconds until retry"))),
+    )
+)]
 async fn change_password(
     State(state): State<AppState>,
     user: AuthUser,
@@ -245,6 +350,30 @@ async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Reset another user's password. Only `owner`.
+///
+/// No current password is requested: the owner cannot know it. Every previous
+/// session of the target is revoked atomically; when the owner resets their
+/// own password, a rotated `session` cookie is emitted.
+#[utoipa::path(
+    put,
+    operation_id = "reset_password_doc",
+    path = "/api/v1/users/{id}/password",
+    tag = "auth",
+    request_body = ResetPasswordRequest,
+    params(("id" = Uuid, Path, description = "Target user id")),
+    responses(
+        (status = 204, description = "Password reset, target sessions revoked (and rotated Set-Cookie emitted on self-reset)"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "User not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid new password", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn reset_password(
     State(state): State<AppState>,
     user: AuthUser,
@@ -297,155 +426,6 @@ impl From<AuthError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ---------------------------------------------
-//
-// Stubs exist only for `#[utoipa::path]` to generate the PathItem. The real
-// route is served by the corresponding handler above. They are declared here,
-// alongside the handler, so a signature change breaks compilation in one place.
-
-/// Log in.
-///
-/// Returns the `session` cookie (HttpOnly, SameSite=Strict) and the user.
-///
-/// `429` means the account is locked after failed attempts; includes
-/// `Retry-After` with the remaining seconds.
-#[utoipa::path(
-    post,
-    path = "/api/v1/auth/login",
-    tag = "auth",
-    request_body = LoginRequest,
-    responses(
-        (status = 200, description = "Session started", body = LoginResponse,
-         headers(("Set-Cookie", description = "session=<token>; HttpOnly; SameSite=Strict"))),
-        (status = 401, description = "Invalid credentials", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 429, description = "Account locked after failed attempts", body = crate::openapi::Problem,
-         content_type = "application/problem+json",
-         headers(("Retry-After", description = "Seconds until retry"))),
-    )
-)]
-#[allow(dead_code)]
-fn login_doc() {}
-
-/// End the session on the server, not just the client.
-#[utoipa::path(
-    post,
-    path = "/api/v1/auth/logout",
-    tag = "auth",
-    responses(
-        (status = 204, description = "Session deleted"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn logout_doc() {}
-
-/// Authenticated user in the current request.
-#[utoipa::path(
-    get,
-    path = "/api/v1/auth/me",
-    tag = "auth",
-    responses(
-        (status = 200, description = "Current user", body = UserResponse),
-        (status = 401, description = "No session or expired session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn me_doc() {}
-
-/// List every user, ordered by email. Only `owner`.
-#[utoipa::path(
-    get,
-    path = "/api/v1/users",
-    tag = "auth",
-    responses(
-        (status = 200, description = "Users ordered by email", body = Vec<UserResponse>),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_users_doc() {}
-
-/// Create a user. Only `owner`.
-#[utoipa::path(
-    post,
-    path = "/api/v1/users",
-    tag = "auth",
-    request_body = CreateUserRequest,
-    responses(
-        (status = 201, description = "User created", body = CreateUserResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Email is already registered", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input (email or password)", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn create_user_doc() {}
-
-/// Change the current user's password.
-///
-/// Requires the current password. The new one must satisfy the password rule.
-/// Every previous session of the user — including the caller's — is revoked
-/// atomically and replaced with a rotated `session` cookie.
-///
-/// `429` means the account or IP is temporarily throttled after failed
-/// attempts; includes `Retry-After` with the remaining seconds.
-#[utoipa::path(
-    post,
-    path = "/api/v1/auth/password",
-    tag = "auth",
-    request_body = ChangePasswordRequest,
-    responses(
-        (status = 204, description = "Password changed, previous sessions revoked and caller session rotated",
-         headers(("Set-Cookie", description = "session=<new-token>; HttpOnly; SameSite=Strict"))),
-        (status = 401, description = "Wrong current password or no session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid new password", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 429, description = "Account locked or IP rate limit exceeded", body = crate::openapi::Problem,
-         content_type = "application/problem+json",
-         headers(("Retry-After", description = "Seconds until retry"))),
-    )
-)]
-#[allow(dead_code)]
-fn change_password_doc() {}
-
-/// Reset another user's password. Only `owner`.
-///
-/// No current password is requested: the owner cannot know it. Every previous
-/// session of the target is revoked atomically; when the owner resets their
-/// own password, a rotated `session` cookie is emitted.
-#[utoipa::path(
-    put,
-    path = "/api/v1/users/{id}/password",
-    tag = "auth",
-    request_body = ResetPasswordRequest,
-    params(("id" = Uuid, Path, description = "Target user id")),
-    responses(
-        (status = 204, description = "Password reset, target sessions revoked (and rotated Set-Cookie emitted on self-reset)"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 403, description = "Role does not permit managing users", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "User not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid new password", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn reset_password_doc() {}
 
 // --- Tests --------------------------------------------------------------
 

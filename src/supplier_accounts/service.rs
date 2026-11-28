@@ -11,6 +11,7 @@ use rust_decimal::Decimal;
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
+use crate::money::MAX_AMOUNT;
 use crate::payments::model::WalletMovementKind;
 use crate::payments::repository as wallets;
 use crate::supplier_accounts::model::{
@@ -104,11 +105,6 @@ impl From<wallets::RepoError> for SupplierAccountError {
     }
 }
 
-/// Exact capacity of `numeric(14, 2)`: 12 integer digits and 2 decimals.
-fn max_amount() -> Decimal {
-    crate::money::MAX_AMOUNT
-}
-
 /// Boundary money validation in precedence order: sign, precision, magnitude.
 fn validate_amount(amount: Decimal) -> Result<(), SupplierAccountError> {
     if amount <= Decimal::ZERO {
@@ -121,8 +117,8 @@ fn validate_amount(amount: Decimal) -> Result<(), SupplierAccountError> {
             RepoError::TooManyDecimals { amount },
         ));
     }
-    if amount > max_amount() {
-        return Err(SupplierAccountError::AmountTooLarge { max: max_amount() });
+    if amount > MAX_AMOUNT {
+        return Err(SupplierAccountError::AmountTooLarge { max: MAX_AMOUNT });
     }
     Ok(())
 }
@@ -572,7 +568,7 @@ mod tests {
     #[test]
     fn validate_amount_enforces_sign_precision_and_magnitude() {
         assert!(validate_amount(dec!(0.01)).is_ok());
-        assert!(validate_amount(max_amount()).is_ok());
+        assert!(validate_amount(MAX_AMOUNT).is_ok());
         assert!(matches!(
             validate_amount(dec!(0.00)),
             Err(SupplierAccountError::Validation(
@@ -592,7 +588,7 @@ mod tests {
             ))
         ));
         assert!(matches!(
-            validate_amount(max_amount() + dec!(0.01)),
+            validate_amount(MAX_AMOUNT + dec!(0.01)),
             Err(SupplierAccountError::AmountTooLarge { .. })
         ));
     }

@@ -11,28 +11,21 @@
 //! - `GET /api/v1/customers` and `GET /api/v1/customers/{id}` expose `balance`,
 //!   `available_credit`, and `credit_limit`.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use organox::AppState;
+use common::{app, test_password};
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
 use organox::auth::{password, validation};
 use organox::payments::repository as wallets;
-use organox::routes::router;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
-
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
-}
 
 /// Test-only helper to age a completed sale for receivables aging-bucket tests.
 /// Temporarily disables the closed-sale immutability trigger inside a single

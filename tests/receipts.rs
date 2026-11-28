@@ -8,30 +8,22 @@
 //! what only HTTP can prove is the status codes, the JSON contract and the
 //! 201/200 replay split.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use organox::AppState;
+use common::{app, test_password};
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
 use organox::auth::{password, validation};
 use organox::customer_accounts::repository as ledger;
 use organox::payments::repository as wallets;
-use organox::routes::router;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
-
-/// A password generated per test run, so no credential is written down.
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
-}
 
 async fn seed_owner(pool: &PgPool) -> (Uuid, String) {
     let password = test_password();

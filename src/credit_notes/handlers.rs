@@ -113,6 +113,35 @@ pub struct SaleCreditNotesResponse {
 
 // --- Handlers -----------------------------------------------------------
 
+/// Return part or all of a charged sale.
+///
+/// Creates a credit note: the goods rejoin stock and the money leaves the
+/// wallets that received the payment, in proportion to it. The sale is never
+/// edited; a sale can be returned in several notes, but the total returned per
+/// product can never exceed what was sold and the refunds can never exceed
+/// what the sale charged. An optional idempotency key makes a retry return the
+/// original note with 200 instead of issuing a duplicate.
+#[utoipa::path(
+    post,
+    operation_id = "create_credit_note_doc",
+    path = "/api/v1/sales/{id}/credit-notes",
+    tag = "credit_notes",
+    params(("id" = Uuid, Path, description = "Sale ID")),
+    request_body = CreateCreditNoteRequest,
+    responses(
+        (status = 201, description = "Credit note issued", body = CreditNoteResponse),
+        (status = 200, description = "Existing credit note returned for a repeated idempotency key",
+         body = CreditNoteResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Sale not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Sale not completed, more than what can still be returned, or refunds that would cross what the sale charged; the detail names the money allowance left",
+         body = crate::openapi::Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Invalid reason, key, line or quantity",
+         body = crate::openapi::Problem, content_type = "application/problem+json"),
+    )
+)]
 async fn create_credit_note(
     State(state): State<AppState>,
     user: AuthUser,
@@ -148,6 +177,27 @@ async fn create_credit_note(
     Ok((status, Json(to_response(note.detail))))
 }
 
+/// The credits of a sale: what was charged, what came back and where the money
+/// of each note went. A draft has no stored total, so the charged lines decide
+/// it; the refunded total is the sum of the notes already issued, and
+/// `refundable_total` is the money allowance create still enforces
+/// (`sale_total − refunded_total`). Quantities and money can run out together:
+/// once the allowance reaches zero, further notes are refused even if units
+/// remain.
+#[utoipa::path(
+    get,
+    operation_id = "get_credit_notes_doc",
+    path = "/api/v1/sales/{id}/credit-notes",
+    tag = "credit_notes",
+    params(("id" = Uuid, Path, description = "Sale ID")),
+    responses(
+        (status = 200, description = "Credits of the sale", body = SaleCreditNotesResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Sale not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn sale_credit_notes(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -181,12 +231,7 @@ async fn sale_credit_notes(
 
 // --- Mapping ------------------------------------------------------------
 
-use crate::money::format_money;
-
-/// Quantities without extra zeros (`"2"`, `"1.5"`).
-fn format_quantity(value: Decimal) -> String {
-    value.normalize().to_string()
-}
+use crate::money::{format_money, format_quantity};
 
 fn to_response(detail: CreditNoteDetail) -> CreditNoteResponse {
     CreditNoteResponse {
@@ -254,59 +299,3 @@ impl From<CreditNotesError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ---------------------------------------------
-
-/// Return part or all of a charged sale.
-///
-/// Creates a credit note: the goods rejoin stock and the money leaves the
-/// wallets that received the payment, in proportion to it. The sale is never
-/// edited; a sale can be returned in several notes, but the total returned per
-/// product can never exceed what was sold and the refunds can never exceed
-/// what the sale charged. An optional idempotency key makes a retry return the
-/// original note with 200 instead of issuing a duplicate.
-#[utoipa::path(
-    post,
-    path = "/api/v1/sales/{id}/credit-notes",
-    tag = "credit_notes",
-    params(("id" = Uuid, Path, description = "Sale ID")),
-    request_body = CreateCreditNoteRequest,
-    responses(
-        (status = 201, description = "Credit note issued", body = CreditNoteResponse),
-        (status = 200, description = "Existing credit note returned for a repeated idempotency key",
-         body = CreditNoteResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Sale not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Sale not completed, more than what can still be returned, or refunds that would cross what the sale charged; the detail names the money allowance left",
-         body = crate::openapi::Problem, content_type = "application/problem+json"),
-        (status = 422, description = "Invalid reason, key, line or quantity",
-         body = crate::openapi::Problem, content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn create_credit_note_doc() {}
-
-/// The credits of a sale: what was charged, what came back and where the money
-/// of each note went. A draft has no stored total, so the charged lines decide
-/// it; the refunded total is the sum of the notes already issued, and
-/// `refundable_total` is the money allowance create still enforces
-/// (`sale_total − refunded_total`). Quantities and money can run out together:
-/// once the allowance reaches zero, further notes are refused even if units
-/// remain.
-#[utoipa::path(
-    get,
-    path = "/api/v1/sales/{id}/credit-notes",
-    tag = "credit_notes",
-    params(("id" = Uuid, Path, description = "Sale ID")),
-    responses(
-        (status = 200, description = "Credits of the sale", body = SaleCreditNotesResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Sale not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_credit_notes_doc() {}

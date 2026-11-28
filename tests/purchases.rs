@@ -10,9 +10,11 @@
 //!  * completed and cancelled purchases are immutable (`409`);
 //!  * paginated list with status/supplier filters and RFC 7807 HTTP contract.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use organox::AppState;
+use common::{app, test_password};
 use organox::auth::model::Role;
 use organox::auth::repository::{self as auth_repo, NewUser};
 use organox::auth::{password, validation};
@@ -23,7 +25,6 @@ use organox::payments::repository::{self as wallet_repo, NewWalletMovement};
 use organox::payments::service::{self as payments, CreateMethodInput, CreateWalletInput};
 use organox::purchases::model::{PurchasePaymentInput, PurchaseStatus};
 use organox::purchases::service::{self as purchases, PurchaseError};
-use organox::routes::router;
 use organox::supplier_accounts::model::SupplierAccountEntryKind;
 use organox::supplier_accounts::repository::{self as supplier_accounts, NewSupplierPayment};
 use organox::suppliers::service::{self as suppliers, CreateSupplierInput, UpdateSupplierInput};
@@ -33,14 +34,6 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
-
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
-}
 
 async fn seed_user(pool: &PgPool, email: &str, role: Role) -> (Uuid, String) {
     let password = test_password();

@@ -3,16 +3,17 @@
 //! Each test runs against an ephemeral database created by `#[sqlx::test]`
 //! and exercises the in-memory `Router` without a port or server process.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use organox::AppState;
+use common::{app, test_password};
 use organox::auth::model::Role;
 use organox::auth::password::{self, PasswordError};
 use organox::auth::repository::{self, NewUser, RepoError};
 use organox::auth::service::{self, AuthError, LoginOutcome, UpsertOutcome};
 use organox::auth::validation::{self, MAX_PASSWORD_BYTES, ValidationError};
 use organox::ratelimit::{AccountLimiter, AccountPolicy};
-use organox::routes::router;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -20,18 +21,9 @@ use std::time::{Duration, Instant};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-/// A password generated per test run, so no credential is written down.
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
 /// A short password for the rejection case, under `MIN_PASSWORD_LEN`.
 fn short_password() -> String {
     test_password()[..5].to_string()
-}
-
-fn app(pool: sqlx::PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
 }
 
 /// Inserts a user directly into the database, without HTTP. Returns the
