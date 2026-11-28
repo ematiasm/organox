@@ -369,6 +369,48 @@ async fn add_update_and_remove_items_recalculate_total(pool: PgPool) {
 
 // --- Supplier attachment and completion ---------------------------------
 
+/// A note is bounded at storage, not at the operator: a 600-character note is
+/// truncated to the documented 500 rather than refusing the purchase that
+/// already happened.
+#[sqlx::test]
+async fn a_long_note_is_truncated_to_the_documented_bound(pool: PgPool) {
+    let (actor, _) = seed_user(&pool, "actor@organox.test", Role::Manager).await;
+    let supplier_id = seed_supplier(&pool, "Molino Norte").await;
+    let flour = seed_good(&pool, "Flour").await;
+    let (_, cash_method) = seed_wallet_and_method(&pool, "Cash Box", "Cash").await;
+
+    let (draft_id, _) = purchases::open_draft(&pool, actor).await.unwrap();
+    purchases::set_supplier(&pool, draft_id, Some(supplier_id))
+        .await
+        .unwrap();
+    purchases::add_item(&pool, draft_id, flour, dec!(1), dec!(10.00))
+        .await
+        .unwrap();
+
+    let long_note = "x".repeat(600);
+    purchases::complete(
+        &pool,
+        draft_id,
+        actor,
+        &[PurchasePaymentInput {
+            payment_method_id: cash_method,
+            amount: dec!(10.00),
+        }],
+        Decimal::ZERO,
+        Some(&long_note),
+    )
+    .await
+    .unwrap();
+
+    let closed = purchases::get_purchase(&pool, draft_id).await.unwrap();
+    let stored = closed.note.as_deref().unwrap_or_default();
+    assert_eq!(
+        stored.chars().count(),
+        500,
+        "the stored note keeps its bound, not the operator's length"
+    );
+}
+
 #[sqlx::test]
 async fn completes_a_purchase_atomically_adding_stock_and_deducting_wallets(pool: PgPool) {
     let (actor, _) = seed_user(&pool, "actor@organox.test", Role::Manager).await;

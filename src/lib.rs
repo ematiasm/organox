@@ -22,6 +22,7 @@ pub mod search;
 pub mod supplier_accounts;
 pub mod suppliers;
 pub mod telemetry;
+pub mod text;
 
 use sqlx::PgPool;
 use std::path::PathBuf;

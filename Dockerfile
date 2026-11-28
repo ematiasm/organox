@@ -18,7 +18,9 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- 2. Backend: the release binaries ----
-FROM rust:1-bookworm AS backend
+# Pinned to the minor this workspace builds and tests with: `1-bookworm`
+# silently rolls forward and turns a green build into a mystery.
+FROM rust:1.98-bookworm AS backend
 WORKDIR /app
 
 # The `sqlx::query!` macros are checked against the committed `.sqlx/` cache

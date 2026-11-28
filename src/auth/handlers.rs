@@ -100,9 +100,14 @@ pub struct ResetPasswordRequest {
 // --- Handlers -----------------------------------------------------------
 
 fn request_user_agent(headers: &HeaderMap) -> Option<&str> {
-    headers
+    let agent = headers
         .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.to_str().ok())?;
+    // The session table does not grow on the client's schedule.
+    Some(crate::text::truncate_chars(
+        agent,
+        crate::text::MAX_USER_AGENT_LEN,
+    ))
 }
 
 /// Log in.

@@ -32,8 +32,8 @@ impl SaleStatus {
     }
 
     /// Only a draft is editable. A completed sale is a fact, and a fact is not
-    /// corrected: a credit note is issued (not yet implemented, which is why
-    /// `cancelled` applies only to drafts).
+    /// corrected: a credit note is issued (`credit_notes`), which is why
+    /// `cancelled` applies only to drafts.
     pub fn is_editable(self) -> bool {
         matches!(self, SaleStatus::Draft)
     }
