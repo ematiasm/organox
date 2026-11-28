@@ -295,6 +295,64 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_names_its_own_recording_path() {
+        // Only the `purchase_refund` phrase is pinned through HTTP; a wrong
+        // recording path in any other kind must not be able to slip through.
+        let table = [
+            (
+                WalletMovementKind::SalePayment,
+                Some("a sale payment is recorded by charging a sale, not by hand"),
+            ),
+            (
+                WalletMovementKind::SaleRefund,
+                Some("a sale refund is recorded by a credit note, not by hand"),
+            ),
+            (
+                WalletMovementKind::AccountPayment,
+                Some(
+                    "an account payment is recorded by collecting against a customer's account, not by hand",
+                ),
+            ),
+            (
+                WalletMovementKind::AccountPaymentRefund,
+                Some(
+                    "an account payment refund is recorded by refunding customer credit, not by hand",
+                ),
+            ),
+            (
+                WalletMovementKind::PurchasePayment,
+                Some("a purchase payment is recorded by completing a purchase, not by hand"),
+            ),
+            (
+                WalletMovementKind::PurchaseRefund,
+                Some("a purchase refund is recorded by a purchase return, not by hand"),
+            ),
+            (
+                WalletMovementKind::SupplierAccountPayment,
+                Some(
+                    "a supplier account payment is recorded by paying against a supplier's account, not by hand",
+                ),
+            ),
+            (
+                WalletMovementKind::SupplierAccountRefund,
+                Some(
+                    "a supplier account refund is recorded by refunding supplier credit, not by hand",
+                ),
+            ),
+            (WalletMovementKind::Expense, None),
+            (WalletMovementKind::AdjustmentIn, None),
+            (WalletMovementKind::AdjustmentOut, None),
+        ];
+        for (kind, phrase) in table {
+            assert_eq!(
+                kind.manual_entry_rejection(),
+                phrase,
+                "{kind} must name its own recording path"
+            );
+        }
+    }
+
+    #[test]
     fn kinds_round_trip_through_their_wire_value() {
         for kind in [
             WalletMovementKind::SalePayment,
