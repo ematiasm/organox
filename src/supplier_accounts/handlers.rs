@@ -361,6 +361,37 @@ pub struct PayablesResponse {
 
 // --- Handlers -----------------------------------------------------------
 
+/// Record a payment against a supplier's account.
+///
+/// One request, one transaction: money leaves the payment method's wallet as a
+/// `supplier_account_payment` movement carrying the supplier and the method,
+/// and the supplier's ledger records one `payment` entry linked to it.
+/// Allocations are explicit — the server never invents them — and any
+/// unallocated remainder becomes unapplied advance credit with the supplier.
+/// An optional idempotency key makes a retry return the first payment with
+/// `200` instead of paying twice.
+#[utoipa::path(
+    post,
+    operation_id = "record_payment_doc",
+    path = "/api/v1/suppliers/{id}/payments",
+    tag = "supplier_accounts",
+    params(("id" = Uuid, Path, description = "Supplier ID")),
+    request_body = RecordSupplierPaymentRequest,
+    responses(
+        (status = 201, description = "Payment recorded: wallet outflow and ledger entry written together",
+         body = SupplierPaymentResponse),
+        (status = 200, description = "Existing payment returned for a repeated idempotency key; nothing was written",
+         body = SupplierPaymentResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown supplier, or an allocation names an unknown purchase", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Busy supplier account, or idempotency key already used by another entry kind", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Unknown or inactive payment method, invalid amount, overlong idempotency key, or invalid allocations", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn record_payment(
     State(state): State<AppState>,
     user: AuthUser,
@@ -400,6 +431,36 @@ async fn record_payment(
     Ok((status, Json(to_payment_response(recorded))))
 }
 
+/// Record refunded advance credit returned by a supplier through a wallet
+/// inflow.
+///
+/// One request, one transaction: a `supplier_account_refund` inflow enters the
+/// payment method's wallet and a `credit_refund` entry moves the supplier's
+/// balance toward zero. Refused unless `amount <= min(unapplied_credit, -balance)`.
+/// An optional idempotency key returns the first refund with `200` instead of
+/// booking the inflow twice.
+#[utoipa::path(
+    post,
+    operation_id = "refund_credit_doc",
+    path = "/api/v1/suppliers/{id}/credit-refunds",
+    tag = "supplier_accounts",
+    params(("id" = Uuid, Path, description = "Supplier ID")),
+    request_body = RefundSupplierCreditRequest,
+    responses(
+        (status = 201, description = "Credit refund recorded: wallet inflow and ledger entry written together",
+         body = SupplierCreditRefundResponse),
+        (status = 200, description = "Existing credit refund returned for a repeated idempotency key; nothing was written",
+         body = SupplierCreditRefundResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Busy supplier account, or idempotency key already used by another entry kind", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Unknown or inactive payment method, blank note, invalid amount, or amount exceeding refundable credit", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn refund_credit(
     State(state): State<AppState>,
     user: AuthUser,
@@ -427,6 +488,31 @@ async fn refund_credit(
     Ok((status, Json(to_refund_response(refunded))))
 }
 
+/// Record a manual payable adjustment on a supplier's account.
+///
+/// Writes `adjustment_in` or `adjustment_out` without touching any wallet.
+/// Both directions require the balance to stay `>= 0`: an adjustment may load
+/// an opening payable or correct a balance, never create or consume advance
+/// credit.
+#[utoipa::path(
+    post,
+    operation_id = "record_adjustment_doc",
+    path = "/api/v1/suppliers/{id}/adjustments",
+    tag = "supplier_accounts",
+    params(("id" = Uuid, Path, description = "Supplier ID")),
+    request_body = RecordSupplierAdjustmentRequest,
+    responses(
+        (status = 201, description = "Adjustment recorded", body = SupplierAdjustmentResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "The supplier account is busy, retry", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Blank note, invalid amount, or adjustment crossing zero", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn record_adjustment(
     State(state): State<AppState>,
     user: AuthUser,
@@ -448,6 +534,30 @@ async fn record_adjustment(
     Ok((StatusCode::CREATED, Json(to_adjustment_response(recorded))))
 }
 
+/// Supplier account statement.
+///
+/// Returns ledger entries oldest first with their running balance, the
+/// supplier's current balance and unapplied credit, and every completed
+/// purchase with an open payable — all read from one consistent snapshot.
+/// Entries are bounded with `limit` (default 100, clamped to 1..=500) and
+/// `offset` (default 0), while `entries_total` always reports the whole ledger.
+#[utoipa::path(
+    get,
+    operation_id = "get_account_statement_doc",
+    path = "/api/v1/suppliers/{id}/account",
+    tag = "supplier_accounts",
+    params(
+        ("id" = Uuid, Path, description = "Supplier ID"),
+        ListStatementQuery,
+    ),
+    responses(
+        (status = 200, description = "Supplier account statement", body = SupplierAccountResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn get_account_statement(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -461,6 +571,27 @@ async fn get_account_statement(
     Ok(Json(to_account_response(statement)))
 }
 
+/// Payment write log for one supplier, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
+#[utoipa::path(
+    get,
+    operation_id = "list_payments_doc",
+    path = "/api/v1/suppliers/{id}/payments",
+    tag = "supplier_accounts",
+    params(
+        ("id" = Uuid, Path, description = "Supplier ID"),
+        ListSupplierAccountLogQuery,
+    ),
+    responses(
+        (status = 200, description = "Payments recorded for this supplier", body = [SupplierPaymentLogResponse]),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_payments(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -473,6 +604,27 @@ async fn list_payments(
     Ok(Json(payments.into_iter().map(to_payment_log).collect()))
 }
 
+/// Manual payable adjustment write log for one supplier, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the log.
+#[utoipa::path(
+    get,
+    operation_id = "list_adjustments_doc",
+    path = "/api/v1/suppliers/{id}/adjustments",
+    tag = "supplier_accounts",
+    params(
+        ("id" = Uuid, Path, description = "Supplier ID"),
+        ListSupplierAccountLogQuery,
+    ),
+    responses(
+        (status = 200, description = "Manual adjustments recorded for this supplier", body = [SupplierAdjustmentLogResponse]),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_adjustments(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -487,6 +639,26 @@ async fn list_adjustments(
     ))
 }
 
+/// Accounts payable report across every supplier with an open position.
+///
+/// Lists suppliers whose `balance != 0` or `unapplied_credit != 0`, ordered by
+/// highest balance first, with open-purchase aging buckets computed from each
+/// purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
+/// bounded with `limit` (default 50, clamped to 1..=200) and `offset`
+/// (default 0), while totals, aging, and `items_total` always describe the
+/// whole report.
+#[utoipa::path(
+    get,
+    operation_id = "list_payables_doc",
+    path = "/api/v1/accounts/payables",
+    tag = "supplier_accounts",
+    params(ListReportQuery),
+    responses(
+        (status = 200, description = "Open supplier positions and aging buckets", body = PayablesResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_payables(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -678,194 +850,6 @@ impl From<SupplierAccountError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ----------------------------------------------
-
-/// Record a payment against a supplier's account.
-///
-/// One request, one transaction: money leaves the payment method's wallet as a
-/// `supplier_account_payment` movement carrying the supplier and the method,
-/// and the supplier's ledger records one `payment` entry linked to it.
-/// Allocations are explicit — the server never invents them — and any
-/// unallocated remainder becomes unapplied advance credit with the supplier.
-/// An optional idempotency key makes a retry return the first payment with
-/// `200` instead of paying twice.
-#[utoipa::path(
-    post,
-    path = "/api/v1/suppliers/{id}/payments",
-    tag = "supplier_accounts",
-    params(("id" = Uuid, Path, description = "Supplier ID")),
-    request_body = RecordSupplierPaymentRequest,
-    responses(
-        (status = 201, description = "Payment recorded: wallet outflow and ledger entry written together",
-         body = SupplierPaymentResponse),
-        (status = 200, description = "Existing payment returned for a repeated idempotency key; nothing was written",
-         body = SupplierPaymentResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown supplier, or an allocation names an unknown purchase", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Busy supplier account, or idempotency key already used by another entry kind", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Unknown or inactive payment method, invalid amount, overlong idempotency key, or invalid allocations", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn record_payment_doc() {}
-
-/// Record refunded advance credit returned by a supplier through a wallet
-/// inflow.
-///
-/// One request, one transaction: a `supplier_account_refund` inflow enters the
-/// payment method's wallet and a `credit_refund` entry moves the supplier's
-/// balance toward zero. Refused unless `amount <= min(unapplied_credit, -balance)`.
-/// An optional idempotency key returns the first refund with `200` instead of
-/// booking the inflow twice.
-#[utoipa::path(
-    post,
-    path = "/api/v1/suppliers/{id}/credit-refunds",
-    tag = "supplier_accounts",
-    params(("id" = Uuid, Path, description = "Supplier ID")),
-    request_body = RefundSupplierCreditRequest,
-    responses(
-        (status = 201, description = "Credit refund recorded: wallet inflow and ledger entry written together",
-         body = SupplierCreditRefundResponse),
-        (status = 200, description = "Existing credit refund returned for a repeated idempotency key; nothing was written",
-         body = SupplierCreditRefundResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Busy supplier account, or idempotency key already used by another entry kind", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Unknown or inactive payment method, blank note, invalid amount, or amount exceeding refundable credit", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn refund_credit_doc() {}
-
-/// Record a manual payable adjustment on a supplier's account.
-///
-/// Writes `adjustment_in` or `adjustment_out` without touching any wallet.
-/// Both directions require the balance to stay `>= 0`: an adjustment may load
-/// an opening payable or correct a balance, never create or consume advance
-/// credit.
-#[utoipa::path(
-    post,
-    path = "/api/v1/suppliers/{id}/adjustments",
-    tag = "supplier_accounts",
-    params(("id" = Uuid, Path, description = "Supplier ID")),
-    request_body = RecordSupplierAdjustmentRequest,
-    responses(
-        (status = 201, description = "Adjustment recorded", body = SupplierAdjustmentResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "The supplier account is busy, retry", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Blank note, invalid amount, or adjustment crossing zero", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn record_adjustment_doc() {}
-
-/// Supplier account statement.
-///
-/// Returns ledger entries oldest first with their running balance, the
-/// supplier's current balance and unapplied credit, and every completed
-/// purchase with an open payable — all read from one consistent snapshot.
-/// Entries are bounded with `limit` (default 100, clamped to 1..=500) and
-/// `offset` (default 0), while `entries_total` always reports the whole ledger.
-#[utoipa::path(
-    get,
-    path = "/api/v1/suppliers/{id}/account",
-    tag = "supplier_accounts",
-    params(
-        ("id" = Uuid, Path, description = "Supplier ID"),
-        ListStatementQuery,
-    ),
-    responses(
-        (status = 200, description = "Supplier account statement", body = SupplierAccountResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_account_statement_doc() {}
-
-/// Payment write log for one supplier, newest first.
-///
-/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
-/// to page through the log.
-#[utoipa::path(
-    get,
-    path = "/api/v1/suppliers/{id}/payments",
-    tag = "supplier_accounts",
-    params(
-        ("id" = Uuid, Path, description = "Supplier ID"),
-        ListSupplierAccountLogQuery,
-    ),
-    responses(
-        (status = 200, description = "Payments recorded for this supplier", body = [SupplierPaymentLogResponse]),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_payments_doc() {}
-
-/// Manual payable adjustment write log for one supplier, newest first.
-///
-/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
-/// to page through the log.
-#[utoipa::path(
-    get,
-    path = "/api/v1/suppliers/{id}/adjustments",
-    tag = "supplier_accounts",
-    params(
-        ("id" = Uuid, Path, description = "Supplier ID"),
-        ListSupplierAccountLogQuery,
-    ),
-    responses(
-        (status = 200, description = "Manual adjustments recorded for this supplier", body = [SupplierAdjustmentLogResponse]),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Unknown supplier", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_adjustments_doc() {}
-
-/// Accounts payable report across every supplier with an open position.
-///
-/// Lists suppliers whose `balance != 0` or `unapplied_credit != 0`, ordered by
-/// highest balance first, with open-purchase aging buckets computed from each
-/// purchase's completion date (`0-30`, `31-60`, `61-90`, `90+`). `items` is
-/// bounded with `limit` (default 50, clamped to 1..=200) and `offset`
-/// (default 0), while totals, aging, and `items_total` always describe the
-/// whole report.
-#[utoipa::path(
-    get,
-    path = "/api/v1/accounts/payables",
-    tag = "supplier_accounts",
-    params(ListReportQuery),
-    responses(
-        (status = 200, description = "Open supplier positions and aging buckets", body = PayablesResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_payables_doc() {}
 
 #[cfg(test)]
 mod tests {
