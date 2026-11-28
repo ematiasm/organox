@@ -688,29 +688,12 @@ fn map_apply_error(err: crate::customer_accounts::repository::RepoError) -> Repo
     }
 }
 
-/// Complete the sale: validate stock, write movements, charge the account
-/// part and close it.
-///
-/// All in ONE transaction with `SELECT ... FOR UPDATE` per product. This is the
-/// same discipline as `record_movement`: otherwise two registers can sell the
-/// last unit at the same time.
-///
-/// `on_account` is the part of the total charged to the customer's account
-/// instead of the wallets: zero for an ordinary cash sale, at most the total,
-/// and written as one `sale_charge` in the customer's ledger inside this same
-/// transaction.
-pub async fn complete(
-    pool: &PgPool,
-    sale_id: Uuid,
-    actor: Uuid,
-    payments_input: &[SalePaymentInput],
-    on_account: Decimal,
-) -> Result<CompletedSale, RepoError> {
-    // The account takes debt, it does not give change: a negative amount is a
-    // request to mint credit, not a payment. And a third decimal is something
-    // `numeric(14,2)` cannot hold — rejected, never rounded, the same rule the
-    // payments follow. Checked before anything is read: neither depends on
-    // the sale, and rejecting here leaves nothing to roll back.
+/// The account takes debt, it does not give change: a negative amount is a
+/// request to mint credit, not a payment. And a third decimal is something
+/// `numeric(14,2)` cannot hold — rejected, never rounded, the same rule the
+/// payments follow. Checked before anything is read: neither depends on
+/// the sale, and rejecting here leaves nothing to roll back.
+fn validate_on_account(on_account: Decimal) -> Result<(), RepoError> {
     if on_account < Decimal::ZERO {
         return Err(RepoError::OnAccountNegative);
     }
@@ -721,14 +704,22 @@ pub async fn complete(
         return Err(RepoError::OnAccountTooLarge);
     }
 
-    let mut tx = pool.begin().await?;
+    Ok(())
+}
 
+/// Lock the sale row and confirm the draft can still be completed. Returns
+/// the customer the draft carries, if any: the on-account gate and the
+/// account charge below both need it.
+async fn lock_draft(
+    conn: &mut sqlx::PgConnection,
+    sale_id: Uuid,
+) -> Result<Option<Uuid>, RepoError> {
     let sale_row = sqlx::query!(
         r#"SELECT status AS "status: SaleStatus", customer_id
            FROM sales WHERE id = $1 FOR UPDATE"#,
         sale_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or(RepoError::NotFound)?;
 
@@ -736,6 +727,25 @@ pub async fn complete(
         return Err(RepoError::NotEditable);
     }
 
+    Ok(sale_row.customer_id)
+}
+
+/// A line of the draft as completion reads it: what to deduct, at the price
+/// frozen when the line was added, plus the name `InsufficientStock`
+/// reports.
+struct DraftLine {
+    product_id: Uuid,
+    quantity: Decimal,
+    unit_price: Decimal,
+    name: String,
+}
+
+/// The draft's lines in product order, so the product locks below are
+/// always acquired sorted by id.
+async fn load_draft_lines(
+    conn: &mut sqlx::PgConnection,
+    sale_id: Uuid,
+) -> Result<Vec<DraftLine>, RepoError> {
     let items = sqlx::query!(
         r#"
         SELECT si.product_id, si.quantity, si.unit_price, p.name
@@ -746,18 +756,33 @@ pub async fn complete(
         "#,
         sale_id
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut *conn)
     .await?;
 
     if items.is_empty() {
         return Err(RepoError::EmptySale);
     }
 
-    // Pass 1: lock each product, check stock and compute the total. Nothing is
-    // written yet, so a rejected payment leaves no trace at all.
+    Ok(items
+        .into_iter()
+        .map(|item| DraftLine {
+            product_id: item.product_id,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            name: item.name,
+        })
+        .collect())
+}
+
+/// Pass 1: lock each product, check stock and compute the total. Nothing is
+/// written yet, so a rejected payment leaves no trace at all.
+async fn lock_products_and_check_stock(
+    conn: &mut sqlx::PgConnection,
+    items: &[DraftLine],
+) -> Result<Decimal, RepoError> {
     let mut total = Decimal::ZERO;
 
-    for item in &items {
+    for item in items {
         // Lock the product row: serialize concurrent outflows for this product,
         // as in the stock ledger.
         // `query_scalar!` because `query!` with a SELECT returning rows
@@ -766,7 +791,7 @@ pub async fn complete(
             "SELECT id FROM products WHERE id = $1 FOR UPDATE",
             item.product_id
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?;
 
         let available: Decimal = sqlx::query_scalar!(
@@ -786,7 +811,7 @@ pub async fn complete(
             "#,
             item.product_id
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut *conn)
         .await?;
 
         if available < item.quantity {
@@ -803,40 +828,50 @@ pub async fn complete(
             crate::money::checked_add_amount(total, subtotal).ok_or(RepoError::TotalTooLarge)?;
     }
 
-    // The money must add up to the total the server computed — the wallets'
-    // part plus the account's part — and every method must still be usable.
-    // Checked before any write.
-    let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
+    Ok(total)
+}
 
-    // An on-account part is debt, and debt is extended only within what the
-    // registry still vouches for: the draft must carry a customer, that
-    // customer must be active, and the exposure the sale would leave must fit
-    // the customer's credit limit. One gate, `authorize_credit`, decides all
-    // three under the customer's lock, before any write, so a rejection
-    // leaves no trace and a deactivation racing the checkout cannot slip
-    // between the gate and the charge. The gate runs ONLY when something is
-    // on account: a customer deactivated mid-draft must not block a sale the
-    // till collects in full.
-    let charge_customer = if on_account > Decimal::ZERO {
-        let customer_id = sale_row
-            .customer_id
-            .ok_or(RepoError::OnAccountNeedsCustomer)?;
+/// Decide whether this completion charges the customer's account, and when
+/// it does, authorize the charge under the customer's lock. Returns the
+/// customer to charge, or `None` when nothing is on account.
+///
+/// An on-account part is debt, and debt is extended only within what the
+/// registry still vouches for: the draft must carry a customer, that
+/// customer must be active, and the exposure the sale would leave must fit
+/// the customer's credit limit. One gate, `authorize_credit`, decides all
+/// three under the customer's lock, before any write, so a rejection
+/// leaves no trace and a deactivation racing the checkout cannot slip
+/// between the gate and the charge. The gate runs ONLY when something is
+/// on account: a customer deactivated mid-draft must not block a sale the
+/// till collects in full.
+async fn authorize_on_account(
+    conn: &mut sqlx::PgConnection,
+    customer_id: Option<Uuid>,
+    on_account: Decimal,
+) -> Result<Option<Uuid>, RepoError> {
+    if on_account > Decimal::ZERO {
+        let customer_id = customer_id.ok_or(RepoError::OnAccountNeedsCustomer)?;
 
-        crate::customer_accounts::repository::authorize_credit(&mut tx, customer_id, on_account)
+        crate::customer_accounts::repository::authorize_credit(&mut *conn, customer_id, on_account)
             .await
             .map_err(map_authorize_error)?;
 
-        Some(customer_id)
+        Ok(Some(customer_id))
     } else {
-        None
-    };
+        Ok(None)
+    }
+}
 
-    let note = format!("Sale {}", &sale_id.to_string()[..8]);
-
-    // Pass 2: the stock movements. This ledger is the ONLY thing that deducts:
-    // the `sales` table has no stock column.
+/// Pass 2: the stock movements. This ledger is the ONLY thing that deducts:
+/// the `sales` table has no stock column.
+async fn insert_stock_movements(
+    conn: &mut sqlx::PgConnection,
+    items: &[DraftLine],
+    note: &str,
+    actor: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
     let mut movement_ids = Vec::with_capacity(items.len());
-    for item in &items {
+    for item in items {
         // The stock movement is the ONLY thing that deducts: the `sales` table
         // has no stock column, and the ledger remains the source of truth.
         let movement_id = Uuid::now_v7();
@@ -849,21 +884,31 @@ pub async fn complete(
             item.product_id,
             item.quantity,
             item.unit_price,
-            Some(note.as_str()),
+            Some(note),
             actor,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
         movement_ids.push(movement_id);
     }
 
-    // Money movements: same transaction as the stock, so a charged sale either
-    // records both sides or neither.
+    Ok(movement_ids)
+}
+
+/// Money movements: same transaction as the stock, so a charged sale either
+/// records both sides or neither.
+async fn insert_payment_movements(
+    conn: &mut sqlx::PgConnection,
+    charges: &[ResolvedCharge],
+    sale_id: Uuid,
+    note: &str,
+    actor: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
     let mut payment_movement_ids = Vec::with_capacity(charges.len());
-    for charge in &charges {
+    for charge in charges {
         let movement_id = payments::insert_movement(
-            &mut *tx,
+            &mut *conn,
             payments::NewWalletMovement {
                 wallet_id: charge.wallet_id,
                 kind: WalletMovementKind::SalePayment,
@@ -877,7 +922,7 @@ pub async fn complete(
                 // belongs to the collection endpoint alone.
                 customer_id: None,
                 supplier_id: None,
-                note: Some(note.as_str()),
+                note: Some(note),
                 created_by: Some(actor),
             },
         )
@@ -887,6 +932,17 @@ pub async fn complete(
         payment_movement_ids.push(movement_id);
     }
 
+    Ok(payment_movement_ids)
+}
+
+/// Close the sale: the status flip, the frozen total and the customer-name
+/// snapshot are one statement, so they commit together.
+async fn close_sale(
+    conn: &mut sqlx::PgConnection,
+    sale_id: Uuid,
+    total: Decimal,
+    actor: Uuid,
+) -> Result<DateTime<Utc>, RepoError> {
     let completed_at = sqlx::query_scalar!(
         r#"
         UPDATE sales
@@ -905,27 +961,39 @@ pub async fn complete(
         total,
         actor,
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
 
-    // The account's charge belongs to the same commit as the stock, the
-    // wallets and the status flip: a sale and the debt it creates are written
-    // together or not at all. `record_charge` re-derives its own ceiling — the
-    // total minus what the wallets just collected — from the rows this
-    // transaction wrote, so the charge is by construction exactly the
-    // on-account part. Its advisory lock serializes this write against
-    // collections on the same account.
-    //
-    // And the moment the charge exists, the customer's available credit pays
-    // it: the same transaction allocates from their receipts, oldest first,
-    // up to the on-account part. Automatic, not a flag — a customer holding
-    // money the shop already collected must not be asked for cash again for
-    // the same goods — and inside the same commit, so the debt and the credit
-    // that covers it never appear as two states an operator could see apart.
+    Ok(completed_at)
+}
+
+/// The account's charge belongs to the same commit as the stock, the
+/// wallets and the status flip: a sale and the debt it creates are written
+/// together or not at all. `record_charge` re-derives its own ceiling — the
+/// total minus what the wallets just collected — from the rows this
+/// transaction wrote, so the charge is by construction exactly the
+/// on-account part. Its advisory lock serializes this write against
+/// collections on the same account.
+///
+/// And the moment the charge exists, the customer's available credit pays
+/// it: the same transaction allocates from their receipts, oldest first,
+/// up to the on-account part. Automatic, not a flag — a customer holding
+/// money the shop already collected must not be asked for cash again for
+/// the same goods — and inside the same commit, so the debt and the credit
+/// that covers it never appear as two states an operator could see apart.
+///
+/// Returns the credit applied, zero when the sale charged no account.
+async fn charge_customer_account(
+    conn: &mut sqlx::PgConnection,
+    customer_id: Option<Uuid>,
+    sale_id: Uuid,
+    on_account: Decimal,
+    actor: Uuid,
+) -> Result<Decimal, RepoError> {
     let mut credit_applied = Decimal::ZERO;
-    if let Some(customer_id) = charge_customer {
+    if let Some(customer_id) = customer_id {
         crate::customer_accounts::repository::record_charge(
-            &mut tx,
+            &mut *conn,
             customer_id,
             sale_id,
             on_account,
@@ -935,7 +1003,7 @@ pub async fn complete(
         .map_err(map_charge_error)?;
 
         credit_applied = crate::customer_accounts::repository::apply_available_credit(
-            &mut tx,
+            &mut *conn,
             customer_id,
             sale_id,
             on_account,
@@ -943,6 +1011,51 @@ pub async fn complete(
         .await
         .map_err(map_apply_error)?;
     }
+
+    Ok(credit_applied)
+}
+
+/// Complete the sale: validate stock, write movements, charge the account
+/// part and close it.
+///
+/// All in ONE transaction with `SELECT ... FOR UPDATE` per product. This is the
+/// same discipline as `record_movement`: otherwise two registers can sell the
+/// last unit at the same time.
+///
+/// `on_account` is the part of the total charged to the customer's account
+/// instead of the wallets: zero for an ordinary cash sale, at most the total,
+/// and written as one `sale_charge` in the customer's ledger inside this same
+/// transaction.
+pub async fn complete(
+    pool: &PgPool,
+    sale_id: Uuid,
+    actor: Uuid,
+    payments_input: &[SalePaymentInput],
+    on_account: Decimal,
+) -> Result<CompletedSale, RepoError> {
+    validate_on_account(on_account)?;
+
+    let mut tx = pool.begin().await?;
+
+    let customer_id = lock_draft(&mut tx, sale_id).await?;
+    let items = load_draft_lines(&mut tx, sale_id).await?;
+    let total = lock_products_and_check_stock(&mut tx, &items).await?;
+
+    // The money must add up to the total the server computed — the wallets'
+    // part plus the account's part — and every method must still be usable.
+    // Checked before any write.
+    let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
+
+    let charge_customer = authorize_on_account(&mut tx, customer_id, on_account).await?;
+
+    let note = format!("Sale {}", &sale_id.to_string()[..8]);
+
+    let movement_ids = insert_stock_movements(&mut tx, &items, &note, actor).await?;
+    let payment_movement_ids =
+        insert_payment_movements(&mut tx, &charges, sale_id, &note, actor).await?;
+    let completed_at = close_sale(&mut tx, sale_id, total, actor).await?;
+    let credit_applied =
+        charge_customer_account(&mut tx, charge_customer, sale_id, on_account, actor).await?;
 
     tx.commit().await?;
 
