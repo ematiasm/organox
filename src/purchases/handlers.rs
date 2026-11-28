@@ -163,6 +163,19 @@ pub struct ListPurchasesQuery {
 
 // --- Handlers -----------------------------------------------------------
 
+/// Open or reuse the current operator's draft purchase.
+#[utoipa::path(
+    post,
+    operation_id = "open_draft_doc",
+    path = "/api/v1/purchases/draft",
+    tag = "purchases",
+    responses(
+        (status = 200, description = "Existing open draft reused", body = PurchaseDraftResponse),
+        (status = 201, description = "New draft created", body = PurchaseDraftResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn open_draft(
     State(state): State<AppState>,
     user: AuthUser,
@@ -178,6 +191,19 @@ async fn open_draft(
     ))
 }
 
+/// List purchases newest first with optional status and supplier filters.
+#[utoipa::path(
+    get,
+    operation_id = "list_purchases_doc",
+    path = "/api/v1/purchases",
+    tag = "purchases",
+    params(ListPurchasesQuery),
+    responses(
+        (status = 200, description = "Purchase page", body = PurchaseListResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_purchases(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -198,6 +224,21 @@ async fn list_purchases(
     }))
 }
 
+/// Purchase details including its items and calculated or frozen total.
+#[utoipa::path(
+    get,
+    operation_id = "get_purchase_doc",
+    path = "/api/v1/purchases/{id}",
+    tag = "purchases",
+    params(("id" = Uuid, Path, description = "Purchase ID")),
+    responses(
+        (status = 200, description = "Purchase", body = PurchaseResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn get_purchase(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -207,6 +248,26 @@ async fn get_purchase(
     Ok(Json(to_response(purchase)))
 }
 
+/// Attach or clear the supplier on a draft purchase.
+#[utoipa::path(
+    put,
+    operation_id = "set_purchase_supplier_doc",
+    path = "/api/v1/purchases/{id}/supplier",
+    tag = "purchases",
+    params(("id" = Uuid, Path, description = "Purchase ID")),
+    request_body = SetPurchaseSupplierRequest,
+    responses(
+        (status = 204, description = "Supplier updated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Purchase or supplier not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Purchase is closed or supplier is inactive", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "supplier_id field omitted", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn set_purchase_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -220,6 +281,26 @@ async fn set_purchase_supplier(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Add a product to a draft purchase (sums quantity and updates unit_cost if already present).
+#[utoipa::path(
+    post,
+    operation_id = "add_item_doc",
+    path = "/api/v1/purchases/{id}/items",
+    tag = "purchases",
+    params(("id" = Uuid, Path, description = "Purchase ID")),
+    request_body = AddPurchaseItemRequest,
+    responses(
+        (status = 200, description = "Updated draft", body = PurchaseResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Purchase or product not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Purchase is closed, product is inactive, or product is a service", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid quantity or unit cost", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn add_item(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -237,6 +318,29 @@ async fn add_item(
     Ok(Json(to_response(purchase)))
 }
 
+/// Replace quantity and unit cost of an item in a draft purchase.
+#[utoipa::path(
+    put,
+    operation_id = "set_item_doc",
+    path = "/api/v1/purchases/{id}/items/{product_id}",
+    tag = "purchases",
+    params(
+        ("id" = Uuid, Path, description = "Purchase ID"),
+        ("product_id" = Uuid, Path, description = "Product ID"),
+    ),
+    request_body = SetPurchaseItemRequest,
+    responses(
+        (status = 200, description = "Updated draft", body = PurchaseResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Purchase or item not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Purchase is closed", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid quantity or unit cost", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn set_item(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -248,6 +352,26 @@ async fn set_item(
     Ok(Json(to_response(purchase)))
 }
 
+/// Remove an item from a draft purchase.
+#[utoipa::path(
+    delete,
+    operation_id = "remove_item_doc",
+    path = "/api/v1/purchases/{id}/items/{product_id}",
+    tag = "purchases",
+    params(
+        ("id" = Uuid, Path, description = "Purchase ID"),
+        ("product_id" = Uuid, Path, description = "Product ID"),
+    ),
+    responses(
+        (status = 200, description = "Updated draft", body = PurchaseResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Purchase or item not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Purchase is closed", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn remove_item(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -257,6 +381,26 @@ async fn remove_item(
     Ok(Json(to_response(purchase)))
 }
 
+/// Complete a draft purchase: record stock inflows and cash wallet outflows atomically.
+#[utoipa::path(
+    post,
+    operation_id = "complete_purchase_doc",
+    path = "/api/v1/purchases/{id}/complete",
+    tag = "purchases",
+    params(("id" = Uuid, Path, description = "Purchase ID")),
+    request_body = CompletePurchaseRequest,
+    responses(
+        (status = 200, description = "Purchase completed", body = CompletedPurchaseResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Purchase, supplier or product not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Purchase is closed, supplier is inactive, or product is a service", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Missing supplier, empty purchase, or invalid payments", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn complete_purchase(
     State(state): State<AppState>,
     user: AuthUser,
@@ -292,6 +436,23 @@ async fn complete_purchase(
     }))
 }
 
+/// Cancel a draft purchase. Completed purchases cannot be cancelled.
+#[utoipa::path(
+    post,
+    operation_id = "cancel_purchase_doc",
+    path = "/api/v1/purchases/{id}/cancel",
+    tag = "purchases",
+    params(("id" = Uuid, Path, description = "Purchase ID")),
+    responses(
+        (status = 204, description = "Purchase cancelled"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Purchase is already closed", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn cancel_purchase(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -391,184 +552,3 @@ impl From<PurchaseError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ---------------------------------------------
-
-/// Open or reuse the current operator's draft purchase.
-#[utoipa::path(
-    post,
-    path = "/api/v1/purchases/draft",
-    tag = "purchases",
-    responses(
-        (status = 200, description = "Existing open draft reused", body = PurchaseDraftResponse),
-        (status = 201, description = "New draft created", body = PurchaseDraftResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn open_draft_doc() {}
-
-/// List purchases newest first with optional status and supplier filters.
-#[utoipa::path(
-    get,
-    path = "/api/v1/purchases",
-    tag = "purchases",
-    params(ListPurchasesQuery),
-    responses(
-        (status = 200, description = "Purchase page", body = PurchaseListResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_purchases_doc() {}
-
-/// Purchase details including its items and calculated or frozen total.
-#[utoipa::path(
-    get,
-    path = "/api/v1/purchases/{id}",
-    tag = "purchases",
-    params(("id" = Uuid, Path, description = "Purchase ID")),
-    responses(
-        (status = 200, description = "Purchase", body = PurchaseResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_purchase_doc() {}
-
-/// Attach or clear the supplier on a draft purchase.
-#[utoipa::path(
-    put,
-    path = "/api/v1/purchases/{id}/supplier",
-    tag = "purchases",
-    params(("id" = Uuid, Path, description = "Purchase ID")),
-    request_body = SetPurchaseSupplierRequest,
-    responses(
-        (status = 204, description = "Supplier updated"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Purchase or supplier not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Purchase is closed or supplier is inactive", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "supplier_id field omitted", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn set_purchase_supplier_doc() {}
-
-/// Add a product to a draft purchase (sums quantity and updates unit_cost if already present).
-#[utoipa::path(
-    post,
-    path = "/api/v1/purchases/{id}/items",
-    tag = "purchases",
-    params(("id" = Uuid, Path, description = "Purchase ID")),
-    request_body = AddPurchaseItemRequest,
-    responses(
-        (status = 200, description = "Updated draft", body = PurchaseResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Purchase or product not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Purchase is closed, product is inactive, or product is a service", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid quantity or unit cost", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn add_item_doc() {}
-
-/// Replace quantity and unit cost of an item in a draft purchase.
-#[utoipa::path(
-    put,
-    path = "/api/v1/purchases/{id}/items/{product_id}",
-    tag = "purchases",
-    params(
-        ("id" = Uuid, Path, description = "Purchase ID"),
-        ("product_id" = Uuid, Path, description = "Product ID"),
-    ),
-    request_body = SetPurchaseItemRequest,
-    responses(
-        (status = 200, description = "Updated draft", body = PurchaseResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Purchase or item not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Purchase is closed", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid quantity or unit cost", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn set_item_doc() {}
-
-/// Remove an item from a draft purchase.
-#[utoipa::path(
-    delete,
-    path = "/api/v1/purchases/{id}/items/{product_id}",
-    tag = "purchases",
-    params(
-        ("id" = Uuid, Path, description = "Purchase ID"),
-        ("product_id" = Uuid, Path, description = "Product ID"),
-    ),
-    responses(
-        (status = 200, description = "Updated draft", body = PurchaseResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Purchase or item not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Purchase is closed", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn remove_item_doc() {}
-
-/// Complete a draft purchase: record stock inflows and cash wallet outflows atomically.
-#[utoipa::path(
-    post,
-    path = "/api/v1/purchases/{id}/complete",
-    tag = "purchases",
-    params(("id" = Uuid, Path, description = "Purchase ID")),
-    request_body = CompletePurchaseRequest,
-    responses(
-        (status = 200, description = "Purchase completed", body = CompletedPurchaseResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Purchase, supplier or product not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Purchase is closed, supplier is inactive, or product is a service", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Missing supplier, empty purchase, or invalid payments", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn complete_purchase_doc() {}
-
-/// Cancel a draft purchase. Completed purchases cannot be cancelled.
-#[utoipa::path(
-    post,
-    path = "/api/v1/purchases/{id}/cancel",
-    tag = "purchases",
-    params(("id" = Uuid, Path, description = "Purchase ID")),
-    responses(
-        (status = 204, description = "Purchase cancelled"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Purchase is already closed", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn cancel_purchase_doc() {}
