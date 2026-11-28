@@ -157,6 +157,19 @@ pub struct ManualMovementRequest {
 
 // --- Handlers -----------------------------------------------------------
 
+/// List wallets with their calculated balance.
+#[utoipa::path(
+    get,
+    operation_id = "list_wallets_doc",
+    path = "/api/v1/wallets",
+    tag = "payments",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "Wallets with balance", body = Vec<WalletResponse>),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_wallets(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -166,6 +179,23 @@ async fn list_wallets(
     Ok(Json(wallets.into_iter().map(to_wallet_response).collect()))
 }
 
+/// Create a wallet (a cash box, a bank account).
+#[utoipa::path(
+    post,
+    operation_id = "create_wallet_doc",
+    path = "/api/v1/wallets",
+    tag = "payments",
+    request_body = CreateWalletRequest,
+    responses(
+        (status = 201, description = "Wallet created", body = IdResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Name is already in use", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn create_wallet(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -175,6 +205,21 @@ async fn create_wallet(
     Ok((StatusCode::CREATED, Json(IdResponse { id })))
 }
 
+/// One wallet with its calculated balance.
+#[utoipa::path(
+    get,
+    operation_id = "get_wallet_doc",
+    path = "/api/v1/wallets/{id}",
+    tag = "payments",
+    params(("id" = Uuid, Path, description = "Wallet id")),
+    responses(
+        (status = 200, description = "Wallet with balance", body = WalletResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn get_wallet(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -184,6 +229,26 @@ async fn get_wallet(
     Ok(Json(to_wallet_response(wallet)))
 }
 
+/// Rename or (de)activate a wallet. Wallets are never deleted.
+#[utoipa::path(
+    patch,
+    operation_id = "update_wallet_doc",
+    path = "/api/v1/wallets/{id}",
+    tag = "payments",
+    params(("id" = Uuid, Path, description = "Wallet id")),
+    request_body = UpdateWalletRequest,
+    responses(
+        (status = 204, description = "Wallet updated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Name is already in use", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn update_wallet(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -202,6 +267,24 @@ async fn update_wallet(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Movements of one wallet, newest first.
+///
+/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
+/// to page through the wallet ledger.
+#[utoipa::path(
+    get,
+    operation_id = "list_wallet_movements_doc",
+    path = "/api/v1/wallets/{id}/movements",
+    tag = "payments",
+    params(("id" = Uuid, Path, description = "Wallet id"), ListMovementsQuery),
+    responses(
+        (status = 200, description = "Movements", body = Vec<WalletMovementResponse>),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_wallet_movements(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -214,6 +297,29 @@ async fn list_wallet_movements(
     Ok(Json(rows.into_iter().map(to_movement_response).collect()))
 }
 
+/// Record money leaving or entering a wallet by hand.
+///
+/// `sale_payment`, `sale_refund`, `account_payment` and
+/// `account_payment_refund` are rejected with 422: money that belongs to a
+/// sale or a customer's account enters or leaves the ledger only through the
+/// flow that also writes its counterpart, never by hand.
+#[utoipa::path(
+    post,
+    operation_id = "record_manual_movement_doc",
+    path = "/api/v1/wallets/{id}/movements",
+    tag = "payments",
+    params(("id" = Uuid, Path, description = "Wallet id")),
+    request_body = ManualMovementRequest,
+    responses(
+        (status = 201, description = "Movement recorded", body = IdResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input or wallet is inactive", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn record_manual_movement(
     State(state): State<AppState>,
     user: AuthUser,
@@ -234,6 +340,19 @@ async fn record_manual_movement(
     Ok((StatusCode::CREATED, Json(IdResponse { id })))
 }
 
+/// List payment methods with the wallet each one pays into.
+#[utoipa::path(
+    get,
+    operation_id = "list_payment_methods_doc",
+    path = "/api/v1/payment-methods",
+    tag = "payments",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "Payment methods", body = Vec<PaymentMethodResponse>),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_payment_methods(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -243,6 +362,28 @@ async fn list_payment_methods(
     Ok(Json(methods.into_iter().map(to_method_response).collect()))
 }
 
+/// Create a payment method pointing at a wallet.
+///
+/// This is the endpoint that makes a new method a data change instead of a
+/// deploy.
+#[utoipa::path(
+    post,
+    operation_id = "create_payment_method_doc",
+    path = "/api/v1/payment-methods",
+    tag = "payments",
+    request_body = CreatePaymentMethodRequest,
+    responses(
+        (status = 201, description = "Payment method created", body = IdResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Name is already in use", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn create_payment_method(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -259,6 +400,29 @@ async fn create_payment_method(
     Ok((StatusCode::CREATED, Json(IdResponse { id })))
 }
 
+/// Rename, re-point or (de)activate a payment method.
+///
+/// Re-pointing changes where future money lands. Movements already recorded keep
+/// the wallet they hit: the ledger is history, not a live join.
+#[utoipa::path(
+    patch,
+    operation_id = "update_payment_method_doc",
+    path = "/api/v1/payment-methods/{id}",
+    tag = "payments",
+    params(("id" = Uuid, Path, description = "Payment method id")),
+    request_body = UpdatePaymentMethodRequest,
+    responses(
+        (status = 204, description = "Payment method updated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Payment method or wallet not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Name is already in use", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn update_payment_method(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -335,190 +499,3 @@ impl From<PaymentsError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ---------------------------------------------
-//
-// Stubs exist only for `#[utoipa::path]` to generate the PathItem; the real
-// route is served by the handler above.
-
-/// List wallets with their calculated balance.
-#[utoipa::path(
-    get,
-    path = "/api/v1/wallets",
-    tag = "payments",
-    params(ListQuery),
-    responses(
-        (status = 200, description = "Wallets with balance", body = Vec<WalletResponse>),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_wallets_doc() {}
-
-/// Create a wallet (a cash box, a bank account).
-#[utoipa::path(
-    post,
-    path = "/api/v1/wallets",
-    tag = "payments",
-    request_body = CreateWalletRequest,
-    responses(
-        (status = 201, description = "Wallet created", body = IdResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Name is already in use", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn create_wallet_doc() {}
-
-/// One wallet with its calculated balance.
-#[utoipa::path(
-    get,
-    path = "/api/v1/wallets/{id}",
-    tag = "payments",
-    params(("id" = Uuid, Path, description = "Wallet id")),
-    responses(
-        (status = 200, description = "Wallet with balance", body = WalletResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_wallet_doc() {}
-
-/// Rename or (de)activate a wallet. Wallets are never deleted.
-#[utoipa::path(
-    patch,
-    path = "/api/v1/wallets/{id}",
-    tag = "payments",
-    params(("id" = Uuid, Path, description = "Wallet id")),
-    request_body = UpdateWalletRequest,
-    responses(
-        (status = 204, description = "Wallet updated"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Name is already in use", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn update_wallet_doc() {}
-
-/// Movements of one wallet, newest first.
-///
-/// Accepts `limit` (default 50, clamped to 1..=200) and `offset` (default 0)
-/// to page through the wallet ledger.
-#[utoipa::path(
-    get,
-    path = "/api/v1/wallets/{id}/movements",
-    tag = "payments",
-    params(("id" = Uuid, Path, description = "Wallet id"), ListMovementsQuery),
-    responses(
-        (status = 200, description = "Movements", body = Vec<WalletMovementResponse>),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_wallet_movements_doc() {}
-
-/// Record money leaving or entering a wallet by hand.
-///
-/// `sale_payment`, `sale_refund`, `account_payment` and
-/// `account_payment_refund` are rejected with 422: money that belongs to a
-/// sale or a customer's account enters or leaves the ledger only through the
-/// flow that also writes its counterpart, never by hand.
-#[utoipa::path(
-    post,
-    path = "/api/v1/wallets/{id}/movements",
-    tag = "payments",
-    params(("id" = Uuid, Path, description = "Wallet id")),
-    request_body = ManualMovementRequest,
-    responses(
-        (status = 201, description = "Movement recorded", body = IdResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input or wallet is inactive", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn record_manual_movement_doc() {}
-
-/// List payment methods with the wallet each one pays into.
-#[utoipa::path(
-    get,
-    path = "/api/v1/payment-methods",
-    tag = "payments",
-    params(ListQuery),
-    responses(
-        (status = 200, description = "Payment methods", body = Vec<PaymentMethodResponse>),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_payment_methods_doc() {}
-
-/// Create a payment method pointing at a wallet.
-///
-/// This is the endpoint that makes a new method a data change instead of a
-/// deploy.
-#[utoipa::path(
-    post,
-    path = "/api/v1/payment-methods",
-    tag = "payments",
-    request_body = CreatePaymentMethodRequest,
-    responses(
-        (status = 201, description = "Payment method created", body = IdResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Wallet not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Name is already in use", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn create_payment_method_doc() {}
-
-/// Rename, re-point or (de)activate a payment method.
-///
-/// Re-pointing changes where future money lands. Movements already recorded keep
-/// the wallet they hit: the ledger is history, not a live join.
-#[utoipa::path(
-    patch,
-    path = "/api/v1/payment-methods/{id}",
-    tag = "payments",
-    params(("id" = Uuid, Path, description = "Payment method id")),
-    request_body = UpdatePaymentMethodRequest,
-    responses(
-        (status = 204, description = "Payment method updated"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Payment method or wallet not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Name is already in use", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn update_payment_method_doc() {}
