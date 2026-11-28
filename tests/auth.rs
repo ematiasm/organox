@@ -7,7 +7,7 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::{app, test_password};
+use common::{app, seed_user_with_password, test_password};
 use organox::auth::model::Role;
 use organox::auth::password::{self, PasswordError};
 use organox::auth::repository::{self, NewUser, RepoError};
@@ -63,6 +63,41 @@ fn login_request(email: &str, password: &str) -> Request<Body> {
             json!({ "email": email, "password": password }).to_string(),
         ))
         .unwrap()
+}
+
+/// The session records the browser, bounded: a header of 4 KB is a header,
+/// not a row that grows without limit.
+#[sqlx::test]
+async fn a_long_user_agent_is_stored_truncated(pool: PgPool) {
+    let email = "ua@pyme.com";
+    let (_id, password) = seed_user_with_password(&pool, email, Role::Owner).await;
+    let long_agent = "agent-".repeat(700);
+
+    let response = app(pool.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .header("user-agent", &long_agent)
+                .body(Body::from(
+                    json!({ "email": email, "password": password }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let stored: Option<String> = sqlx::query_scalar("SELECT user_agent FROM sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        stored.unwrap_or_default().chars().count(),
+        512,
+        "the stored user agent keeps its bound"
+    );
 }
 
 /// Extracts the session cookie from `Set-Cookie`.

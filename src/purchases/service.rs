@@ -222,10 +222,17 @@ pub async fn complete(
     on_account: Decimal,
     note: Option<&str>,
 ) -> Result<CompletedPurchase, PurchaseError> {
-    let clean_note = note.map(str::trim).filter(|s| !s.is_empty());
-    repository::complete(pool, purchase_id, actor, payments, on_account, clean_note)
-        .await
-        .map_err(map_repo_error)
+    let clean_note = crate::text::truncate_note(note);
+    repository::complete(
+        pool,
+        purchase_id,
+        actor,
+        payments,
+        on_account,
+        clean_note.as_deref(),
+    )
+    .await
+    .map_err(map_repo_error)
 }
 
 pub async fn cancel(pool: &PgPool, purchase_id: Uuid) -> Result<(), PurchaseError> {

@@ -67,7 +67,8 @@ pub enum ValidationError {
 
 pub const MAX_NAME_LEN: usize = 200;
 pub const MAX_SKU_LEN: usize = 64;
-pub const MAX_NOTE_LEN: usize = 500;
+/// The shared bound: see `crate::text`, which owns text limits.
+pub use crate::text::MAX_NOTE_LEN;
 
 /// Quantities are stored in `numeric(12,3)`. Validating scale at the boundary
 /// prevents Postgres from silently rounding `1.0004` to `1.000`.
@@ -176,15 +177,7 @@ pub fn validate_unit_cost(raw: Option<Decimal>) -> Result<Option<Decimal>, Valid
 }
 
 pub fn validate_note(raw: Option<&str>) -> Result<Option<String>, ValidationError> {
-    let Some(raw) = raw else { return Ok(None) };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    // Truncate rather than reject: a long note is no reason to lose the
-    // movement being recorded.
-    let truncated: String = trimmed.chars().take(MAX_NOTE_LEN).collect();
-    Ok(Some(truncated))
+    Ok(crate::text::truncate_note(raw))
 }
 
 #[cfg(test)]
