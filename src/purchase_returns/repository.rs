@@ -617,24 +617,27 @@ pub async fn for_purchase(
     }))
 }
 
-/// Issue a purchase return atomically across `purchase_returns`,
-/// `purchase_return_items`, `stock_movements`, `supplier_account_entries`, and
-/// `wallet_movements`.
-pub async fn create(
-    pool: &PgPool,
-    new: NewPurchaseReturn<'_>,
-) -> Result<CreatedPurchaseReturn, RepoError> {
-    let mut tx = pool.begin().await?;
+/// The purchase row once `create` has locked it and confirmed it completed.
+struct CompletedPurchase {
+    total: Option<Decimal>,
+    supplier_id: Option<Uuid>,
+}
 
-    // Lock 1: purchase row `FOR NO KEY UPDATE` (never `FOR UPDATE`).
-    //
-    // `FOR NO KEY UPDATE` still serializes concurrent `purchase_returns::create`,
-    // `purchases::complete`, and `purchases::cancel` on the same purchase, while
-    // remaining compatible with PostgreSQL's `FOR KEY SHARE` FK RI lock acquired
-    // when a concurrent `supplier_accounts::record_payment` / `allocate` inserts
-    // into `supplier_account_allocations (purchase_id)` while holding the
-    // supplier advisory lock. Using `FOR UPDATE` here would AB-BA deadlock with
-    // `record_payment` (purchases lock <-> supplier advisory lock).
+/// Lock the purchase row and confirm the purchase can still be returned.
+///
+/// Lock 1: purchase row `FOR NO KEY UPDATE` (never `FOR UPDATE`).
+///
+/// `FOR NO KEY UPDATE` still serializes concurrent `purchase_returns::create`,
+/// `purchases::complete`, and `purchases::cancel` on the same purchase, while
+/// remaining compatible with PostgreSQL's `FOR KEY SHARE` FK RI lock acquired
+/// when a concurrent `supplier_accounts::record_payment` / `allocate` inserts
+/// into `supplier_account_allocations (purchase_id)` while holding the
+/// supplier advisory lock. Using `FOR UPDATE` here would AB-BA deadlock with
+/// `record_payment` (purchases lock <-> supplier advisory lock).
+async fn lock_completed_purchase(
+    conn: &mut sqlx::PgConnection,
+    purchase_id: Uuid,
+) -> Result<CompletedPurchase, RepoError> {
     let purchase = sqlx::query!(
         r#"
         SELECT status AS "status: PurchaseStatus", total, supplier_id
@@ -642,9 +645,9 @@ pub async fn create(
         WHERE id = $1
         FOR NO KEY UPDATE
         "#,
-        new.purchase_id
+        purchase_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or(RepoError::PurchaseNotFound)?;
 
@@ -652,49 +655,47 @@ pub async fn create(
         return Err(RepoError::PurchaseNotReturnable);
     }
 
-    // Idempotent replay pre-check on the open transaction before doing work.
-    if let Some(key) = new.idempotency_key
-        && let Some(ret) = return_rows(&mut *tx, new.purchase_id, Some(key))
-            .await?
-            .into_iter()
-            .next()
-    {
-        let ids = [ret.id];
-        let mut items = item_rows(&mut *tx, &ids).await?;
-        let mut refunds = refund_rows(&mut *tx, &ids).await?;
-        let mut effects = account_effects(&mut *tx, &ids).await?;
-        tx.rollback().await?;
-        return Ok(CreatedPurchaseReturn {
-            detail: attach_children(ret, &mut items, &mut refunds, &mut effects),
-            replayed: true,
-        });
-    }
+    Ok(CompletedPurchase {
+        total: purchase.total,
+        supplier_id: purchase.supplier_id,
+    })
+}
 
-    let purchase_total = purchase.total.ok_or(RepoError::PurchaseTotalMissing)?;
-    let supplier_id = purchase
-        .supplier_id
-        .ok_or(RepoError::PurchaseSupplierMissing)?;
-
-    let already_returned = sqlx::query!(
+/// What the purchase's earlier returns already handed back, read under the
+/// purchase lock this transaction holds.
+async fn returned_so_far(
+    conn: &mut sqlx::PgConnection,
+    purchase_id: Uuid,
+) -> Result<Decimal, RepoError> {
+    let returned = sqlx::query!(
         r#"
         SELECT COALESCE(SUM(total), 0) AS "already_returned!: Decimal"
         FROM purchase_returns
         WHERE purchase_id = $1
         "#,
-        new.purchase_id
+        purchase_id
     )
-    .fetch_one(&mut *tx)
-    .await?
-    .already_returned;
+    .fetch_one(&mut *conn)
+    .await?;
 
-    let returnable = returnable_lines(&mut *tx, new.purchase_id).await?;
+    Ok(returned.already_returned)
+}
 
-    // Pass 1: validate every requested line against the purchase's own lines
-    // and frozen unit costs. Nothing is written yet.
+/// One accepted return line: the purchase line it returns from, and how much.
+type AcceptedLine<'a> = (&'a ReturnableLine, Decimal);
+
+/// Pass 1: validate every requested line against the purchase's own lines
+/// and frozen unit costs. Nothing is written yet.
+///
+/// Returns the computed total and the accepted lines.
+fn validate_lines<'a>(
+    returnable: &'a [ReturnableLine],
+    requested: &[ReturnLine],
+) -> Result<(Decimal, Vec<AcceptedLine<'a>>), RepoError> {
     let mut total = Decimal::ZERO;
-    let mut accepted = Vec::with_capacity(new.lines.len());
+    let mut accepted = Vec::with_capacity(requested.len());
 
-    for line in new.lines {
+    for line in requested {
         let purchased = returnable
             .iter()
             .find(|p| p.product_id == line.product_id)
@@ -718,27 +719,47 @@ pub async fn create(
         accepted.push((purchased, line.quantity));
     }
 
+    Ok((total, accepted))
+}
+
+/// The per-line returnable limits are not enough: the returns together must
+/// not add up past what the purchase charged.
+fn ensure_return_within_purchase(
+    purchase_total: Decimal,
+    already_returned: Decimal,
+    requested: Decimal,
+) -> Result<(), RepoError> {
     if already_returned
-        .checked_add(total)
+        .checked_add(requested)
         .is_none_or(|sum| sum > purchase_total)
     {
         return Err(RepoError::ReturnExceedsPurchase {
             purchase_total,
             already_returned,
-            requested: total,
+            requested,
         });
     }
 
-    // Lock 2: lock products in deterministic `product_id ASC` order and verify
-    // sufficient available stock before any write.
+    Ok(())
+}
+
+/// Lock 2: lock products in deterministic `product_id ASC` order and verify
+/// sufficient available stock before any write.
+///
+/// Sorts the accepted lines into that order as part of the step, so the
+/// caller writes them in the same order it locked them.
+async fn lock_products_and_check_stock(
+    conn: &mut sqlx::PgConnection,
+    accepted: &mut [AcceptedLine<'_>],
+) -> Result<(), RepoError> {
     accepted.sort_by_key(|(purchased, _)| purchased.product_id);
 
-    for (purchased, quantity) in &accepted {
+    for (purchased, quantity) in accepted.iter() {
         sqlx::query_scalar!(
             "SELECT id FROM products WHERE id = $1 FOR UPDATE",
             purchased.product_id
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?;
 
         let available: Decimal = sqlx::query_scalar!(
@@ -758,7 +779,7 @@ pub async fn create(
             "#,
             purchased.product_id
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut *conn)
         .await?;
 
         if available < *quantity {
@@ -770,74 +791,129 @@ pub async fn create(
         }
     }
 
-    // Lock 3 (& optional Lock 4): supplier advisory lock (seed 1), then
-    // validate financial settlement completely before writing anything.
-    let mut debt_cancelled = Decimal::ZERO;
-    let mut credit_granted = Decimal::ZERO;
-    let mut planned_refunds: Vec<(RemainingTender, Decimal)> = Vec::new();
+    Ok(())
+}
+
+/// What the return's total does to the supplier's side of the ledger,
+/// decided under the supplier advisory lock before anything is written:
+/// debt cancelled on the purchase, credit left with the supplier, and the
+/// wallet refunds the surplus mode allows.
+struct SettlementPlan {
+    debt_cancelled: Decimal,
+    credit_granted: Decimal,
+    planned_refunds: Vec<(RemainingTender, Decimal)>,
+}
+
+/// Lock 3 (& optional Lock 4): supplier advisory lock (seed 1), then
+/// validate financial settlement completely before writing anything.
+///
+/// Debt is cancelled first; only the surplus is disposed of, through the
+/// wallets that paid (`WalletRefund`) or as supplier credit
+/// (`SupplierCredit`). Returns the decided plan; nothing is written yet.
+async fn plan_settlement(
+    conn: &mut sqlx::PgConnection,
+    supplier_id: Uuid,
+    total: Decimal,
+    new: &NewPurchaseReturn<'_>,
+) -> Result<SettlementPlan, RepoError> {
+    let mut plan = SettlementPlan {
+        debt_cancelled: Decimal::ZERO,
+        credit_granted: Decimal::ZERO,
+        planned_refunds: Vec::new(),
+    };
 
     if total > Decimal::ZERO {
-        supplier_accounts::lock_supplier(&mut tx, supplier_id)
+        supplier_accounts::lock_supplier(&mut *conn, supplier_id)
             .await
             .map_err(map_account_error)?;
 
-        let outstanding = supplier_accounts::outstanding_for_purchase_in(&mut tx, new.purchase_id)
-            .await
-            .map_err(map_account_error)?
-            .max(Decimal::ZERO);
+        let outstanding =
+            supplier_accounts::outstanding_for_purchase_in(&mut *conn, new.purchase_id)
+                .await
+                .map_err(map_account_error)?
+                .max(Decimal::ZERO);
 
-        debt_cancelled = total.min(outstanding);
-        let surplus = total - debt_cancelled;
+        plan.debt_cancelled = total.min(outstanding);
+        let surplus = total - plan.debt_cancelled;
 
         if surplus > Decimal::ZERO {
             match new.surplus_mode {
                 SurplusMode::WalletRefund => {
-                    let tenders = remaining_tenders(&mut *tx, new.purchase_id).await?;
-                    let capacity = tenders
-                        .iter()
-                        .try_fold(Decimal::ZERO, |acc, t| acc.checked_add(t.remaining))
-                        .ok_or(RepoError::TotalTooLarge)?;
-                    if surplus > capacity {
-                        return Err(RepoError::InsufficientWalletRefundCapacity {
-                            requested: surplus,
-                            available: capacity,
-                        });
-                    }
-                    let caps: Vec<Decimal> = tenders.iter().map(|t| t.remaining).collect();
-                    let shares = split_remaining_capacity(surplus, &caps);
-                    let refunded = shares
-                        .iter()
-                        .copied()
-                        .try_fold(Decimal::ZERO, Decimal::checked_add)
-                        .ok_or(RepoError::TotalTooLarge)?;
-                    if refunded != surplus || shares.iter().any(|s| *s < Decimal::ZERO) {
-                        return Err(RepoError::RefundDoesNotAddUp { surplus, refunded });
-                    }
-                    for (tender, share) in tenders.into_iter().zip(shares) {
-                        if share > Decimal::ZERO {
-                            planned_refunds.push((tender, share));
-                        }
-                    }
+                    plan.planned_refunds =
+                        plan_wallet_refunds(&mut *conn, new.purchase_id, surplus).await?;
                 }
                 SurplusMode::SupplierCredit => {
+                    // Lock 4: the supplier row itself, only when the surplus
+                    // stays with the supplier as credit.
                     let is_active = sqlx::query_scalar!(
                         "SELECT is_active FROM suppliers WHERE id = $1 FOR UPDATE",
                         supplier_id
                     )
-                    .fetch_one(&mut *tx)
+                    .fetch_one(&mut *conn)
                     .await?;
                     if !is_active {
                         return Err(RepoError::SupplierInactive);
                     }
-                    credit_granted = surplus;
+                    plan.credit_granted = surplus;
                 }
             }
         }
     }
 
-    // Pass 2: insert the return header.
-    let return_id = Uuid::now_v7();
-    let insert = sqlx::query_scalar!(
+    Ok(plan)
+}
+
+/// The `WalletRefund` arm of the settlement plan: split the surplus across
+/// the tenders that paid for the purchase, each capped at what it can still
+/// hand back.
+async fn plan_wallet_refunds(
+    conn: &mut sqlx::PgConnection,
+    purchase_id: Uuid,
+    surplus: Decimal,
+) -> Result<Vec<(RemainingTender, Decimal)>, RepoError> {
+    let tenders = remaining_tenders(&mut *conn, purchase_id).await?;
+    let capacity = tenders
+        .iter()
+        .try_fold(Decimal::ZERO, |acc, t| acc.checked_add(t.remaining))
+        .ok_or(RepoError::TotalTooLarge)?;
+    if surplus > capacity {
+        return Err(RepoError::InsufficientWalletRefundCapacity {
+            requested: surplus,
+            available: capacity,
+        });
+    }
+
+    let caps: Vec<Decimal> = tenders.iter().map(|t| t.remaining).collect();
+    let shares = split_remaining_capacity(surplus, &caps);
+    let refunded = shares
+        .iter()
+        .copied()
+        .try_fold(Decimal::ZERO, Decimal::checked_add)
+        .ok_or(RepoError::TotalTooLarge)?;
+    if refunded != surplus || shares.iter().any(|s| *s < Decimal::ZERO) {
+        return Err(RepoError::RefundDoesNotAddUp { surplus, refunded });
+    }
+
+    let mut planned_refunds: Vec<(RemainingTender, Decimal)> = Vec::new();
+    for (tender, share) in tenders.into_iter().zip(shares) {
+        if share > Decimal::ZERO {
+            planned_refunds.push((tender, share));
+        }
+    }
+
+    Ok(planned_refunds)
+}
+
+/// Insert the return header row. Returns the raw database error so `create`
+/// can turn the idempotency-key unique violation into a replay instead of a
+/// failed second create.
+async fn insert_return_header(
+    conn: &mut sqlx::PgConnection,
+    return_id: Uuid,
+    new: &NewPurchaseReturn<'_>,
+    total: Decimal,
+) -> Result<DateTime<Utc>, sqlx::Error> {
+    sqlx::query_scalar!(
         r#"
         INSERT INTO purchase_returns
             (id, purchase_id, total, surplus_mode, reason, idempotency_key, created_by)
@@ -852,8 +928,197 @@ pub async fn create(
         new.idempotency_key,
         new.created_by,
     )
-    .fetch_one(&mut *tx)
-    .await;
+    .fetch_one(&mut *conn)
+    .await
+}
+
+/// Pass 3: insert return lines and stock outflows (with frozen unit_cost).
+///
+/// Returns the return's items in display order.
+async fn insert_return_items_and_stock(
+    conn: &mut sqlx::PgConnection,
+    return_id: Uuid,
+    accepted: Vec<AcceptedLine<'_>>,
+    label: &str,
+    new: &NewPurchaseReturn<'_>,
+) -> Result<Vec<PurchaseReturnItem>, RepoError> {
+    let mut items = Vec::with_capacity(accepted.len());
+
+    for (purchased, quantity) in accepted {
+        let item_id = Uuid::now_v7();
+
+        sqlx::query!(
+            r#"
+            INSERT INTO purchase_return_items
+                (id, purchase_return_id, product_id, quantity, unit_cost)
+            VALUES ($1, $2, $3, $4, $5)
+            "#,
+            item_id,
+            return_id,
+            purchased.product_id,
+            quantity,
+            purchased.unit_cost,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        sqlx::query!(
+            r#"
+            INSERT INTO stock_movements
+                (id, product_id, reason, quantity, unit_cost, note, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "#,
+            Uuid::now_v7(),
+            purchased.product_id,
+            MovementReason::PurchaseReturn as MovementReason,
+            quantity,
+            purchased.unit_cost,
+            label,
+            new.created_by,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        items.push(PurchaseReturnItem {
+            id: item_id,
+            product_id: purchased.product_id,
+            product_name: purchased.product_name.clone(),
+            quantity,
+            unit_cost: purchased.unit_cost,
+        });
+    }
+
+    items.sort_by(|a, b| a.product_name.cmp(&b.product_name).then(a.id.cmp(&b.id)));
+
+    Ok(items)
+}
+
+/// Pass 4, account half: write the supplier-account entries the settlement
+/// plan decided — debt cancelled first, then credit granted.
+async fn record_supplier_account_entries(
+    conn: &mut sqlx::PgConnection,
+    supplier_id: Uuid,
+    return_id: Uuid,
+    plan: &SettlementPlan,
+    label: &str,
+    new: &NewPurchaseReturn<'_>,
+) -> Result<(), RepoError> {
+    if plan.debt_cancelled > Decimal::ZERO {
+        supplier_accounts::record_purchase_return(
+            &mut *conn,
+            supplier_id,
+            new.purchase_id,
+            return_id,
+            plan.debt_cancelled,
+            Some(label),
+            new.created_by,
+        )
+        .await
+        .map_err(map_account_error)?;
+    }
+
+    if plan.credit_granted > Decimal::ZERO {
+        supplier_accounts::record_purchase_return_credit(
+            &mut *conn,
+            supplier_id,
+            return_id,
+            plan.credit_granted,
+            Some(label),
+            new.created_by,
+        )
+        .await
+        .map_err(map_account_error)?;
+    }
+
+    Ok(())
+}
+
+/// Pass 4, cash half: pay the planned wallet refunds through the tenders
+/// that paid for the purchase.
+async fn insert_wallet_refunds(
+    conn: &mut sqlx::PgConnection,
+    return_id: Uuid,
+    planned_refunds: Vec<(RemainingTender, Decimal)>,
+    label: &str,
+    new: &NewPurchaseReturn<'_>,
+) -> Result<Vec<PurchaseReturnRefund>, RepoError> {
+    let mut refunds = Vec::with_capacity(planned_refunds.len());
+
+    for (tender, share) in planned_refunds {
+        wallet::insert_movement(
+            &mut *conn,
+            NewWalletMovement {
+                wallet_id: tender.wallet_id,
+                kind: WalletMovementKind::PurchaseRefund,
+                amount: share,
+                sale_id: None,
+                purchase_id: Some(new.purchase_id),
+                payment_method_id: Some(tender.payment_method_id),
+                credit_note_id: None,
+                purchase_return_id: Some(return_id),
+                customer_id: None,
+                supplier_id: None,
+                note: Some(label),
+                created_by: Some(new.created_by),
+            },
+        )
+        .await?;
+
+        refunds.push(PurchaseReturnRefund {
+            wallet_id: tender.wallet_id,
+            wallet_name: tender.wallet_name,
+            payment_method_id: tender.payment_method_id,
+            payment_method_name: tender.payment_method_name,
+            amount: share,
+        });
+    }
+
+    Ok(refunds)
+}
+
+/// Issue a purchase return atomically across `purchase_returns`,
+/// `purchase_return_items`, `stock_movements`, `supplier_account_entries`, and
+/// `wallet_movements`.
+pub async fn create(
+    pool: &PgPool,
+    new: NewPurchaseReturn<'_>,
+) -> Result<CreatedPurchaseReturn, RepoError> {
+    let mut tx = pool.begin().await?;
+
+    let purchase = lock_completed_purchase(&mut tx, new.purchase_id).await?;
+
+    // Idempotent replay pre-check on the open transaction before doing work.
+    if let Some(key) = new.idempotency_key
+        && let Some(detail) = load_returns_in(&mut tx, new.purchase_id, Some(key))
+            .await?
+            .into_iter()
+            .next()
+    {
+        tx.rollback().await?;
+        return Ok(CreatedPurchaseReturn {
+            detail,
+            replayed: true,
+        });
+    }
+
+    let purchase_total = purchase.total.ok_or(RepoError::PurchaseTotalMissing)?;
+    let supplier_id = purchase
+        .supplier_id
+        .ok_or(RepoError::PurchaseSupplierMissing)?;
+
+    let already_returned = returned_so_far(&mut tx, new.purchase_id).await?;
+    let returnable = returnable_lines(&mut *tx, new.purchase_id).await?;
+
+    let (total, mut accepted) = validate_lines(&returnable, new.lines)?;
+    ensure_return_within_purchase(purchase_total, already_returned, total)?;
+
+    lock_products_and_check_stock(&mut tx, &mut accepted).await?;
+
+    let plan = plan_settlement(&mut tx, supplier_id, total, &new).await?;
+
+    // Pass 2: insert the return header.
+    let return_id = Uuid::now_v7();
+    let insert = insert_return_header(&mut tx, return_id, &new, total).await;
 
     let created_at: DateTime<Utc> = match insert {
         Ok(created_at) => created_at,
@@ -875,108 +1140,12 @@ pub async fn create(
     let label = format!("purchase return {return_id}: {}", new.reason);
 
     // Pass 3: insert return lines and stock outflows (with frozen unit_cost).
-    let mut items = Vec::with_capacity(accepted.len());
-    for (purchased, quantity) in accepted {
-        let item_id = Uuid::now_v7();
-        sqlx::query!(
-            r#"
-            INSERT INTO purchase_return_items
-                (id, purchase_return_id, product_id, quantity, unit_cost)
-            VALUES ($1, $2, $3, $4, $5)
-            "#,
-            item_id,
-            return_id,
-            purchased.product_id,
-            quantity,
-            purchased.unit_cost,
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query!(
-            r#"
-            INSERT INTO stock_movements
-                (id, product_id, reason, quantity, unit_cost, note, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            "#,
-            Uuid::now_v7(),
-            purchased.product_id,
-            MovementReason::PurchaseReturn as MovementReason,
-            quantity,
-            purchased.unit_cost,
-            label,
-            new.created_by,
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        items.push(PurchaseReturnItem {
-            id: item_id,
-            product_id: purchased.product_id,
-            product_name: purchased.product_name.clone(),
-            quantity,
-            unit_cost: purchased.unit_cost,
-        });
-    }
-    items.sort_by(|a, b| a.product_name.cmp(&b.product_name).then(a.id.cmp(&b.id)));
+    let items = insert_return_items_and_stock(&mut tx, return_id, accepted, &label, &new).await?;
 
     // Pass 4: supplier-account entries and/or wallet refunds.
-    if debt_cancelled > Decimal::ZERO {
-        supplier_accounts::record_purchase_return(
-            &mut tx,
-            supplier_id,
-            new.purchase_id,
-            return_id,
-            debt_cancelled,
-            Some(&label),
-            new.created_by,
-        )
-        .await
-        .map_err(map_account_error)?;
-    }
-
-    if credit_granted > Decimal::ZERO {
-        supplier_accounts::record_purchase_return_credit(
-            &mut tx,
-            supplier_id,
-            return_id,
-            credit_granted,
-            Some(&label),
-            new.created_by,
-        )
-        .await
-        .map_err(map_account_error)?;
-    }
-
-    let mut refunds = Vec::with_capacity(planned_refunds.len());
-    for (tender, share) in planned_refunds {
-        wallet::insert_movement(
-            &mut *tx,
-            NewWalletMovement {
-                wallet_id: tender.wallet_id,
-                kind: WalletMovementKind::PurchaseRefund,
-                amount: share,
-                sale_id: None,
-                purchase_id: Some(new.purchase_id),
-                payment_method_id: Some(tender.payment_method_id),
-                credit_note_id: None,
-                purchase_return_id: Some(return_id),
-                customer_id: None,
-                supplier_id: None,
-                note: Some(&label),
-                created_by: Some(new.created_by),
-            },
-        )
-        .await?;
-
-        refunds.push(PurchaseReturnRefund {
-            wallet_id: tender.wallet_id,
-            wallet_name: tender.wallet_name,
-            payment_method_id: tender.payment_method_id,
-            payment_method_name: tender.payment_method_name,
-            amount: share,
-        });
-    }
+    record_supplier_account_entries(&mut tx, supplier_id, return_id, &plan, &label, &new).await?;
+    let refunds =
+        insert_wallet_refunds(&mut tx, return_id, plan.planned_refunds, &label, &new).await?;
 
     tx.commit().await?;
 
@@ -991,8 +1160,8 @@ pub async fn create(
                 created_by: new.created_by,
                 created_at,
             },
-            debt_cancelled,
-            credit_granted,
+            debt_cancelled: plan.debt_cancelled,
+            credit_granted: plan.credit_granted,
             items,
             refunds,
         },
