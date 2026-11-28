@@ -117,6 +117,19 @@ pub struct ListSuppliersQuery {
 
 // --- Handlers -----------------------------------------------------------
 
+/// List suppliers alphabetically by name.
+#[utoipa::path(
+    get,
+    operation_id = "list_suppliers_doc",
+    path = "/api/v1/suppliers",
+    tag = "suppliers",
+    params(ListSuppliersQuery),
+    responses(
+        (status = 200, description = "Supplier page", body = SupplierListResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_suppliers(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -142,6 +155,26 @@ async fn list_suppliers(
     }))
 }
 
+/// Register a supplier.
+///
+/// `tax_id` is optional and unique when present; a duplicate returns 409.
+/// `credit_limit` is optional: absent or `null` means unlimited, `0` means cash only.
+#[utoipa::path(
+    post,
+    operation_id = "create_supplier_doc",
+    path = "/api/v1/suppliers",
+    tag = "suppliers",
+    request_body = CreateSupplierRequest,
+    responses(
+        (status = 201, description = "Supplier created", body = SupplierIdResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Document is already in use", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn create_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -162,6 +195,21 @@ async fn create_supplier(
     Ok((StatusCode::CREATED, Json(SupplierIdResponse { id })))
 }
 
+/// Supplier details with derived account balance and available credit.
+#[utoipa::path(
+    get,
+    operation_id = "get_supplier_doc",
+    path = "/api/v1/suppliers/{id}",
+    tag = "suppliers",
+    params(("id" = Uuid, Path, description = "Supplier ID")),
+    responses(
+        (status = 200, description = "Supplier", body = SupplierResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn get_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -171,6 +219,30 @@ async fn get_supplier(
     Ok(Json(to_response(supplier)))
 }
 
+/// Update only the fields sent.
+///
+/// `credit_limit` is tri-state: omitted leaves it unchanged, explicit `null`
+/// clears it back to unlimited, and a value sets the cap. Deactivating with
+/// `is_active: false` requires a zero account position (otherwise 409).
+#[utoipa::path(
+    patch,
+    operation_id = "update_supplier_doc",
+    path = "/api/v1/suppliers/{id}",
+    tag = "suppliers",
+    params(("id" = Uuid, Path, description = "Supplier ID")),
+    request_body = UpdateSupplierRequest,
+    responses(
+        (status = 204, description = "Updated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Document in use, open account position, or account busy", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn update_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -194,6 +266,23 @@ async fn update_supplier(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Soft deactivation. Idempotent. Requires a zero account position (409 otherwise).
+#[utoipa::path(
+    post,
+    operation_id = "deactivate_supplier_doc",
+    path = "/api/v1/suppliers/{id}/deactivate",
+    tag = "suppliers",
+    params(("id" = Uuid, Path, description = "Supplier ID")),
+    responses(
+        (status = 204, description = "Deactivated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Open account position or account busy", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn deactivate_supplier(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -240,104 +329,3 @@ impl From<SupplierError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ---------------------------------------------
-
-/// List suppliers alphabetically by name.
-#[utoipa::path(
-    get,
-    path = "/api/v1/suppliers",
-    tag = "suppliers",
-    params(ListSuppliersQuery),
-    responses(
-        (status = 200, description = "Supplier page", body = SupplierListResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_suppliers_doc() {}
-
-/// Register a supplier.
-///
-/// `tax_id` is optional and unique when present; a duplicate returns 409.
-/// `credit_limit` is optional: absent or `null` means unlimited, `0` means cash only.
-#[utoipa::path(
-    post,
-    path = "/api/v1/suppliers",
-    tag = "suppliers",
-    request_body = CreateSupplierRequest,
-    responses(
-        (status = 201, description = "Supplier created", body = SupplierIdResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Document is already in use", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn create_supplier_doc() {}
-
-/// Supplier details with derived account balance and available credit.
-#[utoipa::path(
-    get,
-    path = "/api/v1/suppliers/{id}",
-    tag = "suppliers",
-    params(("id" = Uuid, Path, description = "Supplier ID")),
-    responses(
-        (status = 200, description = "Supplier", body = SupplierResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_supplier_doc() {}
-
-/// Update only the fields sent.
-///
-/// `credit_limit` is tri-state: omitted leaves it unchanged, explicit `null`
-/// clears it back to unlimited, and a value sets the cap. Deactivating with
-/// `is_active: false` requires a zero account position (otherwise 409).
-#[utoipa::path(
-    patch,
-    path = "/api/v1/suppliers/{id}",
-    tag = "suppliers",
-    params(("id" = Uuid, Path, description = "Supplier ID")),
-    request_body = UpdateSupplierRequest,
-    responses(
-        (status = 204, description = "Updated"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Document in use, open account position, or account busy", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn update_supplier_doc() {}
-
-/// Soft deactivation. Idempotent. Requires a zero account position (409 otherwise).
-#[utoipa::path(
-    post,
-    path = "/api/v1/suppliers/{id}/deactivate",
-    tag = "suppliers",
-    params(("id" = Uuid, Path, description = "Supplier ID")),
-    responses(
-        (status = 204, description = "Deactivated"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Open account position or account busy", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn deactivate_supplier_doc() {}
