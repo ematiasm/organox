@@ -122,6 +122,34 @@ pub struct PurchaseReturnsSummaryResponse {
 
 // --- Handlers -----------------------------------------------------------
 
+/// Return part or all of a completed purchase to its supplier.
+///
+/// Deducts returned goods from stock (rejecting with 409 when stock is
+/// insufficient), cancels open payable debt on the purchase first, and settles
+/// any already-paid surplus according to `surplus_mode`: either refunding into
+/// the wallets that paid for the purchase (`wallet_refund`) or leaving it as
+/// unapplied supplier credit (`supplier_credit`).
+#[utoipa::path(
+    post,
+    operation_id = "create_purchase_return_doc",
+    path = "/api/v1/purchases/{id}/returns",
+    tag = "purchase_returns",
+    params(("id" = Uuid, Path, description = "Purchase ID")),
+    request_body = CreatePurchaseReturnRequest,
+    responses(
+        (status = 201, description = "Purchase return issued", body = PurchaseReturnResponse),
+        (status = 200, description = "Existing purchase return returned for a repeated idempotency key",
+         body = PurchaseReturnResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Purchase not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Purchase not completed, quantity or total exceeds purchase, insufficient stock, insufficient wallet refund capacity, inactive supplier for credit, or busy supplier account",
+         body = crate::openapi::Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Invalid reason, idempotency key, product not in purchase, duplicate product, or invalid quantity",
+         body = crate::openapi::Problem, content_type = "application/problem+json"),
+    )
+)]
 async fn create_purchase_return(
     State(state): State<AppState>,
     user: AuthUser,
@@ -158,6 +186,22 @@ async fn create_purchase_return(
     Ok((status, Json(to_response(created.detail))))
 }
 
+/// Returnable lines, open payable, wallet refund capacity, and issued returns
+/// for one purchase.
+#[utoipa::path(
+    get,
+    operation_id = "get_purchase_returns_doc",
+    path = "/api/v1/purchases/{id}/returns",
+    tag = "purchase_returns",
+    params(("id" = Uuid, Path, description = "Purchase ID")),
+    responses(
+        (status = 200, description = "Return summary for the purchase", body = PurchaseReturnsSummaryResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Purchase not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn purchase_returns(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -282,53 +326,3 @@ impl From<PurchaseReturnsError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ----------------------------------------------
-
-/// Return part or all of a completed purchase to its supplier.
-///
-/// Deducts returned goods from stock (rejecting with 409 when stock is
-/// insufficient), cancels open payable debt on the purchase first, and settles
-/// any already-paid surplus according to `surplus_mode`: either refunding into
-/// the wallets that paid for the purchase (`wallet_refund`) or leaving it as
-/// unapplied supplier credit (`supplier_credit`).
-#[utoipa::path(
-    post,
-    path = "/api/v1/purchases/{id}/returns",
-    tag = "purchase_returns",
-    params(("id" = Uuid, Path, description = "Purchase ID")),
-    request_body = CreatePurchaseReturnRequest,
-    responses(
-        (status = 201, description = "Purchase return issued", body = PurchaseReturnResponse),
-        (status = 200, description = "Existing purchase return returned for a repeated idempotency key",
-         body = PurchaseReturnResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Purchase not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Purchase not completed, quantity or total exceeds purchase, insufficient stock, insufficient wallet refund capacity, inactive supplier for credit, or busy supplier account",
-         body = crate::openapi::Problem, content_type = "application/problem+json"),
-        (status = 422, description = "Invalid reason, idempotency key, product not in purchase, duplicate product, or invalid quantity",
-         body = crate::openapi::Problem, content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn create_purchase_return_doc() {}
-
-/// Returnable lines, open payable, wallet refund capacity, and issued returns
-/// for one purchase.
-#[utoipa::path(
-    get,
-    path = "/api/v1/purchases/{id}/returns",
-    tag = "purchase_returns",
-    params(("id" = Uuid, Path, description = "Purchase ID")),
-    responses(
-        (status = 200, description = "Return summary for the purchase", body = PurchaseReturnsSummaryResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Purchase not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_purchase_returns_doc() {}

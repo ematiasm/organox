@@ -128,8 +128,8 @@ pub struct Problem {
         crate::purchases::handlers::remove_item,
         crate::purchases::handlers::complete_purchase,
         crate::purchases::handlers::cancel_purchase,
-        crate::purchase_returns::handlers::create_purchase_return_doc,
-        crate::purchase_returns::handlers::get_purchase_returns_doc,
+        crate::purchase_returns::handlers::create_purchase_return,
+        crate::purchase_returns::handlers::purchase_returns,
     ),
     components(schemas(
         Problem,
