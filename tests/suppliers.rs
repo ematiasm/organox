@@ -4,18 +4,17 @@
 //! blank strings normalized away, deactivation instead of deletion, honest page
 //! totals, LIKE wildcard escaping, and RFC 7807 HTTP contract.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use organox::AppState;
+use common::{app, seed_user_with_password};
 use organox::auth::model::Role;
-use organox::auth::repository::{self, NewUser};
-use organox::auth::{password, validation};
 use organox::catalog::model::ProductKind;
 use organox::catalog::service::{self as catalog, CreateProductInput};
 use organox::payments::model::WalletMovementKind;
 use organox::payments::repository::{self as wallet_repo, NewMethod, NewWalletMovement};
 use organox::purchases::service as purchases_service;
-use organox::routes::router;
 use organox::supplier_accounts::repository::{
     self as supplier_accounts, NewSupplierCreditRefund, NewSupplierPayment,
 };
@@ -27,31 +26,6 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
-
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
-}
-
-async fn seed_user_with_password(pool: &PgPool, email: &str, role: Role) -> (Uuid, String) {
-    let password = test_password();
-    let email = validation::ValidatedEmail::parse(email).expect("email");
-    let hash = password::hash(&password).expect("hash");
-    let id = repository::create_user(
-        pool,
-        NewUser {
-            email: &email,
-            password_hash: &hash,
-            role,
-        },
-    )
-    .await
-    .expect("user");
-    (id, password)
-}
 
 async fn login_cookie(app: &axum::Router, email: &str, password: &str) -> String {
     let response = app

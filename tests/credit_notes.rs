@@ -8,17 +8,16 @@
 //!     movement.
 //!  4. The refund leaves the wallets that received the payment.
 
-use organox::AppState;
+mod common;
+
+use common::{app, seed_user_with_password};
 use organox::auth::model::Role;
-use organox::auth::repository::{self, NewUser};
-use organox::auth::{password, validation};
 use organox::catalog::model::{MovementReason, ProductKind};
 use organox::catalog::service::{self as catalog, CreateProductInput, RecordMovementInput};
 use organox::credit_notes::model::ReturnLine;
 use organox::credit_notes::service::{self as credit_notes, CreditNotesError};
 use organox::customer_accounts::repository as ledger;
 use organox::payments::service::{self as payments, CreateMethodInput, CreateWalletInput};
-use organox::routes::router;
 use organox::sales::model::SalePaymentInput;
 use organox::sales::service as sales;
 use rust_decimal::Decimal;
@@ -26,34 +25,10 @@ use rust_decimal_macros::dec;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// A password generated per test run, so no credential is written down.
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
-}
-
-async fn seed_user_with_password(pool: &PgPool) -> (Uuid, String) {
-    let password = test_password();
-    let email = validation::ValidatedEmail::parse("cashier@pyme.com").expect("email");
-    let hash = password::hash(&password).expect("hash");
-    let id = repository::create_user(
-        pool,
-        NewUser {
-            email: &email,
-            password_hash: &hash,
-            role: Role::Owner,
-        },
-    )
-    .await
-    .expect("user");
-    (id, password)
-}
-
 async fn seed_user(pool: &PgPool) -> Uuid {
-    seed_user_with_password(pool).await.0
+    seed_user_with_password(pool, "cashier@pyme.com", Role::Owner)
+        .await
+        .0
 }
 
 async fn seed_product(pool: &PgPool, name: &str, price: Decimal) -> Uuid {
@@ -909,7 +884,7 @@ async fn only_a_sale_refund_may_name_a_credit_note(pool: PgPool) {
 async fn http_credit_note_returns_the_document(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
     stock(&pool, actor, product, dec!(10)).await;
     let (sale, _, _) = charged_sale(&pool, actor, product, dec!(2)).await;
@@ -978,7 +953,7 @@ async fn http_credit_note_returns_the_document(pool: PgPool) {
 async fn http_get_credit_notes_returns_the_sale_credit_summary(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
     stock(&pool, actor, product, dec!(10)).await;
     let (sale, _, _) = charged_sale(&pool, actor, product, dec!(3)).await;
@@ -1136,7 +1111,7 @@ async fn a_fractional_quantity_returns_a_consistent_amount(pool: PgPool) {
 async fn http_credit_note_reports_not_found_and_unprocessable(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(5)).await;
     let (sale, _, _) = charged_sale(&pool, actor, product, dec!(2)).await;
@@ -1183,7 +1158,7 @@ async fn http_credit_note_reports_not_found_and_unprocessable(pool: PgPool) {
 async fn the_cumulative_refund_cannot_exceed_the_sale_total(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(33.33)).await;
     stock(&pool, actor, product, dec!(1)).await;
 
@@ -1289,7 +1264,7 @@ async fn the_cumulative_refund_cannot_exceed_the_sale_total(pool: PgPool) {
 async fn repeating_the_idempotency_key_returns_the_same_note(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(5)).await;
     let (sale, method, _) = charged_sale(&pool, actor, product, dec!(2)).await;
@@ -1396,7 +1371,7 @@ async fn repeating_the_idempotency_key_returns_the_same_note(pool: PgPool) {
 async fn a_keyed_create_answers_201_then_200_over_http(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(5)).await;
     let (sale, _, _) = charged_sale(&pool, actor, product, dec!(2)).await;
@@ -1463,7 +1438,7 @@ async fn a_keyed_create_answers_201_then_200_over_http(pool: PgPool) {
 async fn an_over_long_key_is_rejected(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(5)).await;
     let (sale, _, _) = charged_sale(&pool, actor, product, dec!(2)).await;
@@ -1568,7 +1543,7 @@ async fn two_concurrent_keyed_creates_write_one_note(pool: PgPool) {
 async fn a_fractional_sale_discloses_the_money_allowance(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(33.33)).await;
     stock(&pool, actor, product, dec!(1)).await;
 
@@ -1945,7 +1920,7 @@ async fn refund_count(pool: &PgPool, sale: Uuid) -> i64 {
 
 #[sqlx::test]
 async fn a_note_on_an_unpaid_credit_sale_only_cancels_debt(pool: PgPool) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let customer = seed_customer(&pool, "Ana").await;
     let product = seed_product(&pool, "Flour", dec!(10.00)).await;
     stock(&pool, actor, product, dec!(10)).await;
@@ -2000,7 +1975,7 @@ async fn a_note_on_an_unpaid_credit_sale_only_cancels_debt(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_note_cancels_debt_before_refunding_cash(pool: PgPool) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let customer = seed_customer(&pool, "Ana").await;
     let product = seed_product(&pool, "Flour", dec!(10.00)).await;
     stock(&pool, actor, product, dec!(10)).await;
@@ -2061,7 +2036,7 @@ async fn a_note_cancels_debt_before_refunding_cash(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_note_refunds_only_the_money_actually_collected(pool: PgPool) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let customer = seed_customer(&pool, "Ana").await;
     let product = seed_product(&pool, "Flour", dec!(10.00)).await;
     stock(&pool, actor, product, dec!(10)).await;
@@ -2155,7 +2130,7 @@ async fn a_note_refunds_only_the_money_actually_collected(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_note_on_a_cash_sale_keeps_refunding_its_payments(pool: PgPool) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(100.00)).await;
     stock(&pool, actor, product, dec!(3)).await;
     let cash_method = cash(&pool).await;
@@ -2217,7 +2192,7 @@ async fn a_note_on_a_cash_sale_keeps_refunding_its_payments(pool: PgPool) {
 
 #[sqlx::test]
 async fn three_notes_never_refund_more_than_the_sale_charged(pool: PgPool) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(10.00)).await;
     stock(&pool, actor, product, dec!(10)).await;
     let method = cash(&pool).await;
@@ -2263,7 +2238,7 @@ async fn three_notes_never_refund_more_than_the_sale_charged(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_note_refuses_cash_no_tender_collected(pool: PgPool) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(10.00)).await;
     stock(&pool, actor, product, dec!(10)).await;
 
@@ -2324,7 +2299,7 @@ async fn a_note_refuses_cash_no_tender_collected(pool: PgPool) {
 
 #[sqlx::test]
 async fn concurrent_credit_note_and_receipt_allocation_do_not_deadlock(pool: PgPool) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let customer = seed_customer(&pool, "Ana").await;
     let product = seed_product(&pool, "Flour", dec!(10.00)).await;
     stock(&pool, actor, product, dec!(20)).await;
@@ -2397,7 +2372,7 @@ async fn concurrent_credit_note_and_receipt_allocation_do_not_deadlock(pool: PgP
 
 #[sqlx::test]
 async fn partial_refunds_across_three_tenders_do_not_fail_with_alabama_paradox(pool: PgPool) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Candy", dec!(0.01)).await;
     stock(&pool, actor, product, dec!(700)).await;
 
@@ -2504,7 +2479,7 @@ async fn partial_refunds_across_three_tenders_do_not_fail_with_alabama_paradox(p
 async fn partial_refunds_consolidate_till_and_receipt_on_same_tender_across_three_tenders(
     pool: PgPool,
 ) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let customer = seed_customer(&pool, "Ana").await;
     let product = seed_product(&pool, "Candy", dec!(0.01)).await;
     stock(&pool, actor, product, dec!(700)).await;
@@ -2600,7 +2575,7 @@ async fn partial_refunds_consolidate_till_and_receipt_on_same_tender_across_thre
 
 #[sqlx::test]
 async fn credit_note_rejects_quantity_above_numeric_ceiling_with_422(pool: PgPool) {
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let method = cash(&pool).await;
     let product = seed_product(&pool, "Flour", dec!(10.00)).await;
     stock(&pool, actor, product, dec!(10)).await;
@@ -2624,7 +2599,7 @@ async fn credit_note_rejects_quantity_above_numeric_ceiling_with_422(pool: PgPoo
 async fn refunded_receipt_does_not_back_future_sale_or_misroute_credit_note_refund(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let customer = seed_customer(&pool, "Ana").await;
     let product = seed_product(&pool, "Flour", dec!(50.00)).await;
     stock(&pool, actor, product, dec!(5)).await;
@@ -2721,7 +2696,7 @@ async fn credit_notes_match_per_line_half_away_from_zero_rounding_across_two_mid
 ) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let p_a = seed_product(&pool, "Spice A", dec!(1.01)).await;
     let p_b = seed_product(&pool, "Spice B", dec!(1.01)).await;
     stock(&pool, actor, p_a, dec!(5)).await;

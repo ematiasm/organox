@@ -4,17 +4,14 @@
 //! through HTTP, and the Spanish aliases in `ProductKind`/`MovementReason` are
 //! accepted input that callers may still send.
 
+mod common;
+
 use std::str::FromStr;
 
+use common::test_password;
 use organox::auth::model::Role;
 use organox::auth::validation::{ValidationError, validate_password};
 use organox::catalog::model::{MovementReason, ProductKind};
-use uuid::Uuid;
-
-/// A password generated per test run, so no credential is written down.
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
 
 #[test]
 fn role_serializes_to_its_wire_value() {

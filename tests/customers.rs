@@ -6,46 +6,19 @@
 //! total so the screen cannot truncate silently (the defect issue #22 fixed for
 //! products).
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use organox::AppState;
+use common::{app, seed_user_with_password};
 use organox::auth::model::Role;
-use organox::auth::repository::{self, NewUser};
-use organox::auth::{password, validation};
 use organox::customers::service::{self, CreateCustomerInput, CustomerError, UpdateCustomerInput};
 use organox::customers::validation::ValidationError;
-use organox::routes::router;
 use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
-
-/// A password generated per test run, so no credential is written down.
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
-}
-
-async fn seed_user_with_password(pool: &PgPool, email: &str, role: Role) -> (Uuid, String) {
-    let password = test_password();
-    let email = validation::ValidatedEmail::parse(email).expect("email");
-    let hash = password::hash(&password).expect("hash");
-    let id = repository::create_user(
-        pool,
-        NewUser {
-            email: &email,
-            password_hash: &hash,
-            role,
-        },
-    )
-    .await
-    .expect("user");
-    (id, password)
-}
 
 fn new_customer(name: &str) -> CreateCustomerInput {
     CreateCustomerInput {

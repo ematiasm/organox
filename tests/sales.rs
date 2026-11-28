@@ -7,7 +7,9 @@
 //!  3. An abandoned draft never touches the stock ledger.
 //!  4. The server calculates the total.
 
-use organox::AppState;
+mod common;
+
+use common::{app, seed_user_with_password, test_password};
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
 use organox::auth::{password, validation};
@@ -16,7 +18,6 @@ use organox::catalog::service::{self as catalog, CreateProductInput, RecordMovem
 use organox::customers::service::{self as customers, CreateCustomerInput, UpdateCustomerInput};
 use organox::payments::model::WalletMovementKind;
 use organox::payments::service::{self as payments, CreateMethodInput, CreateWalletInput};
-use organox::routes::router;
 use organox::sales::model::{SalePaymentInput, SaleStatus};
 use organox::sales::repository::CompletedSale;
 use organox::sales::service::{self as sales, SalesError};
@@ -25,36 +26,12 @@ use rust_decimal_macros::dec;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// A password generated per test run, so no credential is written down.
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
-}
-
 /// Creates the cashier and returns both its ID and the generated password, so
 /// an HTTP test can log in with the same value.
-async fn seed_user_with_password(pool: &PgPool) -> (Uuid, String) {
-    let password = test_password();
-    let email = validation::ValidatedEmail::parse("cashier@pyme.com").expect("email");
-    let hash = password::hash(&password).expect("hash");
-    let id = repository::create_user(
-        pool,
-        NewUser {
-            email: &email,
-            password_hash: &hash,
-            role: Role::Owner,
-        },
-    )
-    .await
-    .expect("user");
-    (id, password)
-}
-
 async fn seed_user(pool: &PgPool) -> Uuid {
-    seed_user_with_password(pool).await.0
+    seed_user_with_password(pool, "cashier@pyme.com", Role::Owner)
+        .await
+        .0
 }
 
 async fn seed_product(pool: &PgPool, name: &str, price: Decimal) -> Uuid {
@@ -613,7 +590,7 @@ async fn completed_sales_are_listed_newest_first_and_paginated(pool: PgPool) {
 async fn http_sales_list_paginates(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (_, password) = seed_user_with_password(&pool).await;
+    let (_, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     let actor: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = 'cashier@pyme.com'")
         .fetch_one(&pool)
@@ -1377,7 +1354,7 @@ async fn login_cookie(pool: &PgPool, password: &str) -> String {
 async fn http_sale_flow_returns_server_computed_total(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (_, password) = seed_user_with_password(&pool).await;
+    let (_, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(1500.50)).await;
     // `query` without a macro needs no `.sqlx/` cache; this test only needs
     // an ID, not query type checking.
@@ -1440,7 +1417,7 @@ async fn http_sale_flow_returns_server_computed_total(pool: PgPool) {
 async fn http_open_draft_reports_created_then_reused(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (_, password) = seed_user_with_password(&pool).await;
+    let (_, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let cookie = login_cookie(&pool, &password).await;
 
     let first = app(pool.clone())
@@ -1487,7 +1464,7 @@ async fn http_open_draft_reports_created_then_reused(pool: PgPool) {
 async fn http_customer_route_attaches_clears_and_reports_the_fields(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (_, password) = seed_user_with_password(&pool).await;
+    let (_, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let customer = seed_customer(&pool, "Ana Pérez").await;
     let cookie = login_cookie(&pool, &password).await;
 
@@ -1602,7 +1579,7 @@ async fn http_customer_route_attaches_clears_and_reports_the_fields(pool: PgPool
 async fn http_customer_route_errors_are_problem_json(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(100)).await;
     stock(&pool, actor, product, dec!(10)).await;
     let inactive = seed_customer(&pool, "Viejo").await;
@@ -1689,7 +1666,7 @@ async fn http_customer_route_errors_are_problem_json(pool: PgPool) {
 async fn an_omitted_customer_id_is_rejected_and_keeps_the_customer(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let customer = seed_customer(&pool, "Ana Pérez").await;
     let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::set_customer(&pool, draft, Some(customer))
@@ -1801,7 +1778,7 @@ async fn problem_detail(response: axum::http::Response<axum::body::Body>) -> Str
 /// The common setup of the on-account tests: a cashier with a session, a
 /// product at `price`, stock for ten units, and a draft holding one unit.
 async fn draft_at_price(pool: &PgPool, price: Decimal) -> (Uuid, Uuid, Uuid, String) {
-    let (actor, password) = seed_user_with_password(pool).await;
+    let (actor, password) = seed_user_with_password(pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(pool, "Flour", price).await;
     stock(pool, actor, product, dec!(10)).await;
     let (draft, _) = sales::open_draft(pool, actor).await.unwrap();
@@ -3033,7 +3010,7 @@ async fn item_mutations_serialize_with_completion_lock(pool: PgPool) {
 async fn concurrent_http_item_mutations_and_complete_preserve_invariants(pool: PgPool) {
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let flour = seed_product(&pool, "Flour", dec!(100.00)).await;
     let sugar = seed_product(&pool, "Sugar", dec!(50.00)).await;
     stock(&pool, actor, flour, dec!(50)).await;
@@ -3179,7 +3156,7 @@ async fn http_sale_complete_rejects_decimal_max_payments_without_panicking(pool:
     use serde_json::json;
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(100.00)).await;
     stock(&pool, actor, product, dec!(10)).await;
     let method = cash(&pool).await;
@@ -3301,7 +3278,7 @@ async fn http_sale_items_enforce_quantity_and_total_ceilings(pool: PgPool) {
     use serde_json::json;
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let cheap = seed_product(&pool, "Bolt", dec!(1.00)).await;
     let pricey = seed_product(&pool, "Machinery", dec!(10000000.00)).await;
     let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
@@ -3389,7 +3366,7 @@ async fn http_set_item_quantity_rejects_negative_and_excess_precision(pool: PgPo
     use serde_json::json;
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let product = seed_product(&pool, "Flour", dec!(100.00)).await;
     let (draft, _) = sales::open_draft(&pool, actor).await.unwrap();
     sales::add_item(&pool, draft, product, dec!(2))
@@ -3470,7 +3447,7 @@ async fn midpoint_rounding_line_subtotals_and_frozen_total_stay_consistent(pool:
     use serde_json::json;
     use tower::ServiceExt;
 
-    let (actor, password) = seed_user_with_password(&pool).await;
+    let (actor, password) = seed_user_with_password(&pool, "cashier@pyme.com", Role::Owner).await;
     let cookie = login_cookie(&pool, &password).await;
     let method = cash(&pool).await;
 

@@ -6,16 +6,16 @@
 //!  3. Repointing a method never moves money that was already collected.
 //!  4. The ledger cannot be rewritten.
 
-use axum::Router;
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use organox::AppState;
+use common::{app, test_password};
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
 use organox::auth::{password, validation};
 use organox::payments::model::WalletMovementKind;
 use organox::payments::repository::{self as ledger, NewWalletMovement};
-use organox::routes::router;
 use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -23,20 +23,6 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const EMAIL: &str = "owner@pyme.com";
-
-/// A password generated per test run.
-///
-/// Not a literal on purpose: `rust/hard-coded-cryptographic-value` flags any
-/// fixed value used as a credential, and it is right to — the habit is what
-/// leaks into production code. The other test suites still carry that alert
-/// (25 open instances of the same rule); this file does not add to the pile.
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> Router {
-    router(AppState::new(pool, false))
-}
 
 async fn seed_owner(pool: &PgPool, password: &str) {
     let email = validation::ValidatedEmail::parse(EMAIL).expect("email");

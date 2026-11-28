@@ -9,30 +9,23 @@
 //! - `GET /api/v1/suppliers/{id}/adjustments`
 //! - `GET /api/v1/accounts/payables`
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use organox::AppState;
+use common::{app, test_password};
 use organox::auth::model::Role;
 use organox::auth::repository::{self as auth_repo, NewUser};
 use organox::auth::{password, validation};
 use organox::catalog::model::ProductKind;
 use organox::catalog::service::{self as catalog, CreateProductInput};
 use organox::payments::repository as wallets;
-use organox::routes::router;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
-
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
-
-fn app(pool: PgPool) -> axum::Router {
-    router(AppState::new(pool, false))
-}
 
 /// Test-only helper to backdate `completed_at` for aging bucket tests.
 /// Temporarily disables `purchases_prevent_closed_mutation` inside a single

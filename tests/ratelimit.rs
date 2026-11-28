@@ -8,9 +8,12 @@
 //!  * 429 includes `Retry-After`;
 //!  * the IP limit does not penalize other IPs.
 
+mod common;
+
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
+use common::test_password;
 use organox::AppState;
 use organox::auth::model::Role;
 use organox::auth::repository::{self, NewUser};
@@ -24,12 +27,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
-use uuid::Uuid;
-
-/// A password generated per test run, so no credential is written down.
-fn test_password() -> String {
-    format!("pw-{}", Uuid::new_v4())
-}
 
 fn config() -> organox::config::Config {
     // Minimal config for test state, without reading the environment.
