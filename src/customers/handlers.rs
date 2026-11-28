@@ -128,6 +128,19 @@ pub struct ListCustomersQuery {
 
 // --- Handlers -----------------------------------------------------------
 
+/// List customers, newest first is not the order: alphabetical by name.
+#[utoipa::path(
+    get,
+    operation_id = "list_customers_doc",
+    path = "/api/v1/customers",
+    tag = "customers",
+    params(ListCustomersQuery),
+    responses(
+        (status = 200, description = "Customer page", body = CustomerListResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn list_customers(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -153,6 +166,27 @@ async fn list_customers(
     }))
 }
 
+/// Register a customer.
+///
+/// `tax_id` is optional and unique when present; a duplicate returns 409.
+/// `credit_limit` is optional too: absent or `null` means unlimited, `0`
+/// means cash only, and a negative or three-decimal value is a 422.
+#[utoipa::path(
+    post,
+    operation_id = "create_customer_doc",
+    path = "/api/v1/customers",
+    tag = "customers",
+    request_body = CreateCustomerRequest,
+    responses(
+        (status = 201, description = "Customer created", body = CustomerIdResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Document is already in use", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn create_customer(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -173,6 +207,21 @@ async fn create_customer(
     Ok((StatusCode::CREATED, Json(CustomerIdResponse { id })))
 }
 
+/// Customer details.
+#[utoipa::path(
+    get,
+    operation_id = "get_customer_doc",
+    path = "/api/v1/customers/{id}",
+    tag = "customers",
+    params(("id" = Uuid, Path, description = "Customer ID")),
+    responses(
+        (status = 200, description = "Customer", body = CustomerResponse),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn get_customer(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -182,6 +231,31 @@ async fn get_customer(
     Ok(Json(to_response(customer)))
 }
 
+/// Update only the fields sent.
+///
+/// A text field left out is not touched and cannot be cleared: there is no
+/// body that removes a document, an email or a phone. `credit_limit` is the
+/// one exception — an explicit `null` returns the customer to unlimited —
+/// because it is the only field a real case has asked to clear.
+#[utoipa::path(
+    patch,
+    operation_id = "update_customer_doc",
+    path = "/api/v1/customers/{id}",
+    tag = "customers",
+    params(("id" = Uuid, Path, description = "Customer ID")),
+    request_body = UpdateCustomerRequest,
+    responses(
+        (status = 204, description = "Updated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Document is already in use, account is busy, or deactivating a customer with an open balance or unapplied credit", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn update_customer(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -205,6 +279,25 @@ async fn update_customer(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Soft deletion. Idempotent. Never deletes: history points at the customer.
+/// Refused with `409` while the customer carries a non-zero balance or
+/// unapplied credit.
+#[utoipa::path(
+    post,
+    operation_id = "deactivate_customer_doc",
+    path = "/api/v1/customers/{id}/deactivate",
+    tag = "customers",
+    params(("id" = Uuid, Path, description = "Customer ID")),
+    responses(
+        (status = 204, description = "Deactivated"),
+        (status = 401, description = "No session", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 404, description = "Not found", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+        (status = 409, description = "Customer carries an open balance or unapplied credit, or the account is busy", body = crate::openapi::Problem,
+         content_type = "application/problem+json"),
+    )
+)]
 async fn deactivate_customer(
     State(state): State<AppState>,
     _user: AuthUser,
@@ -251,111 +344,3 @@ impl From<CustomerError> for AppError {
         }
     }
 }
-
-// --- OpenAPI documentation ---------------------------------------------
-//
-// Stubs exist only for `#[utoipa::path]` to generate the PathItem. The real
-// routes are served by the handlers above.
-
-/// List customers, newest first is not the order: alphabetical by name.
-#[utoipa::path(
-    get,
-    path = "/api/v1/customers",
-    tag = "customers",
-    params(ListCustomersQuery),
-    responses(
-        (status = 200, description = "Customer page", body = CustomerListResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn list_customers_doc() {}
-
-/// Register a customer.
-///
-/// `tax_id` is optional and unique when present; a duplicate returns 409.
-/// `credit_limit` is optional too: absent or `null` means unlimited, `0`
-/// means cash only, and a negative or three-decimal value is a 422.
-#[utoipa::path(
-    post,
-    path = "/api/v1/customers",
-    tag = "customers",
-    request_body = CreateCustomerRequest,
-    responses(
-        (status = 201, description = "Customer created", body = CustomerIdResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Document is already in use", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn create_customer_doc() {}
-
-/// Customer details.
-#[utoipa::path(
-    get,
-    path = "/api/v1/customers/{id}",
-    tag = "customers",
-    params(("id" = Uuid, Path, description = "Customer ID")),
-    responses(
-        (status = 200, description = "Customer", body = CustomerResponse),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn get_customer_doc() {}
-
-/// Update only the fields sent.
-///
-/// A text field left out is not touched and cannot be cleared: there is no
-/// body that removes a document, an email or a phone. `credit_limit` is the
-/// one exception — an explicit `null` returns the customer to unlimited —
-/// because it is the only field a real case has asked to clear.
-#[utoipa::path(
-    patch,
-    path = "/api/v1/customers/{id}",
-    tag = "customers",
-    params(("id" = Uuid, Path, description = "Customer ID")),
-    request_body = UpdateCustomerRequest,
-    responses(
-        (status = 204, description = "Updated"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Document is already in use, account is busy, or deactivating a customer with an open balance or unapplied credit", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 422, description = "Invalid input", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn update_customer_doc() {}
-
-/// Soft deletion. Idempotent. Never deletes: history points at the customer.
-/// Refused with `409` while the customer carries a non-zero balance or
-/// unapplied credit.
-#[utoipa::path(
-    post,
-    path = "/api/v1/customers/{id}/deactivate",
-    tag = "customers",
-    params(("id" = Uuid, Path, description = "Customer ID")),
-    responses(
-        (status = 204, description = "Deactivated"),
-        (status = 401, description = "No session", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 404, description = "Not found", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-        (status = 409, description = "Customer carries an open balance or unapplied credit, or the account is busy", body = crate::openapi::Problem,
-         content_type = "application/problem+json"),
-    )
-)]
-#[allow(dead_code)]
-fn deactivate_customer_doc() {}
