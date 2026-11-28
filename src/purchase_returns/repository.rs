@@ -20,6 +20,7 @@ use super::model::{
     PurchaseReturnRefund, ReturnLine, ReturnableLine, SurplusMode, split_remaining_capacity,
 };
 use crate::catalog::model::MovementReason;
+use crate::db::violated_constraint;
 use crate::payments::model::WalletMovementKind;
 use crate::payments::repository::{self as wallet, NewWalletMovement};
 use crate::purchases::model::PurchaseStatus;
@@ -145,13 +146,6 @@ struct StoredReturn {
     reason: String,
     created_by: Uuid,
     created_at: DateTime<Utc>,
-}
-
-fn violated_constraint(err: &sqlx::Error) -> Option<&str> {
-    match err {
-        sqlx::Error::Database(db_err) => db_err.constraint(),
-        _ => None,
-    }
 }
 
 fn map_account_error(err: supplier_accounts::RepoError) -> RepoError {

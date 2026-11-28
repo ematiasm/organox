@@ -19,6 +19,7 @@ use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::extract::{AppJson, AppPath, AppQuery};
+use crate::http::present_option;
 use crate::sales::model::{Sale, SalePaymentInput, SaleStatus};
 use crate::sales::service::{self, SalesError};
 
@@ -149,15 +150,6 @@ pub struct SetSaleCustomerRequest {
     #[serde(default, deserialize_with = "present_option")]
     #[schema(value_type = Option<Uuid>)]
     pub customer_id: Option<Option<Uuid>>,
-}
-
-/// Distinguishes an omitted field (`None`) from an explicit `null`
-/// (`Some(None)`): serde collapses both to `None` for a plain `Option`.
-fn present_option<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<Uuid>::deserialize(deserializer).map(Some)
 }
 
 // --- Handlers -----------------------------------------------------------
@@ -475,12 +467,7 @@ async fn list_sales(
 
 // --- Conversions --------------------------------------------------------
 
-use crate::money::format_money;
-
-/// Quantities without extra zeros (`"2"`, `"1.5"`).
-fn format_quantity(value: Decimal) -> String {
-    value.normalize().to_string()
-}
+use crate::money::{format_money, format_quantity};
 
 fn to_response(sale: Sale) -> SaleResponse {
     let items: Vec<SaleItemResponse> = sale

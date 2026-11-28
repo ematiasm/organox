@@ -23,6 +23,7 @@ use super::model::{
     SupplierAccountEntryKind, SupplierAccountPosition, SupplierAdjustmentLogItem,
     SupplierPaymentLogAllocation, SupplierPaymentLogItem,
 };
+use crate::db::violated_constraint;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
@@ -723,13 +724,6 @@ async fn payables_page(
 }
 
 // --- Writes -------------------------------------------------------------
-
-fn violated_constraint(err: &sqlx::Error) -> Option<&str> {
-    match err {
-        sqlx::Error::Database(db_err) => db_err.constraint(),
-        _ => None,
-    }
-}
 
 fn ensure_cents(amount: Decimal) -> Result<(), RepoError> {
     if amount <= Decimal::ZERO {

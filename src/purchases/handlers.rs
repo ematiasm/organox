@@ -19,6 +19,7 @@ use crate::AppState;
 use crate::auth::AuthUser;
 use crate::error::AppError;
 use crate::extract::{AppJson, AppPath, AppQuery};
+use crate::http::present_option;
 use crate::purchases::model::{Purchase, PurchasePaymentInput, PurchaseStatus};
 use crate::purchases::service::{self, PurchaseError};
 
@@ -106,14 +107,6 @@ pub struct SetPurchaseSupplierRequest {
     #[serde(default, deserialize_with = "present_option")]
     #[schema(value_type = Option<Uuid>)]
     pub supplier_id: Option<Option<Uuid>>,
-}
-
-/// Distinguishes an omitted field (`None`) from an explicit `null` (`Some(None)`).
-fn present_option<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<Uuid>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize, ToSchema)]

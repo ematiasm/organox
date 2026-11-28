@@ -20,6 +20,7 @@ use super::model::{
     CustomerAccountEntryKind, ReceiptLogAllocation, ReceiptLogItem, ReceivableCustomer,
     ReceivablesTotals, SaleOutstanding,
 };
+use crate::db::violated_constraint;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
@@ -738,14 +739,6 @@ async fn receivables_page(
 }
 
 // --- Writes ------------------------------------------------------------
-
-/// The constraint that rejected the row, when the error came from the database.
-fn violated_constraint(err: &sqlx::Error) -> Option<&str> {
-    match err {
-        sqlx::Error::Database(db_err) => db_err.constraint(),
-        _ => None,
-    }
-}
 
 /// An amount a money writer accepts: positive, and no finer than cents. The
 /// column is `numeric(14, 2)`, so Postgres would silently round a third

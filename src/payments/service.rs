@@ -9,17 +9,12 @@ use uuid::Uuid;
 
 use super::model::{PaymentMethod, WalletMovement, WalletMovementKind, WalletWithBalance};
 use super::repository::{self, RepoError};
+use crate::money::MAX_AMOUNT;
 
 /// Long enough for "Cuenta corriente Banco Nación", short enough that it still
 /// fits a row in a settings table. The DB only rejects blanks, so this bound is
 /// the app's business.
 const MAX_NAME_LEN: usize = 60;
-
-/// `numeric(14, 2)` cannot hold more than this; validating here turns a database
-/// overflow (a 500) into a 422 that names the problem.
-fn max_amount() -> Decimal {
-    crate::money::MAX_AMOUNT
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PaymentsError {
@@ -226,10 +221,10 @@ pub async fn record_manual_movement(
     }
     let amount = input.amount;
 
-    if amount > max_amount() {
+    if amount > MAX_AMOUNT {
         return Err(PaymentsError::Validation(format!(
             "the amount must be at most {}",
-            max_amount()
+            MAX_AMOUNT
         )));
     }
 
@@ -284,11 +279,11 @@ mod tests {
 
     #[test]
     fn the_largest_amount_the_column_holds_is_accepted() {
-        assert!(dec!(999999999999.99) <= max_amount());
+        assert!(dec!(999999999999.99) <= MAX_AMOUNT);
     }
 
     #[test]
     fn an_amount_beyond_the_column_is_rejected() {
-        assert!(dec!(1000000000000.00) > max_amount());
+        assert!(dec!(1000000000000.00) > MAX_AMOUNT);
     }
 }

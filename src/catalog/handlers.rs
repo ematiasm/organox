@@ -394,14 +394,7 @@ async fn list_movements(
 
 // --- Conversions --------------------------------------------------------
 
-use crate::money::format_money;
-
-/// Quantity without extra zeros: `"12.5"`, not `"12.500"`. The column is
-/// `numeric(12,3)` and `SUM` returns the full scale; displaying it that way
-/// would leak a storage detail into the HTTP contract.
-fn format_quantity(value: Decimal) -> String {
-    value.normalize().to_string()
-}
+use crate::money::{format_money, format_quantity};
 
 fn to_response(item: model::ProductWithStock) -> ProductResponse {
     let low_stock = model::is_low_stock(&item.product, item.stock);

@@ -10,6 +10,7 @@ use sqlx::{PgExecutor, PgPool};
 use uuid::Uuid;
 
 use super::model::{PaymentMethod, Wallet, WalletMovement, WalletMovementKind, WalletWithBalance};
+use crate::db::violated_constraint;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
@@ -27,14 +28,6 @@ pub enum RepoError {
 
     #[error(transparent)]
     Database(#[from] sqlx::Error),
-}
-
-/// The constraint that rejected the row, when the error came from the database.
-fn violated_constraint(err: &sqlx::Error) -> Option<&str> {
-    match err {
-        sqlx::Error::Database(db_err) => db_err.constraint(),
-        _ => None,
-    }
 }
 
 // --- Wallets ------------------------------------------------------------

@@ -1,4 +1,5 @@
-//! Postgres connection and the only query in this slice (DB liveness).
+//! Postgres connection, the only query in this slice (DB liveness), and the
+//! shared `sqlx` error introspection the repositories use to name constraints.
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, postgres::PgConnectOptions};
@@ -30,4 +31,12 @@ pub async fn connect(database_url: &str, max_connections: u32) -> Result<PgPool,
 pub async fn ping(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query("SELECT 1").execute(pool).await?;
     Ok(())
+}
+
+/// The constraint that rejected the row, when the error came from the database.
+pub(crate) fn violated_constraint(err: &sqlx::Error) -> Option<&str> {
+    match err {
+        sqlx::Error::Database(db_err) => db_err.constraint(),
+        _ => None,
+    }
 }

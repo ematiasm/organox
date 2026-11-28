@@ -240,11 +240,7 @@ async fn purchase_returns(
 
 // --- Mapping ------------------------------------------------------------
 
-use crate::money::format_money;
-
-fn format_quantity(value: Decimal) -> String {
-    value.normalize().to_string()
-}
+use crate::money::{format_money, format_quantity};
 
 fn to_response(detail: PurchaseReturnDetail) -> PurchaseReturnResponse {
     PurchaseReturnResponse {

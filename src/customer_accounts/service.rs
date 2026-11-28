@@ -16,6 +16,7 @@ use crate::customer_accounts::model::{
     ReceiptLogItem, ReceivablesSummary,
 };
 use crate::customer_accounts::repository::{self, RepoError};
+use crate::money::MAX_AMOUNT;
 use crate::payments::model::WalletMovementKind;
 use crate::payments::repository as wallets;
 
@@ -114,14 +115,6 @@ impl From<wallets::RepoError> for ReceiptsError {
     }
 }
 
-/// `numeric(14, 2)` cannot hold more than this; validating here turns a
-/// database overflow (a 500) into a 422 that names the problem. The same
-/// lesson the credit limit learned in review: the boundary owns the column's
-/// magnitude.
-fn max_amount() -> Decimal {
-    crate::money::MAX_AMOUNT
-}
-
 /// Shared money validation at the boundary, in published precedence order:
 /// sign, then precision, then column magnitude.
 fn validate_amount(amount: Decimal) -> Result<(), ReceiptsError> {
@@ -133,8 +126,8 @@ fn validate_amount(amount: Decimal) -> Result<(), ReceiptsError> {
             amount,
         }));
     }
-    if amount > max_amount() {
-        return Err(ReceiptsError::AmountTooLarge { max: max_amount() });
+    if amount > MAX_AMOUNT {
+        return Err(ReceiptsError::AmountTooLarge { max: MAX_AMOUNT });
     }
     Ok(())
 }

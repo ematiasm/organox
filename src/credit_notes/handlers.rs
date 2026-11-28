@@ -231,12 +231,7 @@ async fn sale_credit_notes(
 
 // --- Mapping ------------------------------------------------------------
 
-use crate::money::format_money;
-
-/// Quantities without extra zeros (`"2"`, `"1.5"`).
-fn format_quantity(value: Decimal) -> String {
-    value.normalize().to_string()
-}
+use crate::money::{format_money, format_quantity};
 
 fn to_response(detail: CreditNoteDetail) -> CreditNoteResponse {
     CreditNoteResponse {
