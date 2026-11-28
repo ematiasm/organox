@@ -533,7 +533,8 @@ fn attach_children(
 /// own transaction instead, so it never waits on a second checkout.
 /// Same document assembly as `load_notes`, on a connection the caller already
 /// owns: `for_sale` runs it inside one repeatable-read transaction, and the
-/// create transaction uses `note_rows` directly for its replay pre-check.
+/// create replay pre-check reads its keyed note through the same transaction,
+/// so a keyed create holds one pool connection, never two.
 async fn load_notes_in(
     conn: &mut sqlx::PgConnection,
     sale_id: Uuid,
@@ -566,29 +567,28 @@ async fn load_notes(
         .collect())
 }
 
-/// Issue a credit note: validate against the sale, then write both ledgers.
-///
-/// The sale row is locked `FOR NO KEY UPDATE` first. Two cashiers returning
-/// the last unit at the same time would otherwise both pass the "still
-/// returnable" check and both write the return; serializing on the sale makes
-/// the second one see the first one's note, while staying compatible with
-/// PostgreSQL's `FOR KEY SHARE` FK checks from concurrent receipt allocations.
-///
-/// The products are NOT locked: a return adds stock, so it can never leave the
-/// catalog negative and needs no availability check.
-pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCreditNote, RepoError> {
-    let mut tx = pool.begin().await?;
+/// The sale row once `create` has locked it and confirmed it completed.
+struct CompletedSale {
+    total: Option<Decimal>,
+    customer_id: Option<Uuid>,
+}
 
-    // Lock 1: sale row `FOR NO KEY UPDATE` (never `FOR UPDATE`).
-    //
-    // `FOR NO KEY UPDATE` still serializes concurrent `credit_notes::create`
-    // and `sales::complete`/`sales::cancel` on the same sale, while remaining
-    // compatible with PostgreSQL's `FOR KEY SHARE` FK RI lock acquired when a
-    // concurrent `customer_accounts::service::collect` or
-    // `customer_accounts::repository::allocate` inserts into
-    // `customer_account_allocations (sale_id)` while holding the customer
-    // advisory lock. Using `FOR UPDATE` here would AB-BA deadlock with
-    // `collect`/`allocate` (sales lock <-> customer advisory lock).
+/// Lock the sale row and confirm the sale can still be credited.
+///
+/// Lock 1: sale row `FOR NO KEY UPDATE` (never `FOR UPDATE`).
+///
+/// `FOR NO KEY UPDATE` still serializes concurrent `credit_notes::create`
+/// and `sales::complete`/`sales::cancel` on the same sale, while remaining
+/// compatible with PostgreSQL's `FOR KEY SHARE` FK RI lock acquired when a
+/// concurrent `customer_accounts::service::collect` or
+/// `customer_accounts::repository::allocate` inserts into
+/// `customer_account_allocations (sale_id)` while holding the customer
+/// advisory lock. Using `FOR UPDATE` here would AB-BA deadlock with
+/// `collect`/`allocate` (sales lock <-> customer advisory lock).
+async fn lock_completed_sale(
+    conn: &mut sqlx::PgConnection,
+    sale_id: Uuid,
+) -> Result<CompletedSale, RepoError> {
     let sale = sqlx::query!(
         r#"
         SELECT status AS "status: SaleStatus", total, customer_id
@@ -596,9 +596,9 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
         WHERE id = $1
         FOR NO KEY UPDATE
         "#,
-        new.sale_id
+        sale_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or(RepoError::SaleNotFound)?;
 
@@ -606,48 +606,46 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
         return Err(RepoError::SaleNotCreditable);
     }
 
-    // A retry returns the first note, whatever the rest of the request says:
-    // the caller did not get its answer, not a new return to record.
-    //
-    // The pre-check reads through the open transaction, not the pool: a keyed
-    // create holds ONE pool connection while it owns the sale lock, so a
-    // saturated pool cannot turn a retry into a 500 with the lock held.
-    if let Some(key) = new.idempotency_key
-        && let Some(note) = note_rows(&mut *tx, new.sale_id, Some(key))
-            .await?
-            .into_iter()
-            .next()
-    {
-        let note_ids = [note.id];
-        let mut items = item_rows(&mut *tx, &note_ids).await?;
-        let mut refunds = refund_rows(&mut *tx, &note_ids).await?;
-        tx.rollback().await?;
-        return Ok(CreatedCreditNote {
-            detail: attach_children(note, &mut items, &mut refunds),
-            replayed: true,
-        });
-    }
+    Ok(CompletedSale {
+        total: sale.total,
+        customer_id: sale.customer_id,
+    })
+}
 
-    let sale_total = sale.total.ok_or(RepoError::SaleTotalMissing)?;
-    let already_refunded = sqlx::query!(
+/// What the sale's earlier notes already refunded, read under the sale lock
+/// this transaction holds.
+async fn refunded_so_far(
+    conn: &mut sqlx::PgConnection,
+    sale_id: Uuid,
+) -> Result<Decimal, RepoError> {
+    let refunded = sqlx::query!(
         r#"
         SELECT COALESCE(SUM(total), 0) AS "already_refunded!: Decimal"
         FROM credit_notes WHERE sale_id = $1
         "#,
-        new.sale_id
+        sale_id
     )
-    .fetch_one(&mut *tx)
-    .await?
-    .already_refunded;
+    .fetch_one(&mut *conn)
+    .await?;
 
-    let creditable = creditable_lines(&mut *tx, new.sale_id).await?;
+    Ok(refunded.already_refunded)
+}
 
-    // Pass 1: validate every line and compute the total from the sale's own
-    // prices. Nothing is written, so a rejected line leaves no trace.
+/// One accepted return line: the sale line it returns from, and how much.
+type AcceptedLine<'a> = (&'a CreditableLine, Decimal);
+
+/// Pass 1: validate every line and compute the total from the sale's own
+/// prices. Nothing is written, so a rejected line leaves no trace.
+///
+/// Returns the computed total and the accepted lines.
+fn validate_lines<'a>(
+    creditable: &'a [CreditableLine],
+    requested: &[ReturnLine],
+) -> Result<(Decimal, Vec<AcceptedLine<'a>>), RepoError> {
     let mut total = Decimal::ZERO;
-    let mut accepted = Vec::with_capacity(new.lines.len());
+    let mut accepted = Vec::with_capacity(requested.len());
 
-    for line in new.lines {
+    for line in requested {
         let sold = creditable
             .iter()
             .find(|sold| sold.product_id == line.product_id)
@@ -671,23 +669,41 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
         accepted.push((sold, line.quantity));
     }
 
-    // The per-product limit is not enough: rounding many small notes up can
-    // return more money than the sale charged. The sale row is locked, so no
-    // other note can move this sum between the read and the commit.
+    Ok((total, accepted))
+}
+
+/// The per-product limit is not enough: rounding many small notes up can
+/// return more money than the sale charged. The sale row is locked, so no
+/// other note can move this sum between the read and the commit.
+fn ensure_refund_within_sale(
+    sale_total: Decimal,
+    already_refunded: Decimal,
+    requested: Decimal,
+) -> Result<(), RepoError> {
     if already_refunded
-        .checked_add(total)
+        .checked_add(requested)
         .is_none_or(|sum| sum > sale_total)
     {
         return Err(RepoError::RefundExceedsSale {
             sale_total,
             already_refunded,
-            requested: total,
+            requested,
         });
     }
 
-    // Pass 2: the document.
-    let note_id = Uuid::now_v7();
-    let insert = sqlx::query_scalar!(
+    Ok(())
+}
+
+/// Insert the note row. Returns the raw database error so `create` can turn
+/// the idempotency-key unique violation into a replay instead of a failed
+/// second create.
+async fn insert_note_header(
+    conn: &mut sqlx::PgConnection,
+    note_id: Uuid,
+    new: &NewCreditNote<'_>,
+    total: Decimal,
+) -> Result<DateTime<Utc>, sqlx::Error> {
+    sqlx::query_scalar!(
         r#"
         INSERT INTO credit_notes (id, sale_id, total, reason, created_by, idempotency_key)
         VALUES ($1, $2, $3, $4, $5, $6)
@@ -700,8 +716,250 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
         new.created_by,
         new.idempotency_key,
     )
-    .fetch_one(&mut *tx)
-    .await;
+    .fetch_one(&mut *conn)
+    .await
+}
+
+/// The note's item rows and the stock movements that put the returned goods
+/// back on the shelf, one pair per accepted line.
+async fn insert_note_items_and_stock(
+    conn: &mut sqlx::PgConnection,
+    note_id: Uuid,
+    accepted: Vec<AcceptedLine<'_>>,
+    label: &str,
+    new: &NewCreditNote<'_>,
+) -> Result<Vec<CreditNoteItem>, RepoError> {
+    let mut items = Vec::with_capacity(accepted.len());
+
+    for (sold, quantity) in accepted {
+        let item_id = Uuid::now_v7();
+
+        sqlx::query!(
+            r#"
+            INSERT INTO credit_note_items (id, credit_note_id, product_id, quantity, unit_price)
+            VALUES ($1, $2, $3, $4, $5)
+            "#,
+            item_id,
+            note_id,
+            sold.product_id,
+            quantity,
+            sold.unit_price,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        // Returned goods rejoin stock. Same append-only ledger as every other
+        // movement; the reason carries the sign.
+        sqlx::query!(
+            r#"
+            INSERT INTO stock_movements (id, product_id, reason, quantity, note, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+            Uuid::now_v7(),
+            sold.product_id,
+            MovementReason::Return as MovementReason,
+            quantity,
+            label,
+            new.created_by,
+        )
+        .execute(&mut *conn)
+        .await?;
+
+        items.push(CreditNoteItem {
+            id: item_id,
+            product_id: sold.product_id,
+            product_name: sold.product_name.clone(),
+            quantity,
+            unit_price: sold.unit_price,
+        });
+    }
+
+    Ok(items)
+}
+
+/// Pass 3: the account. Debt first: the note cancels what the sale still
+/// owes, and only the remainder is refunded as cash, through the tenders
+/// that actually collected money for this sale. A note on a fully unpaid
+/// credit sale cancels debt and moves no money at all.
+///
+/// Returns the debt this note cancelled, so the caller refunds only the
+/// remainder in cash.
+async fn cancel_customer_debt(
+    conn: &mut sqlx::PgConnection,
+    customer_id: Option<Uuid>,
+    note_id: Uuid,
+    total: Decimal,
+    new: &NewCreditNote<'_>,
+) -> Result<Decimal, RepoError> {
+    match customer_id {
+        // A sale with no customer was never charged, so it owes nothing: the
+        // whole note is cash, exactly the refund every older test knows.
+        None => Ok(Decimal::ZERO),
+        Some(customer) => {
+            // One lock for the whole account phase, before any account state
+            // is read. The transaction already holds `FOR NO KEY UPDATE` on
+            // the sale row; taking the customer's advisory lock now fixes the
+            // order sale → customer, and a collection or allocation holds the
+            // customer advisory lock while its `customer_account_allocations`
+            // FK check takes `FOR KEY SHARE` on `sales`, which is compatible
+            // with `FOR NO KEY UPDATE`, so the two cannot deadlock. The lock
+            // also freezes the account between the reads below and the writes
+            // they justify: a collection allocating to this sale cannot change
+            // the outstanding or the tender list under us.
+            customer_accounts::lock_customer(&mut *conn, customer)
+                .await
+                .map_err(map_account_error)?;
+
+            // Clamped at zero: a hand-written ledger can drift past the
+            // guards, and a negative "outstanding" would mint debt back.
+            let outstanding = customer_accounts::outstanding_for_sale_in(&mut *conn, new.sale_id)
+                .await
+                .map_err(map_account_error)?
+                .max(Decimal::ZERO);
+            let cancel = total.min(outstanding);
+
+            // The ledger's copy of the cancellation. `record_credit_note`
+            // re-checks, under the lock this transaction already holds,
+            // everything just read here, so a refusal from it is an internal
+            // error, never a typed rejection the client could act on.
+            if cancel > Decimal::ZERO {
+                customer_accounts::record_credit_note(
+                    &mut *conn,
+                    customer,
+                    new.sale_id,
+                    note_id,
+                    cancel,
+                    new.created_by,
+                )
+                .await
+                .map_err(map_account_error)?;
+            }
+            Ok(cancel)
+        }
+    }
+}
+
+/// Pass 4: the money. `cash` is what the note still owes after the debt
+/// was cancelled; it is refunded through the tenders that actually
+/// collected money for this sale, each capped at what it collected.
+async fn refund_cash_through_tenders(
+    conn: &mut sqlx::PgConnection,
+    note_id: Uuid,
+    cash: Decimal,
+    label: &str,
+    new: &NewCreditNote<'_>,
+) -> Result<Vec<CreditNoteRefund>, RepoError> {
+    let mut refunds = Vec::new();
+
+    if cash > Decimal::ZERO {
+        // Allocate this note's cash refund proportionally across each tender's
+        // remaining refundable capacity (`collected - prior_refunded`). Unlike
+        // subtracting two cumulative Largest Remainder splits — which can go
+        // negative with 3+ tenders (the Alabama paradox) — allocating directly
+        // against remaining capacities is strictly non-negative for any number
+        // of tenders and never exceeds what any tender collected.
+        let tenders = remaining_tenders(&mut *conn, new.sale_id).await?;
+        let caps: Vec<Decimal> = tenders.iter().map(|t| t.remaining).collect();
+        let shares = split_cash_refund(cash, &caps);
+
+        // The shares must add up to this note's cash, to the cent, and each
+        // one must be non-negative: a short sum means the tenders do not hold
+        // what the note promises in cash. Refusing whole is the only honest
+        // answer.
+        let refunded = shares
+            .iter()
+            .copied()
+            .try_fold(Decimal::ZERO, Decimal::checked_add)
+            .ok_or(RepoError::TotalTooLarge)?;
+        if refunded != cash || shares.iter().any(|share| *share < Decimal::ZERO) {
+            return Err(RepoError::RefundDoesNotAddUp { cash, refunded });
+        }
+
+        for (tender, share) in tenders.iter().zip(shares) {
+            // A zero share would violate `wallet_movements.amount > 0`, and a
+            // movement of nothing explains nothing.
+            if share <= Decimal::ZERO {
+                continue;
+            }
+
+            wallet::insert_movement(
+                &mut *conn,
+                NewWalletMovement {
+                    wallet_id: tender.wallet_id,
+                    kind: WalletMovementKind::SaleRefund,
+                    amount: share,
+                    sale_id: Some(new.sale_id),
+                    purchase_id: None,
+                    payment_method_id: Some(tender.payment_method_id),
+                    credit_note_id: Some(note_id),
+                    purchase_return_id: None,
+                    // Refund money leaves through the sale's own tenders, never
+                    // through a customer's account.
+                    customer_id: None,
+                    supplier_id: None,
+                    note: Some(label),
+                    created_by: Some(new.created_by),
+                },
+            )
+            .await?;
+
+            refunds.push(CreditNoteRefund {
+                wallet_id: tender.wallet_id,
+                wallet_name: tender.wallet_name.clone(),
+                payment_method_id: tender.payment_method_id,
+                payment_method_name: tender.payment_method_name.clone(),
+                amount: share,
+            });
+        }
+    }
+
+    Ok(refunds)
+}
+
+/// Issue a credit note: validate against the sale, then write both ledgers.
+///
+/// The sale row is locked `FOR NO KEY UPDATE` first. Two cashiers returning
+/// the last unit at the same time would otherwise both pass the "still
+/// returnable" check and both write the return; serializing on the sale makes
+/// the second one see the first one's note, while staying compatible with
+/// PostgreSQL's `FOR KEY SHARE` FK checks from concurrent receipt allocations.
+///
+/// The products are NOT locked: a return adds stock, so it can never leave the
+/// catalog negative and needs no availability check.
+pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCreditNote, RepoError> {
+    let mut tx = pool.begin().await?;
+
+    let sale = lock_completed_sale(&mut tx, new.sale_id).await?;
+
+    // A retry returns the first note, whatever the rest of the request says:
+    // the caller did not get its answer, not a new return to record.
+    //
+    // The pre-check reads through the open transaction, not the pool: a keyed
+    // create holds ONE pool connection while it owns the sale lock, so a
+    // saturated pool cannot turn a retry into a 500 with the lock held.
+    if let Some(key) = new.idempotency_key
+        && let Some(detail) = load_notes_in(&mut tx, new.sale_id, Some(key))
+            .await?
+            .into_iter()
+            .next()
+    {
+        tx.rollback().await?;
+        return Ok(CreatedCreditNote {
+            detail,
+            replayed: true,
+        });
+    }
+
+    let sale_total = sale.total.ok_or(RepoError::SaleTotalMissing)?;
+    let already_refunded = refunded_so_far(&mut tx, new.sale_id).await?;
+    let creditable = creditable_lines(&mut *tx, new.sale_id).await?;
+
+    let (total, accepted) = validate_lines(&creditable, new.lines)?;
+    ensure_refund_within_sale(sale_total, already_refunded, total)?;
+
+    // Pass 2: the document.
+    let note_id = Uuid::now_v7();
+    let insert = insert_note_header(&mut tx, note_id, &new, total).await;
 
     let created_at: DateTime<Utc> = match insert {
         Ok(created_at) => created_at,
@@ -733,169 +991,12 @@ pub async fn create(pool: &PgPool, new: NewCreditNote<'_>) -> Result<CreatedCred
     // why the stock or the money moved.
     let label = format!("credit note {note_id}: {}", new.reason);
 
-    let mut items = Vec::with_capacity(accepted.len());
+    let items = insert_note_items_and_stock(&mut tx, note_id, accepted, &label, &new).await?;
 
-    for (sold, quantity) in accepted {
-        let item_id = Uuid::now_v7();
+    let cancel = cancel_customer_debt(&mut tx, sale.customer_id, note_id, total, &new).await?;
 
-        sqlx::query!(
-            r#"
-            INSERT INTO credit_note_items (id, credit_note_id, product_id, quantity, unit_price)
-            VALUES ($1, $2, $3, $4, $5)
-            "#,
-            item_id,
-            note_id,
-            sold.product_id,
-            quantity,
-            sold.unit_price,
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        // Returned goods rejoin stock. Same append-only ledger as every other
-        // movement; the reason carries the sign.
-        sqlx::query!(
-            r#"
-            INSERT INTO stock_movements (id, product_id, reason, quantity, note, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            "#,
-            Uuid::now_v7(),
-            sold.product_id,
-            MovementReason::Return as MovementReason,
-            quantity,
-            label,
-            new.created_by,
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        items.push(CreditNoteItem {
-            id: item_id,
-            product_id: sold.product_id,
-            product_name: sold.product_name.clone(),
-            quantity,
-            unit_price: sold.unit_price,
-        });
-    }
-
-    // Pass 3: the account. Debt first: the note cancels what the sale still
-    // owes, and only the remainder is refunded as cash, through the tenders
-    // that actually collected money for this sale. A note on a fully unpaid
-    // credit sale cancels debt and moves no money at all.
-    let cancel = match sale.customer_id {
-        // A sale with no customer was never charged, so it owes nothing: the
-        // whole note is cash, exactly the refund every older test knows.
-        None => Decimal::ZERO,
-        Some(customer) => {
-            // One lock for the whole account phase, before any account state
-            // is read. The transaction already holds `FOR NO KEY UPDATE` on
-            // the sale row; taking the customer's advisory lock now fixes the
-            // order sale → customer, and a collection or allocation holds the
-            // customer advisory lock while its `customer_account_allocations`
-            // FK check takes `FOR KEY SHARE` on `sales`, which is compatible
-            // with `FOR NO KEY UPDATE`, so the two cannot deadlock. The lock
-            // also freezes the account between the reads below and the writes
-            // they justify: a collection allocating to this sale cannot change
-            // the outstanding or the tender list under us.
-            customer_accounts::lock_customer(&mut tx, customer)
-                .await
-                .map_err(map_account_error)?;
-
-            // Clamped at zero: a hand-written ledger can drift past the
-            // guards, and a negative "outstanding" would mint debt back.
-            let outstanding = customer_accounts::outstanding_for_sale_in(&mut tx, new.sale_id)
-                .await
-                .map_err(map_account_error)?
-                .max(Decimal::ZERO);
-            let cancel = total.min(outstanding);
-
-            // The ledger's copy of the cancellation. `record_credit_note`
-            // re-checks, under the lock this transaction already holds,
-            // everything just read here, so a refusal from it is an internal
-            // error, never a typed rejection the client could act on.
-            if cancel > Decimal::ZERO {
-                customer_accounts::record_credit_note(
-                    &mut tx,
-                    customer,
-                    new.sale_id,
-                    note_id,
-                    cancel,
-                    new.created_by,
-                )
-                .await
-                .map_err(map_account_error)?;
-            }
-            cancel
-        }
-    };
-
-    // Pass 4: the money. `cash` is what the note still owes after the debt
-    // was cancelled; it is refunded through the tenders that actually
-    // collected money for this sale, each capped at what it collected.
     let cash = total - cancel;
-    let mut refunds = Vec::new();
-
-    if cash > Decimal::ZERO {
-        // Allocate this note's cash refund proportionally across each tender's
-        // remaining refundable capacity (`collected - prior_refunded`). Unlike
-        // subtracting two cumulative Largest Remainder splits — which can go
-        // negative with 3+ tenders (the Alabama paradox) — allocating directly
-        // against remaining capacities is strictly non-negative for any number
-        // of tenders and never exceeds what any tender collected.
-        let tenders = remaining_tenders(&mut *tx, new.sale_id).await?;
-        let caps: Vec<Decimal> = tenders.iter().map(|t| t.remaining).collect();
-        let shares = split_cash_refund(cash, &caps);
-
-        // The shares must add up to this note's cash, to the cent, and each
-        // one must be non-negative: a short sum means the tenders do not hold
-        // what the note promises in cash. Refusing whole is the only honest
-        // answer.
-        let refunded = shares
-            .iter()
-            .copied()
-            .try_fold(Decimal::ZERO, Decimal::checked_add)
-            .ok_or(RepoError::TotalTooLarge)?;
-        if refunded != cash || shares.iter().any(|share| *share < Decimal::ZERO) {
-            return Err(RepoError::RefundDoesNotAddUp { cash, refunded });
-        }
-
-        for (tender, share) in tenders.iter().zip(shares) {
-            // A zero share would violate `wallet_movements.amount > 0`, and a
-            // movement of nothing explains nothing.
-            if share <= Decimal::ZERO {
-                continue;
-            }
-
-            wallet::insert_movement(
-                &mut *tx,
-                NewWalletMovement {
-                    wallet_id: tender.wallet_id,
-                    kind: WalletMovementKind::SaleRefund,
-                    amount: share,
-                    sale_id: Some(new.sale_id),
-                    purchase_id: None,
-                    payment_method_id: Some(tender.payment_method_id),
-                    credit_note_id: Some(note_id),
-                    purchase_return_id: None,
-                    // Refund money leaves through the sale's own tenders, never
-                    // through a customer's account.
-                    customer_id: None,
-                    supplier_id: None,
-                    note: Some(&label),
-                    created_by: Some(new.created_by),
-                },
-            )
-            .await?;
-
-            refunds.push(CreditNoteRefund {
-                wallet_id: tender.wallet_id,
-                wallet_name: tender.wallet_name.clone(),
-                payment_method_id: tender.payment_method_id,
-                payment_method_name: tender.payment_method_name.clone(),
-                amount: share,
-            });
-        }
-    }
+    let refunds = refund_cash_through_tenders(&mut tx, note_id, cash, &label, &new).await?;
 
     tx.commit().await?;
 

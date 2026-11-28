@@ -662,7 +662,7 @@ struct ResolvedPayment {
 }
 
 async fn resolve_payments(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    conn: &mut sqlx::PgConnection,
     payments_input: &[PurchasePaymentInput],
     on_account: Decimal,
     total: Decimal,
@@ -693,7 +693,7 @@ async fn resolve_payments(
         wallet_paid = crate::money::checked_add_amount(wallet_paid, payment.amount)
             .ok_or(RepoError::PaymentAmountTooLarge)?;
 
-        let method = payments::find_method(&mut **tx, payment.payment_method_id)
+        let method = payments::find_method(&mut *conn, payment.payment_method_id)
             .await
             .map_err(map_payment_error)?
             .ok_or(RepoError::PaymentMethodUnavailable)?;
@@ -756,17 +756,13 @@ fn map_account_write_error(err: crate::supplier_accounts::repository::RepoError)
     }
 }
 
-/// Complete a draft purchase in one atomic transaction.
-pub async fn complete(
-    pool: &PgPool,
+/// Lock the purchase row and confirm the draft can still be completed.
+/// Returns the supplier the draft names, if any: completion requires one,
+/// so the caller turns `None` into `SupplierRequired`.
+async fn lock_draft(
+    conn: &mut sqlx::PgConnection,
     purchase_id: Uuid,
-    actor: Uuid,
-    payments_input: &[PurchasePaymentInput],
-    on_account: Decimal,
-    note: Option<&str>,
-) -> Result<CompletedPurchase, RepoError> {
-    let mut tx = pool.begin().await?;
-
+) -> Result<Option<Uuid>, RepoError> {
     let purchase_row = sqlx::query!(
         r#"
         SELECT status AS "status: PurchaseStatus", supplier_id
@@ -776,7 +772,7 @@ pub async fn complete(
         "#,
         purchase_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or(RepoError::NotFound)?;
 
@@ -784,10 +780,23 @@ pub async fn complete(
         return Err(RepoError::NotEditable);
     }
 
-    let supplier_id = purchase_row
-        .supplier_id
-        .ok_or(RepoError::SupplierRequired)?;
+    Ok(purchase_row.supplier_id)
+}
 
+/// A line of the draft as completion reads it: how much stock arrives, at
+/// the cost frozen when the line was added.
+struct DraftLine {
+    product_id: Uuid,
+    quantity: Decimal,
+    unit_cost: Decimal,
+}
+
+/// The draft's lines in product order, so the product locks below are
+/// always acquired sorted by id.
+async fn load_draft_lines(
+    conn: &mut sqlx::PgConnection,
+    purchase_id: Uuid,
+) -> Result<Vec<DraftLine>, RepoError> {
     let items = sqlx::query!(
         r#"
         SELECT pi.product_id, pi.quantity, pi.unit_cost
@@ -797,16 +806,30 @@ pub async fn complete(
         "#,
         purchase_id
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut *conn)
     .await?;
 
     if items.is_empty() {
         return Err(RepoError::EmptyPurchase);
     }
 
-    // Pass 1: lock each product, confirm still active and stock-tracked, compute total.
+    Ok(items
+        .into_iter()
+        .map(|item| DraftLine {
+            product_id: item.product_id,
+            quantity: item.quantity,
+            unit_cost: item.unit_cost,
+        })
+        .collect())
+}
+
+/// Pass 1: lock each product, confirm still active and stock-tracked, compute total.
+async fn lock_products_and_compute_total(
+    conn: &mut sqlx::PgConnection,
+    items: &[DraftLine],
+) -> Result<Decimal, RepoError> {
     let mut total = Decimal::ZERO;
-    for item in &items {
+    for item in items {
         let product = sqlx::query!(
             r#"
             SELECT kind AS "kind: ProductKind", is_active
@@ -816,7 +839,7 @@ pub async fn complete(
             "#,
             item.product_id
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or(RepoError::ProductNotFound)?;
 
@@ -833,25 +856,38 @@ pub async fn complete(
             crate::money::checked_add_amount(total, subtotal).ok_or(RepoError::TotalTooLarge)?;
     }
 
-    // Lock and validate the supplier and payments before any write.
-    //
-    // On the cash path (`on_account == 0`), lock `suppliers FOR UPDATE` and
-    // verify `is_active` before resolving payments so an inactive supplier
-    // keeps its baseline `409 SupplierInactive` precedence over `422` payment
-    // errors. On the on-account path (`on_account > 0`), validate payment
-    // arithmetic and methods first so malformed sums do not acquire the
-    // supplier advisory lock, then run `authorize_credit` (advisory lock
-    // seed `1` -> `suppliers FOR UPDATE`). Both paths preserve the global lock
-    // order `purchases` -> `products` -> [advisory lock] -> `suppliers`.
-    let (charges, supplier_name) = if on_account > Decimal::ZERO {
-        let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
+    Ok(total)
+}
 
-        crate::supplier_accounts::repository::authorize_credit(&mut tx, supplier_id, on_account)
+/// Lock and validate the supplier and payments before any write.
+///
+/// On the cash path (`on_account == 0`), lock `suppliers FOR UPDATE` and
+/// verify `is_active` before resolving payments so an inactive supplier
+/// keeps its baseline `409 SupplierInactive` precedence over `422` payment
+/// errors. On the on-account path (`on_account > 0`), validate payment
+/// arithmetic and methods first so malformed sums do not acquire the
+/// supplier advisory lock, then run `authorize_credit` (advisory lock
+/// seed `1` -> `suppliers FOR UPDATE`). Both paths preserve the global lock
+/// order `purchases` -> `products` -> [advisory lock] -> `suppliers`.
+///
+/// Returns the resolved charges and the supplier name to freeze on the
+/// purchase.
+async fn resolve_supplier_and_payments(
+    conn: &mut sqlx::PgConnection,
+    supplier_id: Uuid,
+    payments_input: &[PurchasePaymentInput],
+    on_account: Decimal,
+    total: Decimal,
+) -> Result<(Vec<ResolvedPayment>, String), RepoError> {
+    let (charges, supplier_name) = if on_account > Decimal::ZERO {
+        let charges = resolve_payments(&mut *conn, payments_input, on_account, total).await?;
+
+        crate::supplier_accounts::repository::authorize_credit(&mut *conn, supplier_id, on_account)
             .await
             .map_err(map_authorize_error)?;
 
         let name = sqlx::query_scalar!("SELECT name FROM suppliers WHERE id = $1", supplier_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut *conn)
             .await?
             .ok_or(RepoError::SupplierNotFound)?;
 
@@ -861,7 +897,7 @@ pub async fn complete(
             "SELECT name, is_active FROM suppliers WHERE id = $1 FOR UPDATE",
             supplier_id
         )
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or(RepoError::SupplierNotFound)?;
 
@@ -869,15 +905,22 @@ pub async fn complete(
             return Err(RepoError::SupplierInactive);
         }
 
-        let charges = resolve_payments(&mut tx, payments_input, on_account, total).await?;
+        let charges = resolve_payments(&mut *conn, payments_input, on_account, total).await?;
         (charges, supplier.name)
     };
 
-    let ledger_note = format!("Purchase {}", &purchase_id.to_string()[..8]);
+    Ok((charges, supplier_name))
+}
 
-    // Pass 2: record stock inflows.
+/// Pass 2: record stock inflows.
+async fn insert_stock_movements(
+    conn: &mut sqlx::PgConnection,
+    items: &[DraftLine],
+    ledger_note: &str,
+    actor: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
     let mut movement_ids = Vec::with_capacity(items.len());
-    for item in &items {
+    for item in items {
         let movement_id = Uuid::now_v7();
         sqlx::query!(
             r#"
@@ -888,20 +931,30 @@ pub async fn complete(
             item.product_id,
             item.quantity,
             Some(item.unit_cost),
-            Some(ledger_note.as_str()),
+            Some(ledger_note),
             actor,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
         movement_ids.push(movement_id);
     }
 
-    // Pass 3: record wallet outflows for the upfront cash legs.
+    Ok(movement_ids)
+}
+
+/// Pass 3: record wallet outflows for the upfront cash legs.
+async fn insert_payment_movements(
+    conn: &mut sqlx::PgConnection,
+    charges: &[ResolvedPayment],
+    purchase_id: Uuid,
+    ledger_note: &str,
+    actor: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
     let mut payment_movement_ids = Vec::with_capacity(charges.len());
-    for charge in &charges {
+    for charge in charges {
         let movement_id = payments::insert_movement(
-            &mut *tx,
+            &mut *conn,
             payments::NewWalletMovement {
                 wallet_id: charge.wallet_id,
                 kind: WalletMovementKind::PurchasePayment,
@@ -913,7 +966,7 @@ pub async fn complete(
                 purchase_return_id: None,
                 customer_id: None,
                 supplier_id: None,
-                note: Some(ledger_note.as_str()),
+                note: Some(ledger_note),
                 created_by: Some(actor),
             },
         )
@@ -923,7 +976,18 @@ pub async fn complete(
         payment_movement_ids.push(movement_id);
     }
 
-    // Close the purchase and freeze supplier_name + total in the same statement.
+    Ok(payment_movement_ids)
+}
+
+/// Close the purchase and freeze supplier_name + total in the same statement.
+async fn close_purchase(
+    conn: &mut sqlx::PgConnection,
+    purchase_id: Uuid,
+    total: Decimal,
+    supplier_name: &str,
+    actor: Uuid,
+    note: Option<&str>,
+) -> Result<DateTime<Utc>, RepoError> {
     let completed_at = sqlx::query_scalar!(
         r#"
         UPDATE purchases
@@ -942,15 +1006,27 @@ pub async fn complete(
         actor,
         note,
     )
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
 
-    // Record the on-account payable and automatically apply any available
-    // unapplied supplier advance credit oldest-first inside the same commit.
+    Ok(completed_at)
+}
+
+/// Record the on-account payable and automatically apply any available
+/// unapplied supplier advance credit oldest-first inside the same commit.
+///
+/// Returns the credit applied, zero when nothing was on account.
+async fn charge_supplier_account(
+    conn: &mut sqlx::PgConnection,
+    supplier_id: Uuid,
+    purchase_id: Uuid,
+    on_account: Decimal,
+    actor: Uuid,
+) -> Result<Decimal, RepoError> {
     let mut credit_applied = Decimal::ZERO;
     if on_account > Decimal::ZERO {
         crate::supplier_accounts::repository::record_charge(
-            &mut tx,
+            &mut *conn,
             supplier_id,
             purchase_id,
             on_account,
@@ -960,7 +1036,7 @@ pub async fn complete(
         .map_err(map_account_write_error)?;
 
         credit_applied = crate::supplier_accounts::repository::apply_available_credit(
-            &mut tx,
+            &mut *conn,
             supplier_id,
             purchase_id,
             on_account,
@@ -968,6 +1044,39 @@ pub async fn complete(
         .await
         .map_err(map_account_write_error)?;
     }
+
+    Ok(credit_applied)
+}
+
+/// Complete a draft purchase in one atomic transaction.
+pub async fn complete(
+    pool: &PgPool,
+    purchase_id: Uuid,
+    actor: Uuid,
+    payments_input: &[PurchasePaymentInput],
+    on_account: Decimal,
+    note: Option<&str>,
+) -> Result<CompletedPurchase, RepoError> {
+    let mut tx = pool.begin().await?;
+
+    let supplier_id = lock_draft(&mut tx, purchase_id)
+        .await?
+        .ok_or(RepoError::SupplierRequired)?;
+    let items = load_draft_lines(&mut tx, purchase_id).await?;
+    let total = lock_products_and_compute_total(&mut tx, &items).await?;
+    let (charges, supplier_name) =
+        resolve_supplier_and_payments(&mut tx, supplier_id, payments_input, on_account, total)
+            .await?;
+
+    let ledger_note = format!("Purchase {}", &purchase_id.to_string()[..8]);
+
+    let movement_ids = insert_stock_movements(&mut tx, &items, &ledger_note, actor).await?;
+    let payment_movement_ids =
+        insert_payment_movements(&mut tx, &charges, purchase_id, &ledger_note, actor).await?;
+    let completed_at =
+        close_purchase(&mut tx, purchase_id, total, &supplier_name, actor, note).await?;
+    let credit_applied =
+        charge_supplier_account(&mut tx, supplier_id, purchase_id, on_account, actor).await?;
 
     tx.commit().await?;
 
