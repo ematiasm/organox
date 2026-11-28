@@ -225,8 +225,8 @@ pub struct ReceiptLogItem {
     /// Sum of allocations pointing at this receipt.
     pub allocated_total: Decimal,
     pub allocations: Vec<ReceiptLogAllocation>,
-    /// Stored on the linked `wallet_movements` row (`customer_account_entries`
-    /// forbids a note on `receipt` rows).
+    /// Stored on the entry row itself: `customer_account_entries` has a `note`
+    /// column for every kind, so the receipt keeps its own text.
     pub note: Option<String>,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,

@@ -4,7 +4,11 @@
 //! freedom across concurrent completions, returns, supplier payments, credit
 //! refunds, adjustments, sales, and deactivations:
 //!
-//! 1. `purchases FOR UPDATE`
+//! 1. `purchases FOR NO KEY UPDATE` — deliberately not `FOR UPDATE`: it must
+//!    stay compatible with the `FOR KEY SHARE` lock a concurrent
+//!    `supplier_accounts::record_payment` takes on the purchase while holding
+//!    the supplier advisory lock, which the stronger mode would deadlock with
+//!    (`Lock 1` below carries the full reasoning)
 //! 2. `products FOR UPDATE` (ordered by `product_id ASC`)
 //! 3. Supplier advisory lock (`hashtextextended(supplier_id::text, 1)`, 5s timeout)
 //! 4. `suppliers FOR UPDATE` (when checking `is_active` for `supplier_credit`)
