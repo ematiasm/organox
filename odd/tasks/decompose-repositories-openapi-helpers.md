@@ -1,7 +1,7 @@
 # Decompose repositories, attach OpenAPI paths, extract shared helpers (#118)
 
 Objective: Reduce the cognitive load the backend review measured in issue #118 — monolithic repository functions, `#[utoipa::path]` detached from the handlers it documents, and mechanically duplicated helpers — without changing behavior.
-Branch: `refactor/118-decompose-repositories-openapi-helpers` | Base: `eac8138` | Delivery: pending user decision | Runner: `cargo test` (`make migrate`, `make prepare`, `make check`)
+Branch: `refactor/118-decompose-repositories-openapi-helpers` | Base: `eac8138` | Delivery: chained PRs (three slices: S1+S2, S3, S4), chosen by the maintainer | Runner: `cargo test` (`make migrate`, `make prepare`, `make check`)
 
 ## Specs
 
@@ -38,10 +38,10 @@ The issue was written against an older base. Measured on `eac8138`:
 - [x] T1 | S1 | worker | Migrate `#[utoipa::path]` onto the handlers, delete the 69 stubs, point `openapi.rs::paths(...)` at the handlers, prove `make fe-schema` leaves the generated artifacts identical.
 - [x] T2 | S2 | worker | Extract `format_quantity`, `present_option`, `max_amount`, `violated_constraint` to their single homes.
 - [x] T3 | S2 | worker | Add `tests/common/mod.rs` and remove the copy-pasted `test_password`/`app`/`seed_user_with_password`.
-- [ ] T4 | S3 | inline | Decompose `credit_notes::create` and `purchase_returns::create`.
-- [ ] T5 | S3 | inline | Decompose `sales::complete` and `purchases::complete`.
-- [ ] T6 | S3 | inline | Decompose `receivables_page`/`payables_page` and the remaining >100-line account repository functions.
-- [ ] T7 | S4 | inline | Split the two account repositories into `reads.rs` and `writes.rs`.
+- [x] T4 | S3 | worker | commit `331df7f`: `credit_notes::create` 339→90 and `purchase_returns::create` 379→86, split into phase helpers in original statement order.
+- [x] T5 | S3 | worker | commit `7ffb615`: `sales::complete` 256→42 and `purchases::complete` 223→40, payment-precedence comments moved into the helpers that own them.
+- [x] T6 | S3 | worker | commits `c4a669f`, `e4f7304`: `record_receipt` 120→38, `record_credit_refund_with_key` 141→39, `allocate` 114→23 / 115→22, `apply_available_credit` 102→28, `record_payment` 114→38, `record_credit_refund` 131→35. `receivables_page` and `payables_page` stay at 156 lines: each is one declarative query whose macro generates an anonymous row type, so no helper can receive its rows and splitting would only retype the SQL (documented exception, not a miss).
+- [x] T7 | S4 | worker | commits `c4a669f`, `e4f7304`: both account repositories are now `repository/{mod,reads,writes}.rs` with the public `repository::` path unchanged; 1,875 → 202/704/1,214 and 1,762 → 185/686/1,100.
 
 ## Log
 
@@ -53,3 +53,9 @@ L4. T1 done (2026-11-28): one worker migrated all 69 attributes onto their handl
 L5. T2 done (2026-11-28): `format_quantity` → `money.rs` (4 copies), `present_option` → new `http.rs` (2), `max_amount` deleted in favour of the existing `money::MAX_AMOUNT` (3 sites), `violated_constraint` → `db.rs` (5). 14 copy definitions removed; no signature, behavior or spec change (`make fe-schema` untouched). Commit `3d1dfb9`, 16 files, 43+/110−.
 L6. T3 done (2026-11-28): `tests/common/mod.rs` holds `test_password` (15 copies), `app` (13) and one three-argument `seed_user_with_password` (5, in two drifted signatures); the two crates that used the two-argument form pass the values their copy hardcoded, and `ratelimit.rs` keeps its `strict_state` router local on purpose. 600 tests before and after. Commit `cae2fce`, 15 files, 83+/284−.
 L7. Slice boundary (2026-11-28): S1 and S2 are done in three commits (3,653 authored lines, mostly mechanical moves and deletions, far past the ~400-line advisory budget). S3 and S4 — decomposing `credit_notes::create` (339), `purchase_returns::create` (379), `sales::complete` (256), `purchases::complete` (223), the two 156-line report pages and the remaining >100-line account functions, then splitting the two 1.8k-line account repositories — are untouched and carry all the remaining risk. Delivery shape stays open for the maintainer.
+
+L8. T4 done (2026-11-28): the two 300-plus-line creates now orchestrate named phase helpers, with every SQL literal and every comment untouched and the conflict arm that owns its own rollback left in the public function. `.sqlx` regenerates to zero diff, all 600 tests pass. Commit `331df7f`.
+L9. T5 done (2026-11-28): the two completion paths decomposed the same way; the payment-precedence reasoning (which error wins on the cash path versus the on-account path) moved into the helper that encodes it. The worker added an independent proof on top of the `.sqlx` check — the multiset of SQL string literals in both files is byte-identical to the previous commit. Commit `7ffb615`.
+L10. T6 done with one documented exception (2026-11-28): the four long customer-accounts mutations and the three long supplier-accounts mutations are now phase helpers. `receivables_page` and `payables_page` stay at 156 lines because each body is one declarative query whose macro expansion owns an anonymous row type; the only split available retypes the SQL without shortening what a reviewer reads, so it stays. The worker hit the cache trap once while moving a literal (re-indenting it changed the sqlx hash and produced "no cached data"), and documented the indentation in the helper so nobody tidies it back into a break.
+L11. T7 done (2026-11-28): both account repositories split into `mod/reads/writes` with the public `repository::` path preserved through re-exports, so no call site outside the module changed. The literal-multiset check added in T5 is now the standing proof for every move: 34/34 and 36/36 literals identical.
+L12. Slice boundary (2026-11-28): eight commits, 12,683 authored lines — a refactor this size cannot fit one review slice, which is why the maintainer chose chained PRs: slice 1 = `ee74410..3e9cdea` (S1 openapi + S2 helpers, 4,486 lines of moves), slice 2 = `331df7f..7ffb615` (S3 decomposition), slice 3 = `c4a669f..e4f7304` (S4 file split). Every slice is independently green and independently reviewable; nothing is pushed yet.
